@@ -26,6 +26,12 @@ class NotesTalent(BaseTalent):
         "my notes", "find note", "search notes", "list notes",
         "delete note", "remove note",
     ]
+    examples = [
+        "save a note meeting with Bob at 3pm",
+        "find notes about the project",
+        "list my recent notes",
+        "delete note about groceries",
+    ]
     priority = 45
 
     _NOTE_PHRASES = [
@@ -50,11 +56,6 @@ class NotesTalent(BaseTalent):
         "erase note",
     ]
 
-    # Excluded: "notepad" should go to desktop_control
-    _EXCLUDE_PHRASES = [
-        "notepad", "open note", "launch note",
-    ]
-
     _TAG_SYSTEM_PROMPT = (
         "You are a tagging assistant. Given a note, generate 2-5 short tags "
         "(single words or two-word phrases) that categorize the note. "
@@ -77,20 +78,7 @@ class NotesTalent(BaseTalent):
     # ── Routing ────────────────────────────────────────────────────
 
     def can_handle(self, command: str) -> bool:
-        cmd = command.lower()
-        # Exclude desktop commands like "open notepad"
-        if any(phrase in cmd for phrase in self._EXCLUDE_PHRASES):
-            return False
-        # Check for note-related phrases
-        if any(phrase in cmd for phrase in self._NOTE_PHRASES):
-            return True
-        if any(phrase in cmd for phrase in self._SEARCH_PHRASES):
-            return True
-        if any(phrase in cmd for phrase in self._LIST_PHRASES):
-            return True
-        if any(phrase in cmd for phrase in self._DELETE_PHRASES):
-            return True
-        return False
+        return self.keyword_match(command)
 
     # ── Execution ──────────────────────────────────────────────────
 

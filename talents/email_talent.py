@@ -30,6 +30,12 @@ class EmailTalent(BaseTalent):
         "compose", "check email", "read email", "new email",
         "send a message", "send message to",
     ]
+    examples = [
+        "check my email",
+        "how many unread emails do I have",
+        "read latest email from John",
+        "send email to alice about the meeting",
+    ]
     priority = 55
 
     _EMAIL_PHRASES = [
@@ -37,11 +43,6 @@ class EmailTalent(BaseTalent):
         "send email", "compose email", "send a message",
         "check email", "check my email", "read email",
         "new email", "latest email", "read my mail",
-    ]
-
-    # Phrases that indicate OTHER talents — defer
-    _DESKTOP_PHRASES = [
-        "open ", "launch ", "start ", "browse to", "go to",
     ]
 
     _SYSTEM_PROMPT_READ = (
@@ -99,11 +100,7 @@ class EmailTalent(BaseTalent):
     # ── Routing ────────────────────────────────────────────────────
 
     def can_handle(self, command: str) -> bool:
-        cmd = command.lower()
-        # Defer desktop actions
-        if any(phrase in cmd for phrase in self._DESKTOP_PHRASES):
-            return False
-        return any(phrase in cmd for phrase in self._EMAIL_PHRASES)
+        return self.keyword_match(command)
 
     # ── Execution ──────────────────────────────────────────────────
 

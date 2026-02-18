@@ -78,11 +78,6 @@ class ReminderTalent(BaseTalent):
         "Return ONLY the JSON object, no markdown, no explanation."
     )
 
-    _EXCLUSIONS = [
-        "todo list", "task list", "to do list", "to-do list",
-        "my list", "add task",
-    ]
-
     _REMINDERS_FILE = os.path.join(_data_dir(), "reminders.json")
 
     def __init__(self):
@@ -108,10 +103,7 @@ class ReminderTalent(BaseTalent):
     # ── Routing ────────────────────────────────────────────────────
 
     def can_handle(self, command: str) -> bool:
-        cmd = command.lower()
-        if any(ex in cmd for ex in self._EXCLUSIONS):
-            return False
-        return any(phrase in cmd for phrase in self._REMINDER_PHRASES)
+        return self.keyword_match(command)
 
     # ── Execution ──────────────────────────────────────────────────
 

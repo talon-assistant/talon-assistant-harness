@@ -11,6 +11,12 @@ class NewsTalent(BaseTalent):
     description = "Get latest news headlines from configurable providers"
     keywords = ["news", "headlines", "latest", "stories", "top stories",
                 "breaking", "current events", "happening"]
+    examples = [
+        "what's in the news today",
+        "give me the latest headlines",
+        "any breaking news about technology",
+        "what are the top stories right now",
+    ]
     priority = 80
 
     # Words/phrases that indicate a news-like request even without the word "news"
@@ -37,22 +43,10 @@ class NewsTalent(BaseTalent):
         "NEVER make up news. NEVER guess. NEVER say 'check website X'."
     )
 
-    # Desktop/browser action phrases — defer to DesktopControlTalent
-    _DESKTOP_PHRASES = [
-        "open ", "launch ", "start ", "browse to", "go to", "navigate to",
-        "browse ", "visit ", ".com", ".org", ".net", ".edu", ".gov",
-        "www.", "http", "open chrome", "open firefox", "open edge",
-    ]
-
     def can_handle(self, command: str) -> bool:
         cmd = command.lower()
-        # If the command is about opening/browsing to a site, defer to desktop_control
-        if any(phrase in cmd for phrase in self._DESKTOP_PHRASES):
-            return False
-        # Direct keyword match
         if any(phrase in cmd for phrase in self.NEWS_PHRASES):
             return True
-        # Mentions a well-known news site
         if any(site in cmd for site in self.NEWS_SITES):
             return True
         return False

@@ -12,65 +12,13 @@ class WebSearchTalent(BaseTalent):
     keywords = ["search", "google", "look up", "find out",
                 "what is", "who is", "how to", "when did", "where is",
                 "define", "explain"]
+    examples = [
+        "search for best pizza places nearby",
+        "who is the CEO of Tesla",
+        "how does photosynthesis work",
+        "look up Python list comprehension",
+    ]
     priority = 60
-
-    # Phrases that indicate a news-type request (handled by NewsTalent)
-    _NEWS_INDICATORS = [
-        "news", "headlines", "stories", "top stories", "breaking",
-        "current events", "happening",
-    ]
-
-    # Known news domains — defer to NewsTalent
-    _NEWS_SITES = [
-        "cnn", "bbc", "fox", "reuters", "nytimes", "nyt",
-        "washington post", "ap news", "msnbc", "cnbc", "npr",
-        "guardian", "aljazeera",
-    ]
-
-    # Screen/vision phrases — defer to conversation fallback (uses vision)
-    _VISION_PHRASES = [
-        "on my screen", "on the screen", "on screen",
-        "what do you see", "what can you see", "what's on",
-        "look at my", "look at the", "read my screen",
-        "read the screen", "this window", "current window",
-        "what window", "which window", "screenshot",
-        "what am i looking at", "what is this",
-        "inside of notepad", "inside notepad", "in notepad",
-        "text inside", "what's in the",
-        "inside of", "displayed on", "showing on",
-    ]
-
-    # Weather phrases — defer to WeatherTalent
-    _WEATHER_PHRASES = [
-        "weather", "temperature", "forecast", "how hot", "how cold",
-        "how warm", "raining", "snowing", "degrees", "feels like",
-    ]
-
-    # Desktop/browser action phrases — defer to DesktopControlTalent
-    _DESKTOP_PHRASES = [
-        "open ", "launch ", "start ", "browse to", "go to", "navigate to",
-        "browse ", "visit ", "www.", "http",
-        "open chrome", "open firefox", "open edge",
-    ]
-
-    # Reminder phrases — defer to ReminderTalent
-    _REMINDER_PHRASES = [
-        "remind", "reminder", "timer", "alarm", "set a timer",
-        "set a reminder", "in minutes", "in seconds", "in hours",
-    ]
-
-    # Email phrases — defer to EmailTalent
-    _EMAIL_PHRASES = [
-        "email", "mail", "inbox", "unread", "send email",
-        "compose email", "check email", "read email",
-    ]
-
-    # Notes phrases — defer to NotesTalent
-    _NOTES_PHRASES = [
-        "save a note", "save note", "my notes", "find note",
-        "search notes", "list notes", "delete note", "write down",
-        "remember this", "jot down",
-    ]
 
     # System prompt that forces the model to be a search-result synthesizer
     _SEARCH_SYSTEM_PROMPT = (
@@ -92,30 +40,6 @@ class WebSearchTalent(BaseTalent):
     ]
 
     def can_handle(self, command: str) -> bool:
-        cmd = command.lower()
-        # Defer weather queries to WeatherTalent
-        if any(phrase in cmd for phrase in self._WEATHER_PHRASES):
-            return False
-        # Defer desktop/browser actions to DesktopControlTalent
-        if any(phrase in cmd for phrase in self._DESKTOP_PHRASES):
-            return False
-        # Defer news-related queries to NewsTalent
-        if any(ind in cmd for ind in self._NEWS_INDICATORS):
-            return False
-        if any(site in cmd for site in self._NEWS_SITES):
-            return False
-        # Defer screen/vision queries to conversation fallback
-        if any(phrase in cmd for phrase in self._VISION_PHRASES):
-            return False
-        # Defer reminder queries to ReminderTalent
-        if any(phrase in cmd for phrase in self._REMINDER_PHRASES):
-            return False
-        # Defer email queries to EmailTalent
-        if any(phrase in cmd for phrase in self._EMAIL_PHRASES):
-            return False
-        # Defer notes queries to NotesTalent
-        if any(phrase in cmd for phrase in self._NOTES_PHRASES):
-            return False
         return self.keyword_match(command)
 
     def execute(self, command: str, context: dict) -> dict:

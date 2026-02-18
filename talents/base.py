@@ -2,22 +2,21 @@ from abc import ABC, abstractmethod
 
 
 class BaseTalent(ABC):
-    """Abstract base class for all Talon talents.
+    """Base class for all Talon talents.
 
     Subclasses must define:
-        name: str - unique talent identifier
-        description: str - human-readable description
-        keywords: list[str] - trigger words for command routing
-        priority: int - routing priority (higher = checked first)
+        name: str         — unique talent identifier
+        description: str  — what this talent does (used by the LLM router)
+        examples: list    — natural-language example commands (primary routing)
 
     And implement:
-        can_handle(command) - whether this talent handles the command
-        execute(command, context) - perform the command
+        execute(command, context) — perform the command
 
-    Optionally override:
-        get_config_schema() - declare configurable fields for the GUI
-        update_config(config) - handle runtime config changes
-        initialize(config) - one-time setup with the full settings dict
+    Optional:
+        keywords: list    — fallback trigger words (degraded mode only)
+        priority: int     — display ordering in the sidebar
+        routing_available — override to False when backend is unavailable
+        get_config_schema() / update_config() / initialize()
     """
 
     name: str = ""
@@ -30,10 +29,24 @@ class BaseTalent(ABC):
         self._enabled = True
         self._config = {}  # Per-talent config from talents.json
 
-    @abstractmethod
+    @property
+    def routing_available(self) -> bool:
+        """Whether this talent should appear in the LLM routing roster.
+
+        Override to return False when the talent's backend is unavailable
+        (e.g., Hue bridge disconnected). The router will exclude this
+        talent from the LLM prompt entirely.
+        """
+        return True
+
     def can_handle(self, command: str) -> bool:
-        """Return True if this talent can handle the given command."""
-        pass
+        """Keyword fallback for degraded mode (LLM unavailable).
+
+        No longer the primary routing mechanism — the LLM router handles
+        all intent classification.  Kept for backward compatibility and
+        as an emergency fallback when the LLM is unreachable.
+        """
+        return self.keyword_match(command)
 
     @abstractmethod
     def execute(self, command: str, context: dict) -> dict:

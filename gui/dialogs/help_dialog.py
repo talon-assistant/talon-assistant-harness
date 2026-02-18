@@ -75,8 +75,8 @@ speaks responses aloud using the configured voice (default: en-US-AriaNeural).</
 HELP_TOPICS["Talents"] = """
 <h2>Talents</h2>
 <p>Talents are plugins that handle specific types of commands. When you send a
-message, Talon checks each talent in priority order and routes to the first
-one that matches.</p>
+message, the LLM router classifies your intent and routes to the best-matching
+talent based on its description and examples.</p>
 
 <h3>Managing Talents</h3>
 <ul>
@@ -241,7 +241,9 @@ to regenerate it from the template.</p>
 
 HELP_TOPICS["Creating Talents"] = """
 <h2>Creating Talents</h2>
-<p>You can extend Talon by creating custom talent plugins.</p>
+<p>You can extend Talon by creating custom talent plugins. The LLM router uses
+your talent's <code>description</code> and <code>examples</code> to decide when
+to route commands to it &mdash; no keyword matching needed.</p>
 
 <h3>Basic Structure</h3>
 <pre>
@@ -250,11 +252,10 @@ from talents.base import BaseTalent
 class MyTalent(BaseTalent):
     name = "my_talent"
     description = "Does something useful"
-    keywords = ["my", "custom", "trigger"]
-    priority = 50
-
-    def can_handle(self, command):
-        return self.keyword_match(command)
+    examples = [
+        "do the custom thing",
+        "run my custom action",
+    ]
 
     def execute(self, command, context):
         llm = context["llm"]
@@ -262,7 +263,7 @@ class MyTalent(BaseTalent):
         return {
             "success": True,
             "response": response,
-            "actions_taken": [],
+            "actions_taken": [{"action": "my_action"}],
             "spoken": False,
         }
 </pre>
@@ -271,16 +272,28 @@ class MyTalent(BaseTalent):
 <table cellpadding="4" cellspacing="0" border="0" width="100%">
 <tr><td><b>Attribute</b></td><td><b>Type</b></td><td><b>Description</b></td></tr>
 <tr><td>name</td><td>str</td><td>Unique identifier</td></tr>
-<tr><td>description</td><td>str</td><td>Human-readable description</td></tr>
-<tr><td>keywords</td><td>list</td><td>Trigger words for command routing</td></tr>
-<tr><td>priority</td><td>int</td><td>Higher = checked first (default 50)</td></tr>
+<tr><td>description</td><td>str</td><td>What this talent does (shown to the LLM router)</td></tr>
+<tr><td>examples</td><td>list</td><td>Natural-language example commands (primary routing)</td></tr>
+</table>
+
+<h3>Optional Attributes</h3>
+<table cellpadding="4" cellspacing="0" border="0" width="100%">
+<tr><td><b>Attribute</b></td><td><b>Type</b></td><td><b>Description</b></td></tr>
+<tr><td>keywords</td><td>list</td><td>Fallback trigger words (used only when LLM is unavailable)</td></tr>
+<tr><td>priority</td><td>int</td><td>Sidebar display order (higher = listed first, default 50)</td></tr>
 </table>
 
 <h3>Required Methods</h3>
 <table cellpadding="4" cellspacing="0" border="0" width="100%">
 <tr><td><b>Method</b></td><td><b>Description</b></td></tr>
-<tr><td>can_handle(command)</td><td>Return True if this talent handles the command</td></tr>
 <tr><td>execute(command, context)</td><td>Perform the action and return a result dict</td></tr>
+</table>
+
+<h3>Optional Methods</h3>
+<table cellpadding="4" cellspacing="0" border="0" width="100%">
+<tr><td><b>Method</b></td><td><b>Description</b></td></tr>
+<tr><td>can_handle(command)</td><td>Keyword fallback for degraded mode (default uses keyword_match)</td></tr>
+<tr><td>routing_available</td><td>Property: return False to hide from the LLM router (e.g. backend disconnected)</td></tr>
 </table>
 
 <h3>Context Dict Keys</h3>

@@ -11,6 +11,12 @@ class DesktopControlTalent(BaseTalent):
     description = "Control desktop applications via keyboard and mouse"
     keywords = ["open", "click", "type", "press", "close", "start", "launch", "run",
                 "change", "make", "set"]
+    examples = [
+        "open Chrome",
+        "launch the calculator",
+        "type hello world in notepad",
+        "press ctrl+c",
+    ]
     priority = 40
 
     VISION_KEYWORDS = ["screen", "see", "show", "what", "find", "read", "window", "where"]
@@ -53,15 +59,6 @@ class DesktopControlTalent(BaseTalent):
             self.app_launch_delay = config["app_launch_delay"]
 
     def can_handle(self, command: str) -> bool:
-        # Exclude commands that are only about lights
-        hue_only_words = ["lights", "light", "brighten", "dim"]
-        has_hue_word = any(hw in command for hw in hue_only_words)
-        has_desktop_word = any(kw in command for kw in
-                              ["open", "click", "type", "press", "start", "launch", "run"])
-
-        if has_hue_word and not has_desktop_word:
-            return False
-
         return self.keyword_match(command)
 
     def initialize(self, config: dict) -> None:

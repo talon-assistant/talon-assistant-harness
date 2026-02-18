@@ -9,6 +9,12 @@ class HueLightsTalent(BaseTalent):
     name = "hue_lights"
     description = "Control Philips Hue smart lights"
     keywords = ["turn", "lights", "brighten", "dim", "light", "brightness", "color"]
+    examples = [
+        "turn on the lights",
+        "dim the lights to 50 percent",
+        "change the lights to blue",
+        "turn off bedroom lights",
+    ]
     priority = 70
 
     def __init__(self):
@@ -61,9 +67,11 @@ class HueLightsTalent(BaseTalent):
         with open(config_path, 'w') as f:
             json.dump(hue_config, f, indent=2)
 
+    @property
+    def routing_available(self) -> bool:
+        return self.hue_enabled
+
     def can_handle(self, command: str) -> bool:
-        if not self.hue_enabled:
-            return False
         return self.keyword_match(command)
 
     def execute(self, command: str, context: dict) -> dict:

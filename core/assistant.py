@@ -16,13 +16,21 @@ from talents.base import BaseTalent
 
 class TalonAssistant:
     _ROUTING_SYSTEM_PROMPT = (
-        "You are a command router. Given a user command, respond with ONLY "
-        "the name of the handler that should process it.\n"
+        "You are a command router for a desktop assistant. "
+        "Given a user command, respond with ONLY the name of the handler "
+        "that should process it.\n"
         "Respond with a single word — the handler name, nothing else.\n\n"
         "Available handlers:\n{talent_roster}\n"
-        "conversation — General chat, questions, greetings, or anything "
-        "that doesn't fit the handlers above"
+        "conversation — General chat, questions, greetings, opinions, "
+        "or anything that doesn't clearly fit a specific handler above.\n\n"
+        "Rules:\n"
+        "- Choose the MOST SPECIFIC handler that matches the user's intent.\n"
+        "- If the command mentions a task list or todo list, choose todo.\n"
+        "- If the command is general knowledge or chitchat, choose conversation.\n"
+        "- Respond with ONLY the handler name. No punctuation, no explanation."
     )
+
+    _CONVERSATION = object()  # Sentinel: LLM explicitly chose conversation
 
     def __init__(self, config_dir="config"):
         print("=" * 50)
@@ -143,7 +151,7 @@ class TalonAssistant:
                 except Exception as e:
                     print(f"   [Talents] Error loading {module_info.name}: {e}")
 
-        # Sort by priority (higher = checked first)
+        # Sort by priority for display order (sidebar) and keyword fallback
         self.talents.sort(key=lambda t: t.priority, reverse=True)
 
     def _inject_secrets(self):
@@ -244,10 +252,14 @@ class TalonAssistant:
 
     def _find_talent(self, command):
         """Route command to the best talent using LLM intent classification.
-        Falls back to keyword matching if LLM is unavailable."""
-        talent = self._route_with_llm(command)
-        if talent is not None:
-            return talent
+        Falls back to keyword matching only if the LLM is unreachable."""
+        result = self._route_with_llm(command)
+        if result is self._CONVERSATION:
+            return None                          # LLM chose conversation
+        if result is not None:
+            return result                        # Valid talent
+        # LLM unreachable — degraded keyword fallback
+        print("   [Router] WARNING: LLM unavailable, using keyword fallback")
         return self._find_talent_by_keywords(command)
 
     def _find_talent_by_keywords(self, command):
@@ -272,7 +284,7 @@ class TalonAssistant:
             talent_name = response.strip().split()[0].strip(".,!\"'").lower()
             print(f"   [LLM Router] -> {talent_name}")
             if talent_name == "conversation":
-                return None
+                return self._CONVERSATION
             return self._get_talent_by_name(talent_name)
         except Exception as e:
             print(f"   [LLM Router] Error: {e}")
@@ -286,8 +298,10 @@ class TalonAssistant:
         for talent in self.talents:
             if not talent.enabled:
                 continue
+            if not talent.routing_available:
+                continue
             if talent.examples:
-                examples_str = "; ".join(talent.examples[:3])
+                examples_str = "; ".join(talent.examples[:5])
                 lines.append(
                     f"{talent.name} — {talent.description} "
                     f"(examples: {examples_str})")

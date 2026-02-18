@@ -24,6 +24,12 @@ class WeatherTalent(BaseTalent):
     description = "Get current weather conditions from configurable providers"
     keywords = ["weather", "temperature", "forecast", "rain", "snow",
                 "humid", "wind", "degrees", "cold", "hot", "warm"]
+    examples = [
+        "what's the weather like in New York",
+        "is it going to rain today",
+        "how cold is it outside",
+        "what's the temperature right now",
+    ]
     priority = 75  # above web_search (60), below news (80)
 
     _WEATHER_PHRASES = [
@@ -56,8 +62,7 @@ class WeatherTalent(BaseTalent):
         }
 
     def can_handle(self, command: str) -> bool:
-        cmd = command.lower()
-        return any(phrase in cmd for phrase in self._WEATHER_PHRASES)
+        return self.keyword_match(command)
 
     def execute(self, command: str, context: dict) -> dict:
         # Extract location from command (fall back to configured default)

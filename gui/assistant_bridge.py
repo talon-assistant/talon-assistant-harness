@@ -377,6 +377,10 @@ class AssistantBridge(QObject):
         # Update in-memory with real values (talent needs them at runtime)
         talent.update_config(config)
 
+        # Rebuild LLM routing prompt (routing_available may have changed)
+        if self.assistant:
+            self.assistant.invalidate_routing_cache()
+
         # Persist sanitised config to config/talents.json
         config_path = os.path.join(self.config_dir, "talents.json")
         try:
