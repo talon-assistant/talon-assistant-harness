@@ -1,6 +1,6 @@
 # Talon Assistant
 
-A local-first desktop AI assistant with voice control, smart home integration, and a talent plugin system.
+A local-first desktop AI assistant for windows with voice control, smart home integration, and a talent plugin system.
 
 Talon runs entirely on your machine. It connects to a local LLM server for inference, uses Whisper for speech recognition, and provides a modular talent system for extending functionality. No cloud accounts required.
 
