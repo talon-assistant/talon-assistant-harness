@@ -828,3 +828,58 @@ QGroupBox::title {
 #about_link a {
     color: #1e66f5;
 }
+
+/* ── Reminder alert dialog ─────────────────────────────────── */
+
+#reminder_alert_dialog {
+    background-color: #eff1f5;
+}
+
+#reminder_alert_header {
+    font-size: 18px;
+    font-weight: bold;
+    color: #fe640b;
+    background: transparent;
+    padding: 8px 0px;
+}
+
+#reminder_alert_message {
+    font-size: 16px;
+    color: #4c4f69;
+    background: transparent;
+    padding: 12px;
+}
+
+#reminder_alert_snooze_combo {
+    background-color: #ccd0da;
+    color: #4c4f69;
+    border: 1px solid #bcc0cc;
+    border-radius: 6px;
+    padding: 4px 8px;
+}
+
+#reminder_alert_snooze_btn {
+    background-color: #bcc0cc;
+    color: #4c4f69;
+    border: none;
+    border-radius: 6px;
+    padding: 6px 16px;
+}
+
+#reminder_alert_snooze_btn:hover {
+    background-color: #acb0be;
+}
+
+#reminder_alert_dismiss_btn {
+    background-color: #1e66f5;
+    color: #eff1f5;
+    border: none;
+    border-radius: 6px;
+    padding: 8px 24px;
+    font-weight: bold;
+    font-size: 14px;
+}
+
+#reminder_alert_dismiss_btn:hover {
+    background-color: #2a7ae8;
+}

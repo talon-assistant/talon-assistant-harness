@@ -51,6 +51,9 @@ class AssistantBridge(QObject):
     # Notifications (for system tray)
     notification_requested = pyqtSignal(str, str)  # title, message
 
+    # Reminder alert (dismissable dialog)
+    reminder_fired = pyqtSignal(str, str, str, int)  # reminder_id, title, message, default_snooze_minutes
+
     # LLM server status
     server_status = pyqtSignal(str)  # stopped/starting/running/error
 
@@ -80,7 +83,7 @@ class AssistantBridge(QObject):
         # Re-wire any ReminderTalent timers loaded at startup (before bridge existed)
         for talent in self.assistant.talents:
             if hasattr(talent, 'rewire_notify'):
-                talent.rewire_notify(self._talent_notify)
+                talent.rewire_notify(self._reminder_alert)
 
         # Check LLM status
         try:
@@ -441,6 +444,20 @@ class AssistantBridge(QObject):
         Thread-safe: emits a Qt signal that the system tray picks up.
         """
         self.notification_requested.emit(title, message)
+
+    def _reminder_alert(self, reminder_id, title, message, default_snooze_minutes=5):
+        """Callback for ReminderTalent — shows a dismissable alert dialog.
+
+        Thread-safe: emits a Qt signal that MainWindow picks up on the GUI thread.
+        """
+        self.reminder_fired.emit(reminder_id, title, message, default_snooze_minutes)
+
+    def snooze_reminder(self, reminder_id, message, seconds):
+        """Re-arm a snoozed reminder via the ReminderTalent."""
+        for talent in self.assistant.talents:
+            if talent.name == "reminder" and hasattr(talent, 'snooze_reminder'):
+                talent.snooze_reminder(reminder_id, message, seconds)
+                break
 
     def cleanup(self):
         """Stop all workers before app exit."""

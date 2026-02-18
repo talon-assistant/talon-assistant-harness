@@ -44,6 +44,11 @@ class ReminderTalent(BaseTalent):
         "minutes from now", "hours from now",
         "at pm", "at am",
     ]
+    examples = [
+        "remind me in 10 minutes to check the oven",
+        "set a timer for 30 minutes",
+        "remind me at 3pm to call Bob",
+    ]
     priority = 65
 
     _REMINDER_PHRASES = [
@@ -73,6 +78,11 @@ class ReminderTalent(BaseTalent):
         "Return ONLY the JSON object, no markdown, no explanation."
     )
 
+    _EXCLUSIONS = [
+        "todo list", "task list", "to do list", "to-do list",
+        "my list", "add task",
+    ]
+
     _REMINDERS_FILE = os.path.join(_data_dir(), "reminders.json")
 
     def __init__(self):
@@ -80,6 +90,7 @@ class ReminderTalent(BaseTalent):
         self._active_timers: dict[str, threading.Timer] = {}
         self._reminders: dict[str, dict] = {}  # id -> {message, fire_at, ...}
         self._lock = threading.Lock()
+        self._notify_cb = None  # Stored by rewire_notify() for alert dialogs
         self._load_reminders()
 
     # ── Config schema ──────────────────────────────────────────────
@@ -98,6 +109,8 @@ class ReminderTalent(BaseTalent):
 
     def can_handle(self, command: str) -> bool:
         cmd = command.lower()
+        if any(ex in cmd for ex in self._EXCLUSIONS):
+            return False
         return any(phrase in cmd for phrase in self._REMINDER_PHRASES)
 
     # ── Execution ──────────────────────────────────────────────────
@@ -169,9 +182,8 @@ class ReminderTalent(BaseTalent):
             self._reminders[reminder_id] = reminder
             self._save_reminders()
 
-        # Start the timer
-        notify_cb = context.get("notify")
-        timer = threading.Timer(seconds, self._fire_reminder, args=(reminder_id, notify_cb))
+        # Start the timer (uses self._notify_cb set by rewire_notify)
+        timer = threading.Timer(seconds, self._fire_reminder, args=(reminder_id,))
         timer.daemon = True
         timer.start()
         self._active_timers[reminder_id] = timer
@@ -189,7 +201,7 @@ class ReminderTalent(BaseTalent):
             "spoken": False,
         }
 
-    def _fire_reminder(self, reminder_id, notify_cb=None):
+    def _fire_reminder(self, reminder_id):
         """Called by threading.Timer when the reminder fires."""
         with self._lock:
             reminder = self._reminders.pop(reminder_id, None)
@@ -204,7 +216,21 @@ class ReminderTalent(BaseTalent):
         message = reminder.get("message", "Reminder!")
         print(f"\n   [Reminder] FIRED: {message}")
 
-        # Try native OS notification
+        default_snooze = self._config.get("default_snooze_minutes", 5)
+
+        # Push through the dismissable alert dialog (bridge → MainWindow)
+        if self._notify_cb:
+            try:
+                self._notify_cb(reminder_id, "Talon Reminder", message, default_snooze)
+            except Exception as e:
+                print(f"   [Reminder] Alert callback error: {e}")
+                self._plyer_fallback(message)
+        else:
+            # No callback available (headless / pre-bridge) — use OS toast
+            self._plyer_fallback(message)
+
+    def _plyer_fallback(self, message):
+        """Fall back to OS toast when Qt alert dialog is unavailable."""
         if _HAS_PLYER:
             try:
                 plyer_notification.notify(
@@ -215,13 +241,6 @@ class ReminderTalent(BaseTalent):
                 )
             except Exception as e:
                 print(f"   [Reminder] plyer notification error: {e}")
-
-        # Also push through Qt notification system (system tray)
-        if notify_cb:
-            try:
-                notify_cb("Talon Reminder", message)
-            except Exception as e:
-                print(f"   [Reminder] Qt notify error: {e}")
 
     # ── List reminders ─────────────────────────────────────────────
 
@@ -417,8 +436,8 @@ class ReminderTalent(BaseTalent):
                         remaining = (fire_dt - now).total_seconds()
                         if remaining > 0:
                             self._reminders[rid] = r
-                            # Re-arm timer (no notify_cb yet — bridge isn't set)
-                            timer = threading.Timer(remaining, self._fire_reminder, args=(rid, None))
+                            # Re-arm timer (self._notify_cb is None until bridge calls rewire_notify)
+                            timer = threading.Timer(remaining, self._fire_reminder, args=(rid,))
                             timer.daemon = True
                             timer.start()
                             self._active_timers[rid] = timer
@@ -448,14 +467,13 @@ class ReminderTalent(BaseTalent):
         pass
 
     def rewire_notify(self, notify_cb):
-        """Update all active timers to use the given notify callback.
+        """Store the alert callback and re-create timers to use it.
 
         Called by the bridge after set_assistant() so that reminders loaded
         at startup (before the bridge exists) can still send notifications.
+        _fire_reminder() reads self._notify_cb at fire time.
         """
-        # Can't easily swap a running timer's callback, but we store it
-        # and _fire_reminder will check it at fire time.
-        # For simplicity, re-create timers with the new callback.
+        self._notify_cb = notify_cb
         with self._lock:
             for rid in list(self._active_timers.keys()):
                 old_timer = self._active_timers[rid]
@@ -468,12 +486,36 @@ class ReminderTalent(BaseTalent):
                     if secs <= 0:
                         continue
                     old_timer.cancel()
-                    new_timer = threading.Timer(secs, self._fire_reminder, args=(rid, notify_cb))
+                    new_timer = threading.Timer(secs, self._fire_reminder, args=(rid,))
                     new_timer.daemon = True
                     new_timer.start()
                     self._active_timers[rid] = new_timer
                 except (ValueError, TypeError):
                     continue
+
+    # ── Snooze ─────────────────────────────────────────────────────
+
+    def snooze_reminder(self, reminder_id, message, seconds):
+        """Re-arm a reminder after the user clicks Snooze in the alert dialog."""
+        new_id = f"rem_{int(time.time() * 1000)}"
+        fire_at = (datetime.now() + timedelta(seconds=seconds)).isoformat()
+        reminder = {
+            "id": new_id,
+            "message": message,
+            "fire_at": fire_at,
+            "seconds": seconds,
+            "created": datetime.now().isoformat(),
+        }
+        with self._lock:
+            self._reminders[new_id] = reminder
+            self._save_reminders()
+        timer = threading.Timer(seconds, self._fire_reminder, args=(new_id,))
+        timer.daemon = True
+        timer.start()
+        self._active_timers[new_id] = timer
+
+        time_desc = self._format_duration(seconds)
+        print(f"   [Reminder] Snoozed: '{message}' {time_desc} (id={new_id})")
 
     # ── Helpers ────────────────────────────────────────────────────
 

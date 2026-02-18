@@ -309,6 +309,9 @@ class MainWindow(QMainWindow):
         # Notifications (only show when window hidden)
         self.bridge.notification_requested.connect(self._on_notification)
 
+        # Reminder alert (dismissable dialog)
+        self.bridge.reminder_fired.connect(self._on_reminder_fired)
+
     def _on_init_complete(self):
         """Called when TalonAssistant is fully initialized."""
         self.chat_view.add_system_message("Talon is ready! Type a command or toggle voice mode.")
@@ -578,6 +581,39 @@ class MainWindow(QMainWindow):
     def _on_notification(self, title, message):
         if self.system_tray and not self.isVisible():
             self.system_tray.show_notification(title, message)
+
+    # ── Reminder alert (dismissable dialog) ────────────────────
+
+    def _on_reminder_fired(self, reminder_id, title, message, default_snooze):
+        """Show a dismissable reminder alert dialog."""
+        from gui.dialogs.reminder_alert_dialog import ReminderAlertDialog
+
+        dialog = ReminderAlertDialog(
+            reminder_id, message, default_snooze, parent=self
+        )
+        dialog.dismissed.connect(self._on_reminder_dismissed)
+        dialog.snoozed.connect(self._on_reminder_snoozed)
+
+        # Restore window if minimized to tray
+        if not self.isVisible():
+            self.show()
+            self.raise_()
+            self.activateWindow()
+
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
+    def _on_reminder_dismissed(self, reminder_id):
+        """Reminder was dismissed — log to chat."""
+        self.chat_view.add_system_message("Reminder dismissed.")
+
+    def _on_reminder_snoozed(self, reminder_id, message, snooze_seconds):
+        """Reminder was snoozed — re-arm via bridge."""
+        self.bridge.snooze_reminder(reminder_id, message, snooze_seconds)
+        minutes = snooze_seconds // 60
+        self.chat_view.add_system_message(
+            f"Reminder snoozed for {minutes} minute(s).")
 
     # ── Exit / Close ─────────────────────────────────────────
 
