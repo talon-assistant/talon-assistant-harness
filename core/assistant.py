@@ -15,6 +15,15 @@ from talents.base import BaseTalent
 
 
 class TalonAssistant:
+    _ROUTING_SYSTEM_PROMPT = (
+        "You are a command router. Given a user command, respond with ONLY "
+        "the name of the handler that should process it.\n"
+        "Respond with a single word — the handler name, nothing else.\n\n"
+        "Available handlers:\n{talent_roster}\n"
+        "conversation — General chat, questions, greetings, or anything "
+        "that doesn't fit the handlers above"
+    )
+
     def __init__(self, config_dir="config"):
         print("=" * 50)
         print("INITIALIZING TALON ASSISTANT")
@@ -62,7 +71,10 @@ class TalonAssistant:
         # 4. Notification callback (set by bridge for talents that need it)
         self.notify_callback = None
 
-        # 5. Thread safety
+        # 5. LLM routing prompt cache (rebuilt when talents change)
+        self._routing_prompt_cache = None
+
+        # 6. Thread safety
         self.command_lock = threading.Lock()
 
         print("\n" + "=" * 50)
@@ -231,11 +243,74 @@ class TalonAssistant:
         return ctx
 
     def _find_talent(self, command):
-        """Find the first talent that can handle this command"""
+        """Route command to the best talent using LLM intent classification.
+        Falls back to keyword matching if LLM is unavailable."""
+        talent = self._route_with_llm(command)
+        if talent is not None:
+            return talent
+        return self._find_talent_by_keywords(command)
+
+    def _find_talent_by_keywords(self, command):
+        """Keyword-based fallback: first talent whose can_handle() returns True."""
         for talent in self.talents:
             if talent.enabled and talent.can_handle(command):
                 return talent
         return None
+
+    def _route_with_llm(self, command):
+        """Ask the LLM which talent should handle this command."""
+        try:
+            prompt = self._build_routing_prompt()
+            response = self.llm.generate(
+                f"Route this command: {command}",
+                system_prompt=prompt,
+                temperature=0.1,
+                max_length=20,
+            )
+            if not response or response.startswith("Error:"):
+                return None
+            talent_name = response.strip().split()[0].strip(".,!\"'").lower()
+            print(f"   [LLM Router] -> {talent_name}")
+            if talent_name == "conversation":
+                return None
+            return self._get_talent_by_name(talent_name)
+        except Exception as e:
+            print(f"   [LLM Router] Error: {e}")
+            return None
+
+    def _build_routing_prompt(self):
+        """Build (and cache) the system prompt listing all enabled talents."""
+        if self._routing_prompt_cache:
+            return self._routing_prompt_cache
+        lines = []
+        for talent in self.talents:
+            if not talent.enabled:
+                continue
+            if talent.examples:
+                examples_str = "; ".join(talent.examples[:3])
+                lines.append(
+                    f"{talent.name} — {talent.description} "
+                    f"(examples: {examples_str})")
+            else:
+                kws = ", ".join(talent.keywords[:5])
+                lines.append(
+                    f"{talent.name} — {talent.description} "
+                    f"(e.g. {kws})")
+        roster = "\n".join(lines)
+        self._routing_prompt_cache = self._ROUTING_SYSTEM_PROMPT.format(
+            talent_roster=roster)
+        return self._routing_prompt_cache
+
+    def _get_talent_by_name(self, name):
+        """Look up an enabled talent by name."""
+        for talent in self.talents:
+            if talent.name == name and talent.enabled:
+                return talent
+        return None
+
+    def invalidate_routing_cache(self):
+        """Clear the cached LLM routing prompt."""
+        self._routing_prompt_cache = None
 
     def _detect_repeat_request(self, command):
         """Detect if user wants to repeat last action"""

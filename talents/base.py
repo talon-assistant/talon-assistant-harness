@@ -23,6 +23,7 @@ class BaseTalent(ABC):
     name: str = ""
     description: str = ""
     keywords: list[str] = []
+    examples: list[str] = []  # Natural-language example commands for LLM routing
     priority: int = 50
 
     def __init__(self):

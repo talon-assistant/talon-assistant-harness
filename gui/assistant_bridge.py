@@ -212,6 +212,9 @@ class AssistantBridge(QObject):
                 talent.enabled = enabled
                 break
 
+        # Rebuild LLM routing prompt (talent roster changed)
+        self.assistant.invalidate_routing_cache()
+
         # Persist to config/talents.json
         config_path = os.path.join(self.config_dir, "talents.json")
         try:
@@ -289,7 +292,8 @@ class AssistantBridge(QObject):
 
         filename = os.path.basename(source_filepath)
         dest = os.path.join("talents", "user", filename)
-        shutil.copy2(source_filepath, dest)
+        if os.path.abspath(source_filepath) != os.path.abspath(dest):
+            shutil.copy2(source_filepath, dest)
 
         module_name = filename.replace('.py', '')
         module = importlib.import_module(f"talents.user.{module_name}")
@@ -304,6 +308,9 @@ class AssistantBridge(QObject):
                 self.assistant.talents.append(instance)
                 self.assistant.talents.sort(
                     key=lambda t: t.priority, reverse=True)
+
+                # Rebuild LLM routing prompt (new talent added)
+                self.assistant.invalidate_routing_cache()
 
                 # Persist to talents.json
                 config_path = os.path.join(self.config_dir, "talents.json")
