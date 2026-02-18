@@ -1,0 +1,35 @@
+# Core
+PyQt6
+numpy
+requests
+
+# Voice / Audio
+faster-whisper
+edge-tts
+sounddevice
+soundfile
+
+# AI / Memory
+chromadb
+sentence-transformers
+
+# Talents
+phue
+ddgs
+pyautogui
+pyperclip
+Pillow
+
+# System Integration
+pynput
+
+# Document Ingestion
+PyPDF2
+python-docx
+pandas
+beautifulsoup4
+Markdown
+
+# Optional (recommended)
+keyring
+plyer
