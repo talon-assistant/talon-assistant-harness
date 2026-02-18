@@ -22,7 +22,7 @@ from talents.base import BaseTalent
 
 class RulesTalent(BaseTalent):
     name = "rules"
-    description = "List, view, and manage behavioral rules"
+    description = "List or delete existing behavioral rules (NOT for creating new rules)"
     keywords = [
         "rules", "rule", "my rules", "list rules",
         "delete rule", "remove rule", "disable rule", "enable rule",
