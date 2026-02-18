@@ -1,6 +1,6 @@
 # Talon Assistant
 
-A local-first desktop AI assistant for windows with voice control, smart home integration, and a talent plugin system.
+A local-first desktop AI assistant for windows with voice control, smart home integration, and a talent plugin system. Talon is not OpenClaw, it is not autonomous. 
 
 THIS IS AN ALPHA RELEASE!
 
@@ -16,7 +16,7 @@ Talon runs entirely on your machine. It connects to a local LLM server for infer
 - **Philips Hue** smart light control (colors, brightness, scenes)
 - **Web search** and news aggregation via DuckDuckGo (no API key needed)
 - **Weather** from Open-Meteo, OpenWeatherMap, or WeatherAPI
-- **Email** checking and sending (IMAP/SMTP with OS keyring credentials)
+- **Email** checking. displaying, and eventually sending/deleting (IMAP/SMTP with OS keyring credentials)
 - **Reminders and timers** with desktop notifications
 - **Notes** with semantic search (SQLite + ChromaDB)
 - **Desktop automation** (launch apps, type text, browser navigation)
