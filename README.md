@@ -28,7 +28,7 @@ Talon runs entirely on your machine. It connects to a local LLM server for infer
 ### Prerequisites
 
 - Python 3.10 or newer
-- Windows 10/11 (primary target; Linux and macOS are partially supported)
+- Windows 10/11 (primary target; Linux and macOS are not supported yet, though some features may work - cred storage and TTS definitely will not)
 - An LLM server: [KoboldCpp](https://github.com/LostRuins/koboldcpp), [llama.cpp](https://github.com/ggerganov/llama.cpp), or any OpenAI-compatible endpoint
   - Or use the **built-in llama.cpp server** (downloaded automatically via File > LLM Server)
 
