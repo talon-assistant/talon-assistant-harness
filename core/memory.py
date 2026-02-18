@@ -38,6 +38,12 @@ class MemorySystem:
             metadata={"description": "User notes for semantic search"}
         )
 
+        # Collection for behavioral rules (trigger → action mappings)
+        self.rules_collection = self.chroma_client.get_or_create_collection(
+            name="talon_rules",
+            metadata={"description": "Behavioral rules: trigger phrase semantic matching"}
+        )
+
         # Sentence transformer for embeddings
         print("   [Memory] Loading embedding model...")
         self.embedder = SentenceTransformer(embedding_model)
@@ -83,6 +89,20 @@ class MemorySystem:
                            timestamp TEXT,
                            content TEXT,
                            tags TEXT,
+                           chroma_id TEXT
+                       )
+                       """)
+
+        # Rules table (behavioral rules: trigger → action)
+        cursor.execute("""
+                       CREATE TABLE IF NOT EXISTS rules
+                       (
+                           id INTEGER PRIMARY KEY AUTOINCREMENT,
+                           timestamp TEXT,
+                           trigger_phrase TEXT,
+                           action_text TEXT,
+                           original_command TEXT,
+                           enabled INTEGER DEFAULT 1,
                            chroma_id TEXT
                        )
                        """)
@@ -374,3 +394,165 @@ class MemorySystem:
 
         print(f"   [Memory] Deleted note #{note_id}")
         return True
+
+    # ── Rules CRUD (behavioral rules: trigger → action) ─────────────
+
+    def add_rule(self, trigger, action, original_command=""):
+        """Store a behavioral rule in SQLite + ChromaDB.
+
+        The ChromaDB document is the trigger phrase so incoming commands
+        are semantically matched against triggers, not actions.
+
+        Returns:
+            int: the rule's SQLite row ID.
+        """
+        chroma_id = f"rule_{int(time.time() * 1000)}"
+        timestamp = datetime.now().isoformat()
+
+        # SQLite
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO rules (timestamp, trigger_phrase, action_text, "
+            "original_command, enabled, chroma_id) VALUES (?, ?, ?, ?, 1, ?)",
+            (timestamp, trigger, action, original_command, chroma_id)
+        )
+        rule_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
+
+        # ChromaDB — document is the trigger phrase for semantic matching;
+        # action_text stored in metadata for retrieval alongside the match.
+        self.rules_collection.add(
+            documents=[trigger],
+            metadatas=[{
+                "rule_id": rule_id,
+                "action_text": action,
+                "timestamp": timestamp,
+            }],
+            ids=[chroma_id],
+        )
+
+        print(f"   [Memory] Stored rule #{rule_id}: "
+              f"'{trigger}' -> '{action}'")
+        return rule_id
+
+    def match_rule(self, command, max_distance=0.6):
+        """Find a behavioral rule whose trigger semantically matches the command.
+
+        Uses a tight distance threshold (0.6) — tighter than preferences (1.0)
+        or patterns (0.9) because a false-positive rule match would execute
+        an unintended action.
+
+        Returns:
+            dict with keys: id, trigger_phrase, action_text, distance
+            or None if no match within threshold.
+        """
+        try:
+            # Only search enabled rules
+            results = self.rules_collection.query(
+                query_texts=[command],
+                n_results=1,
+                include=["documents", "metadatas", "distances"],
+            )
+
+            if (results["documents"] and results["documents"][0]
+                    and results["distances"][0][0] <= max_distance):
+                meta = results["metadatas"][0][0]
+                rule_id = meta.get("rule_id")
+
+                # Verify the rule is still enabled in SQLite
+                conn = sqlite3.connect(self.db_path)
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT enabled FROM rules WHERE id = ?", (rule_id,))
+                row = cursor.fetchone()
+                conn.close()
+
+                if row and row[0] == 1:
+                    return {
+                        "id": rule_id,
+                        "trigger_phrase": results["documents"][0][0],
+                        "action_text": meta.get("action_text", ""),
+                        "distance": results["distances"][0][0],
+                    }
+        except Exception as e:
+            print(f"   [Memory] Rule match error: {e}")
+        return None
+
+    def list_rules(self, limit=20):
+        """Return all rules from SQLite.
+
+        Returns:
+            list[dict] with keys: id, trigger_phrase, action_text, enabled, timestamp
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT id, timestamp, trigger_phrase, action_text, enabled "
+            "FROM rules ORDER BY id DESC LIMIT ?",
+            (limit,)
+        )
+        rows = cursor.fetchall()
+        conn.close()
+
+        return [
+            {
+                "id": r[0],
+                "timestamp": r[1],
+                "trigger_phrase": r[2],
+                "action_text": r[3],
+                "enabled": bool(r[4]),
+            }
+            for r in rows
+        ]
+
+    def delete_rule(self, rule_id):
+        """Delete a rule by SQLite ID (removes from both SQLite and ChromaDB).
+
+        Returns:
+            bool: True if deleted, False if not found.
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        cursor.execute("SELECT chroma_id FROM rules WHERE id = ?", (rule_id,))
+        row = cursor.fetchone()
+        if not row:
+            conn.close()
+            return False
+
+        chroma_id = row[0]
+
+        cursor.execute("DELETE FROM rules WHERE id = ?", (rule_id,))
+        conn.commit()
+        conn.close()
+
+        try:
+            self.rules_collection.delete(ids=[chroma_id])
+        except Exception as e:
+            print(f"   [Memory] ChromaDB rule delete warning: {e}")
+
+        print(f"   [Memory] Deleted rule #{rule_id}")
+        return True
+
+    def toggle_rule(self, rule_id, enabled):
+        """Enable or disable a rule in SQLite.
+
+        Returns:
+            bool: True if toggled, False if rule not found.
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE rules SET enabled = ? WHERE id = ?",
+            (1 if enabled else 0, rule_id)
+        )
+        changed = cursor.rowcount > 0
+        conn.commit()
+        conn.close()
+
+        if changed:
+            state = "enabled" if enabled else "disabled"
+            print(f"   [Memory] Rule #{rule_id} {state}")
+        return changed

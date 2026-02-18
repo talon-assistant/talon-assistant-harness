@@ -1,5 +1,6 @@
 import os
 import json
+import re
 import importlib
 import inspect
 import pkgutil
@@ -31,6 +32,44 @@ class TalonAssistant:
     )
 
     _CONVERSATION = object()  # Sentinel: LLM explicitly chose conversation
+
+    _RULE_DETECTION_SYSTEM_PROMPT = (
+        "You are a rule-detection assistant. The user just said something to a "
+        "desktop assistant. Determine if the user is defining a behavioral rule "
+        "(a conditional: 'when I say X, do Y').\n\n"
+        "If YES, extract the trigger phrase and the action. Return a JSON object:\n"
+        '  {"is_rule": true, "trigger": "<phrase>", "action": "<what to do>"}\n\n'
+        "If NO, return:\n"
+        '  {"is_rule": false}\n\n'
+        "Examples of rules:\n"
+        '- "whenever I say goodnight, turn off the lights" -> '
+        '{"is_rule": true, "trigger": "goodnight", "action": "turn off the lights"}\n'
+        '- "when I say movie time, dim the lights to 30 percent" -> '
+        '{"is_rule": true, "trigger": "movie time", "action": "dim the lights to 30 percent"}\n'
+        '- "if I say I\'m leaving, turn everything off" -> '
+        '{"is_rule": true, "trigger": "I\'m leaving", "action": "turn everything off"}\n'
+        '- "every time I say good morning, check my email" -> '
+        '{"is_rule": true, "trigger": "good morning", "action": "check my email"}\n\n'
+        "Examples of NON-rules:\n"
+        '- "turn off the lights" -> {"is_rule": false}\n'
+        '- "I usually like warm lighting" -> {"is_rule": false}\n'
+        '- "what time is it" -> {"is_rule": false}\n'
+        '- "remind me to buy milk" -> {"is_rule": false}\n\n'
+        "Return ONLY the JSON object, no markdown, no explanation."
+    )
+
+    _RULE_INDICATORS = [
+        "whenever", "when i say", "if i say", "every time i say",
+        "anytime i say", "each time i say", "when i tell you",
+        "if i tell you",
+    ]
+
+    _CAPABILITY_PHRASES = [
+        "what can you do", "what are your capabilities", "what do you do",
+        "what are you capable of", "how do you work", "what talents",
+        "help me", "what features", "how do i use",
+        "what commands", "show me what you can do",
+    ]
 
     def __init__(self, config_dir="config"):
         print("=" * 50)
@@ -374,11 +413,86 @@ class TalonAssistant:
             return True
         return False
 
+    # ── Behavioral rules (trigger → action) ───────────────────────
+
+    def _check_rules(self, command):
+        """Check if the command matches a stored behavioral rule.
+
+        Returns the action text to execute if a rule matches, else None.
+        """
+        match = self.memory.match_rule(command)
+        if match:
+            print(f"   [Rules] Matched rule #{match['id']}: "
+                  f"'{match['trigger_phrase']}' -> '{match['action_text']}' "
+                  f"(distance={match['distance']:.3f})")
+            return match["action_text"]
+        return None
+
+    def _detect_and_store_rule(self, command):
+        """Check if the user is defining a behavioral rule. If so, store it.
+
+        Only invokes the LLM when the command contains indicator phrases
+        like 'whenever', 'when I say', etc. to avoid unnecessary calls.
+
+        Returns the stored rule dict if detected, else None.
+        """
+        cmd_lower = command.lower()
+        if not any(ind in cmd_lower for ind in self._RULE_INDICATORS):
+            return None
+
+        try:
+            response = self.llm.generate(
+                f"Analyze this message:\n\n{command}",
+                system_prompt=self._RULE_DETECTION_SYSTEM_PROMPT,
+                temperature=0.1,
+                max_length=150,
+            )
+
+            json_match = re.search(r'\{[^}]+\}', response, re.DOTALL)
+            if not json_match:
+                return None
+
+            parsed = json.loads(json_match.group())
+
+            if (parsed.get("is_rule")
+                    and parsed.get("trigger")
+                    and parsed.get("action")):
+                trigger = parsed["trigger"].strip()
+                action = parsed["action"].strip()
+                rule_id = self.memory.add_rule(trigger, action, command)
+                print(f"   [Rules] Stored rule #{rule_id}: "
+                      f"'{trigger}' -> '{action}'")
+                return {"id": rule_id, "trigger": trigger, "action": action}
+        except Exception as e:
+            print(f"   [Rules] Detection error: {e}")
+
+        return None
+
+    # ── Talent self-awareness ─────────────────────────────────────
+
+    def _build_capabilities_summary(self):
+        """Build a human-readable summary of all loaded, enabled talents."""
+        lines = ["Here are my current capabilities:\n"]
+        for talent in self.talents:
+            if not talent.enabled:
+                continue
+            examples = ""
+            if talent.examples:
+                examples = ", ".join(
+                    f'"{e}"' for e in talent.examples[:3])
+            line = f"- {talent.name}: {talent.description}"
+            if examples:
+                line += f" (e.g. {examples})"
+            lines.append(line)
+        lines.append("- conversation: General chat, questions, and "
+                      "anything else")
+        return "\n".join(lines)
+
     def _handle_conversation(self, command, context, speak_response):
         """Handle commands that no talent matched -- general conversation"""
+        cmd_lower = command.lower()
+
         # Only trigger vision for phrases that *clearly* ask about the screen.
-        # Single words like "what" or "find" are too generic and cause false
-        # positives (e.g. "what are the top stories" → screenshot of desktop).
         vision_phrases = [
             "on my screen", "on the screen", "on screen",
             "what do you see", "what can you see", "what's on",
@@ -390,7 +504,7 @@ class TalonAssistant:
             "text inside", "what's in the",
             "inside of", "displayed on", "showing on",
         ]
-        needs_vision = any(phrase in command.lower() for phrase in vision_phrases)
+        needs_vision = any(phrase in cmd_lower for phrase in vision_phrases)
 
         screenshot_b64 = None
         if needs_vision:
@@ -399,6 +513,11 @@ class TalonAssistant:
         else:
             prompt = f"{command}\n\nRespond briefly and conversationally (2-3 sentences max)."
 
+        # Inject talent capabilities summary for self-awareness questions
+        if any(phrase in cmd_lower for phrase in self._CAPABILITY_PHRASES):
+            capabilities = self._build_capabilities_summary()
+            prompt = f"{capabilities}\n\n{prompt}"
+
         memory_context = context.get("memory_context", "")
         if memory_context:
             prompt = f"{memory_context}{prompt}"
@@ -406,7 +525,11 @@ class TalonAssistant:
         response = self.llm.generate(prompt, use_vision=needs_vision, screenshot_b64=screenshot_b64)
 
         self.memory.log_command(command, success=True, response=response)
-        self._detect_preference(command, response)
+
+        # Check for rule definition first; skip preference if it was a rule
+        rule = self._detect_and_store_rule(command)
+        if not rule:
+            self._detect_preference(command, response)
 
         if speak_response:
             self.voice.speak(response)
@@ -415,8 +538,13 @@ class TalonAssistant:
 
         return response
 
-    def process_command(self, command, speak_response=True):
+    def process_command(self, command, speak_response=True,
+                        _executing_rule=False):
         """Central command processing pipeline.
+
+        Args:
+            _executing_rule: Internal flag — True when re-invoked by a
+                behavioral rule to prevent infinite loops.
 
         Returns:
             dict with keys: response (str), talent (str), success (bool)
@@ -434,6 +562,14 @@ class TalonAssistant:
             if self._detect_repeat_request(command):
                 self._handle_repeat(speak_response)
                 return {"response": "Done!", "talent": "", "success": True}
+
+            # Step 1.5: Rule matching (skip if already executing a rule action)
+            if not _executing_rule:
+                rule_action = self._check_rules(command)
+                if rule_action:
+                    print(f"   [Rules] Executing rule action: {rule_action}")
+                    return self.process_command(
+                        rule_action, speak_response, _executing_rule=True)
 
             # Step 2: Build context
             context = self._build_context(command, speak_response)
