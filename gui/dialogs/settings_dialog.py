@@ -3,7 +3,7 @@ from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QTabWidget,
                              QWidget, QFormLayout, QLineEdit, QSpinBox,
                              QDoubleSpinBox, QCheckBox, QComboBox, QLabel,
                              QPushButton, QListWidget, QListWidgetItem,
-                             QInputDialog)
+                             QInputDialog, QScrollArea)
 from PyQt6.QtCore import pyqtSignal, Qt
 
 
@@ -16,6 +16,7 @@ class ListEditor(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
 
         self.list_widget = QListWidget()
+        self.list_widget.setMinimumHeight(60)
         self.list_widget.setMaximumHeight(120)
         if items:
             for item in items:
@@ -23,22 +24,15 @@ class ListEditor(QWidget):
         layout.addWidget(self.list_widget)
 
         btn_layout = QHBoxLayout()
-        add_btn = QPushButton("Add")
-        add_btn.clicked.connect(self._add_item)
-        remove_btn = QPushButton("Remove")
-        remove_btn.clicked.connect(self._remove_item)
-        up_btn = QPushButton("\u25b2")  # ▲
-        up_btn.setFixedWidth(28)
-        up_btn.setToolTip("Move selected item up")
-        up_btn.clicked.connect(self._move_up)
-        down_btn = QPushButton("\u25bc")  # ▼
-        down_btn.setFixedWidth(28)
-        down_btn.setToolTip("Move selected item down")
-        down_btn.clicked.connect(self._move_down)
-        btn_layout.addWidget(add_btn)
-        btn_layout.addWidget(remove_btn)
-        btn_layout.addWidget(up_btn)
-        btn_layout.addWidget(down_btn)
+        btn_layout.setSpacing(6)
+        for label, slot in [("Add", self._add_item),
+                            ("Remove", self._remove_item),
+                            ("Up", self._move_up),
+                            ("Down", self._move_down)]:
+            btn = QPushButton(label)
+            btn.setFixedHeight(28)
+            btn.clicked.connect(slot)
+            btn_layout.addWidget(btn)
         btn_layout.addStretch()
         layout.addLayout(btn_layout)
 
@@ -133,6 +127,14 @@ class SettingsDialog(QDialog):
 
     # ── Tab builders ─────────────────────────────────────────────
 
+    def _scrollable(self, inner):
+        """Wrap a widget in a QScrollArea so tabs with many rows stay usable."""
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(inner)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        return scroll
+
     def _build_llm_tab(self):
         w = QWidget()
         form = QFormLayout(w)
@@ -168,7 +170,7 @@ class SettingsDialog(QDialog):
         self._add_line("llm.prompt_template.vision_prefix", form,
                        "Vision Prefix", pt.get("vision_prefix", ""))
 
-        return w
+        return self._scrollable(w)
 
     def _build_audio_tab(self):
         w = QWidget()
@@ -189,7 +191,7 @@ class SettingsDialog(QDialog):
         noise = audio.get("noise_words", [])
         self._add_list("audio.noise_words", form, "Noise Words", noise)
 
-        return w
+        return self._scrollable(w)
 
     def _build_voice_tab(self):
         w = QWidget()
@@ -202,7 +204,7 @@ class SettingsDialog(QDialog):
         ww = voice.get("wake_words", [])
         self._add_list("voice.wake_words", form, "Wake Words", ww)
 
-        return w
+        return self._scrollable(w)
 
     def _build_whisper_tab(self):
         w = QWidget()
