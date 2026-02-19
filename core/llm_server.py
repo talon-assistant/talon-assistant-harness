@@ -178,16 +178,32 @@ class LLMServerManager:
             raise RuntimeError(f"Extraction failed: {e}")
 
         # The ZIP usually contains a single top-level folder.
-        # Walk extracted contents to find llama-server.exe and move
-        # everything up to bin_dir if needed.
+        # Walk extracted contents to find llama-server.exe (or a renamed
+        # variant) and move everything up to bin_dir if needed.
+        #
+        # Recent llama.cpp releases may restructure the folder layout or
+        # rename the binary, so we search for multiple candidate names.
+        _SERVER_NAMES = {"llama-server.exe", "llama-server",
+                         "server.exe", "llama-cli.exe"}
+
         server_exe = None
+        all_extracted_files = []
         for root, dirs, files in os.walk(bin_dir):
             for fname in files:
-                if fname.lower() == "llama-server.exe":
-                    server_exe = Path(root) / fname
-                    break
-            if server_exe:
-                break
+                fpath = Path(root) / fname
+                # Skip the ZIP itself
+                if fpath == zip_path:
+                    continue
+                all_extracted_files.append(str(fpath))
+                if fname.lower() in _SERVER_NAMES and not server_exe:
+                    server_exe = fpath
+
+        print(f"   [LLMServer] Extracted {len(all_extracted_files)} files")
+        # Log a handful of files for diagnostic purposes
+        for fp in all_extracted_files[:15]:
+            print(f"   [LLMServer]   {fp}")
+        if len(all_extracted_files) > 15:
+            print(f"   [LLMServer]   ... and {len(all_extracted_files) - 15} more")
 
         if server_exe and server_exe.parent != bin_dir:
             # Move all files from the nested folder to bin_dir
@@ -200,21 +216,36 @@ class LLMServerManager:
                     else:
                         dest.unlink()
                 shutil.move(str(item), str(dest))
-            # Clean up empty nested folder
+            # Clean up empty nested folder(s)
             try:
                 nested.rmdir()
             except OSError:
                 pass
 
+        # If the binary was found but has a different name, create an alias
+        if server_exe and server_exe.name.lower() != "llama-server.exe":
+            renamed = bin_dir / "llama-server.exe"
+            if not renamed.exists():
+                actual = bin_dir / server_exe.name
+                if actual.exists():
+                    shutil.copy2(str(actual), str(renamed))
+                    print(f"   [LLMServer] Renamed {server_exe.name} -> llama-server.exe")
+
         # Also try to download CUDA runtime if available
         self._download_cudart(assets, bin_dir, progress_cb, status_cb)
 
-        # Clean up ZIP
-        zip_path.unlink(missing_ok=True)
-
-        if not self.server_exe_path.is_file():
+        # Clean up ZIP only after confirming extraction succeeded
+        if self.server_exe_path.is_file():
+            zip_path.unlink(missing_ok=True)
+        else:
+            # Leave the ZIP intact so the user can inspect it
+            exe_list = [f for f in all_extracted_files
+                        if f.lower().endswith(".exe")]
             raise RuntimeError(
-                f"llama-server.exe not found after extraction in {bin_dir}")
+                f"llama-server.exe not found after extraction in {bin_dir}.\n"
+                f"Extracted .exe files: {exe_list or 'none'}\n"
+                f"The downloaded ZIP has been kept at {zip_path} for inspection."
+            )
 
         if status_cb:
             status_cb("Download complete!")

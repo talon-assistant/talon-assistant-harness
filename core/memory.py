@@ -437,28 +437,42 @@ class MemorySystem:
               f"'{trigger}' -> '{action}'")
         return rule_id
 
-    def match_rule(self, command, max_distance=0.6):
+    def match_rule(self, command, max_distance=0.8):
         """Find a behavioral rule whose trigger semantically matches the command.
 
-        Uses a tight distance threshold (0.6) — tighter than preferences (1.0)
-        or patterns (0.9) because a false-positive rule match would execute
-        an unintended action.
+        Uses a distance threshold that adapts to command length:
+          - Short commands (< 5 words): max_distance 0.8 (more lenient, since
+            the user likely said just the trigger phrase)
+          - Longer commands: max_distance 0.6 (tighter, to avoid false matches
+            when the trigger is buried in a longer sentence)
 
         Returns:
             dict with keys: id, trigger_phrase, action_text, distance
             or None if no match within threshold.
         """
+        # Adaptive threshold: short phrases are more likely to be triggers
+        word_count = len(command.strip().split())
+        threshold = max_distance if word_count < 5 else 0.6
+
         try:
-            # Only search enabled rules
             results = self.rules_collection.query(
                 query_texts=[command],
                 n_results=1,
                 include=["documents", "metadatas", "distances"],
             )
 
-            if (results["documents"] and results["documents"][0]
-                    and results["distances"][0][0] <= max_distance):
-                meta = results["metadatas"][0][0]
+            if not results["documents"] or not results["documents"][0]:
+                print(f"   [Rules] No rules in database to match against")
+                return None
+
+            closest_trigger = results["documents"][0][0]
+            distance = results["distances"][0][0]
+            meta = results["metadatas"][0][0]
+
+            print(f"   [Rules] Closest match: '{closest_trigger}' "
+                  f"(distance={distance:.3f}, threshold={threshold:.1f})")
+
+            if distance <= threshold:
                 rule_id = meta.get("rule_id")
 
                 # Verify the rule is still enabled in SQLite
@@ -472,10 +486,15 @@ class MemorySystem:
                 if row and row[0] == 1:
                     return {
                         "id": rule_id,
-                        "trigger_phrase": results["documents"][0][0],
+                        "trigger_phrase": closest_trigger,
                         "action_text": meta.get("action_text", ""),
-                        "distance": results["distances"][0][0],
+                        "distance": distance,
                     }
+                else:
+                    print(f"   [Rules] Rule #{rule_id} matched but is disabled")
+            else:
+                print(f"   [Rules] No match — distance {distance:.3f} "
+                      f"> threshold {threshold:.1f}")
         except Exception as e:
             print(f"   [Memory] Rule match error: {e}")
         return None

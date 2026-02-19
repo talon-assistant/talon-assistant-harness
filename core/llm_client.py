@@ -292,4 +292,9 @@ class LLMClient:
                 f"{self.prompt_template['assistant_prefix']}"
             )
 
+        # Diagnostic: log prompt size so context-window issues are visible
+        char_count = len(formatted)
+        approx_tokens = char_count // 4  # rough estimate: ~4 chars per token
+        print(f"   [LLM] Prompt size: {char_count} chars (~{approx_tokens} tokens)")
+
         return formatted

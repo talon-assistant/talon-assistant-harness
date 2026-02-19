@@ -27,8 +27,18 @@ class ListEditor(QWidget):
         add_btn.clicked.connect(self._add_item)
         remove_btn = QPushButton("Remove")
         remove_btn.clicked.connect(self._remove_item)
+        up_btn = QPushButton("\u25b2")  # ▲
+        up_btn.setFixedWidth(28)
+        up_btn.setToolTip("Move selected item up")
+        up_btn.clicked.connect(self._move_up)
+        down_btn = QPushButton("\u25bc")  # ▼
+        down_btn.setFixedWidth(28)
+        down_btn.setToolTip("Move selected item down")
+        down_btn.clicked.connect(self._move_down)
         btn_layout.addWidget(add_btn)
         btn_layout.addWidget(remove_btn)
+        btn_layout.addWidget(up_btn)
+        btn_layout.addWidget(down_btn)
         btn_layout.addStretch()
         layout.addLayout(btn_layout)
 
@@ -41,6 +51,20 @@ class ListEditor(QWidget):
         row = self.list_widget.currentRow()
         if row >= 0:
             self.list_widget.takeItem(row)
+
+    def _move_up(self):
+        row = self.list_widget.currentRow()
+        if row > 0:
+            item = self.list_widget.takeItem(row)
+            self.list_widget.insertItem(row - 1, item)
+            self.list_widget.setCurrentRow(row - 1)
+
+    def _move_down(self):
+        row = self.list_widget.currentRow()
+        if 0 <= row < self.list_widget.count() - 1:
+            item = self.list_widget.takeItem(row)
+            self.list_widget.insertItem(row + 1, item)
+            self.list_widget.setCurrentRow(row + 1)
 
     def get_items(self):
         return [self.list_widget.item(i).text()

@@ -1,4 +1,5 @@
 import logging
+from datetime import datetime
 import requests
 from talents.base import BaseTalent
 from ddgs import DDGS
@@ -51,9 +52,23 @@ class NewsTalent(BaseTalent):
             return True
         return False
 
+    # Phrases that indicate a broad "top headlines" request (no specific topic)
+    _HEADLINE_PHRASES = [
+        "top headlines", "top stories", "what's in the news",
+        "latest news", "latest headlines", "what's happening",
+        "today's news", "today's headlines", "breaking news",
+        "the news today", "news today", "current events",
+        "what's going on", "what is going on",
+    ]
+
     def execute(self, command: str, context: dict) -> dict:
+        cmd_lower = command.lower()
+
+        # Detect broad "give me top headlines" requests first
+        is_headline_request = any(p in cmd_lower for p in self._HEADLINE_PHRASES)
+
         # Extract topic — strip out news-related noise words
-        topic = command.lower()
+        topic = cmd_lower
         for word in self.NEWS_PHRASES + self.NEWS_SITES + [
             "on", "from", "about", "the", "what are", "what's",
             "tell me", "give me", ".com", ".org", ".net",
@@ -61,7 +76,12 @@ class NewsTalent(BaseTalent):
             topic = topic.replace(word, "")
         topic = topic.strip()
         if not topic or len(topic) < 3:
-            topic = "general"
+            if is_headline_request:
+                # Use a date-anchored query for better top-headlines results
+                today = datetime.now().strftime("%B %d %Y")
+                topic = f"top news headlines {today}"
+            else:
+                topic = "breaking news today"
 
         # Fetch news (use configured max_results and provider)
         max_results = self._config.get("max_results", 5)
@@ -110,6 +130,8 @@ class NewsTalent(BaseTalent):
                  "type": "password", "default": ""},
                 {"key": "max_results", "label": "Max News Articles",
                  "type": "int", "default": 5, "min": 1, "max": 20},
+                {"key": "region", "label": "Region (DuckDuckGo)",
+                 "type": "string", "default": "us-en"},
             ]
         }
 
@@ -130,9 +152,27 @@ class NewsTalent(BaseTalent):
     def _news_duckduckgo(self, topic, max_results):
         """Get news via DuckDuckGo (free, no API key)."""
         try:
-            print(f"   -> Fetching news from DuckDuckGo: '{topic}'")
+            region = self._config.get("region", "us-en")
+            print(f"   -> Fetching news from DuckDuckGo: '{topic}' "
+                  f"(region={region}, timelimit=d)")
             with DDGS() as ddgs:
-                results = list(ddgs.news(topic, max_results=max_results))
+                results = list(ddgs.news(
+                    topic,
+                    max_results=max_results,
+                    timelimit="d",  # past 24 hours for freshness
+                    region=region,
+                ))
+
+            # Fallback: if no results within the past day, widen to past week
+            if not results:
+                print("   -> No results in past day, expanding to past week")
+                with DDGS() as ddgs:
+                    results = list(ddgs.news(
+                        topic,
+                        max_results=max_results,
+                        timelimit="w",
+                        region=region,
+                    ))
 
             if not results:
                 print("   -> WARNING: DuckDuckGo news returned zero results!")
@@ -142,11 +182,15 @@ class NewsTalent(BaseTalent):
 
             formatted_news = ""
             for i, article in enumerate(results, 1):
+                # Trim article body to ~300 chars to stay within context window
+                body = article.get('body', '')
+                if len(body) > 300:
+                    body = body[:300] + "..."
                 formatted_news += f"Article {i}:\n"
-                formatted_news += f"  Headline: {article['title']}\n"
-                formatted_news += f"  Summary: {article['body']}\n"
-                formatted_news += f"  Source: {article['source']}\n"
-                formatted_news += f"  Date: {article['date']}\n\n"
+                formatted_news += f"  Headline: {article.get('title', '')}\n"
+                formatted_news += f"  Summary: {body}\n"
+                formatted_news += f"  Source: {article.get('source', '')}\n"
+                formatted_news += f"  Date: {article.get('date', '')}\n\n"
 
             return formatted_news
 
@@ -205,9 +249,12 @@ class NewsTalent(BaseTalent):
 
             formatted_news = ""
             for i, article in enumerate(articles, 1):
+                desc = article.get('description', '') or ''
+                if len(desc) > 300:
+                    desc = desc[:300] + "..."
                 formatted_news += f"Article {i}:\n"
                 formatted_news += f"  Headline: {article.get('title', '')}\n"
-                formatted_news += f"  Summary: {article.get('description', '')}\n"
+                formatted_news += f"  Summary: {desc}\n"
                 formatted_news += f"  Source: {article.get('source', {}).get('name', '')}\n"
                 formatted_news += f"  Date: {article.get('publishedAt', '')}\n\n"
 
@@ -265,9 +312,12 @@ class NewsTalent(BaseTalent):
 
             formatted_news = ""
             for i, article in enumerate(articles, 1):
+                desc = article.get('description', '') or ''
+                if len(desc) > 300:
+                    desc = desc[:300] + "..."
                 formatted_news += f"Article {i}:\n"
                 formatted_news += f"  Headline: {article.get('title', '')}\n"
-                formatted_news += f"  Summary: {article.get('description', '')}\n"
+                formatted_news += f"  Summary: {desc}\n"
                 formatted_news += f"  Source: {article.get('source', {}).get('name', '')}\n"
                 formatted_news += f"  Date: {article.get('publishedAt', '')}\n\n"
 

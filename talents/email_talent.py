@@ -11,6 +11,7 @@ Examples:
 """
 
 import re
+import html as _html_mod
 import json
 import imaplib
 import smtplib
@@ -436,6 +437,7 @@ class EmailTalent(BaseTalent):
 
                 body = ""
                 if msg.is_multipart():
+                    # Pass 1: prefer text/plain
                     for part in msg.walk():
                         ct = part.get_content_type()
                         if ct == "text/plain":
@@ -446,12 +448,34 @@ class EmailTalent(BaseTalent):
                                 body = payload
                             if body:
                                 break
+                    # Pass 2: fall back to text/html if no plain text
+                    if not body:
+                        for part in msg.walk():
+                            ct = part.get_content_type()
+                            if ct == "text/html":
+                                payload = part.get_payload(decode=True)
+                                if isinstance(payload, bytes):
+                                    raw_html = payload.decode("utf-8", errors="replace")
+                                elif isinstance(payload, str):
+                                    raw_html = payload
+                                else:
+                                    continue
+                                body = self._strip_html(raw_html)
+                                if body:
+                                    break
                 else:
+                    ct = msg.get_content_type()
                     payload = msg.get_payload(decode=True)
                     if isinstance(payload, bytes):
-                        body = payload.decode("utf-8", errors="replace")
+                        text = payload.decode("utf-8", errors="replace")
                     elif isinstance(payload, str):
-                        body = payload
+                        text = payload
+                    else:
+                        text = ""
+                    if ct == "text/html":
+                        body = self._strip_html(text)
+                    else:
+                        body = text
 
                 emails.append({
                     "from": self._decode_header(msg.get("From", "Unknown")),
@@ -463,6 +487,31 @@ class EmailTalent(BaseTalent):
                 print(f"   [Email] Error fetching email: {e}")
                 continue
         return emails
+
+    @staticmethod
+    def _strip_html(html_text):
+        """Convert HTML email body to readable plain text."""
+        if not html_text:
+            return ""
+        # Remove <style> and <script> blocks entirely
+        text = re.sub(r'<style[^>]*>.*?</style>', '', html_text,
+                       flags=re.DOTALL | re.IGNORECASE)
+        text = re.sub(r'<script[^>]*>.*?</script>', '', text,
+                       flags=re.DOTALL | re.IGNORECASE)
+        # Replace <br>, <p>, <div>, <tr>, <li> with newlines
+        text = re.sub(r'<br\s*/?>',  '\n', text, flags=re.IGNORECASE)
+        text = re.sub(r'</p>',       '\n', text, flags=re.IGNORECASE)
+        text = re.sub(r'</div>',     '\n', text, flags=re.IGNORECASE)
+        text = re.sub(r'</tr>',      '\n', text, flags=re.IGNORECASE)
+        text = re.sub(r'</li>',      '\n', text, flags=re.IGNORECASE)
+        # Strip all remaining HTML tags
+        text = re.sub(r'<[^>]+>', '', text)
+        # Decode HTML entities (&amp; &lt; &#39; etc.)
+        text = _html_mod.unescape(text)
+        # Collapse excessive whitespace
+        text = re.sub(r'[ \t]+', ' ', text)
+        text = re.sub(r'\n{3,}', '\n\n', text)
+        return text.strip()
 
     @staticmethod
     def _decode_header(value):
