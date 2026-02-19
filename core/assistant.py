@@ -26,7 +26,7 @@ class TalonAssistant:
         "or anything that doesn't clearly fit a specific handler above.\n\n"
         "Rules:\n"
         "- Choose the MOST SPECIFIC handler that matches the user's intent.\n"
-        "- If the command mentions a task list, todo list, or to-do items, choose notes.\n"
+        "- If the command mentions a task list or todo list, choose todo.\n"
         "- If the command starts with 'whenever', 'when I say', 'if I say', "
         "or defines a new behavioral rule, choose conversation.\n"
         "- If the command is general knowledge or chitchat, choose conversation.\n"

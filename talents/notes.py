@@ -20,29 +20,24 @@ from talents.base import BaseTalent
 
 class NotesTalent(BaseTalent):
     name = "notes"
-    description = "Save, search, and manage personal notes and to-do items"
+    description = "Save, search, and manage personal notes"
     keywords = [
         "note", "notes", "save a note", "write down", "remember this",
         "my notes", "find note", "search notes", "list notes",
         "delete note", "remove note",
-        "todo", "to-do", "to do", "task", "task list", "todo list",
-        "add a task", "my tasks",
     ]
     examples = [
         "save a note meeting with Bob at 3pm",
         "find notes about the project",
         "list my recent notes",
         "delete note about groceries",
-        "add a task buy groceries",
-        "what's on my todo list",
     ]
     priority = 45
 
     _NOTE_PHRASES = [
         "save a note", "save note", "note:", "add a note", "add note",
         "write down", "remember this", "jot down", "take a note",
-        "make a note", "add a task", "add task", "new task", "new todo",
-        "add to my list", "add to my todo",
+        "make a note",
     ]
 
     _SEARCH_PHRASES = [
@@ -54,9 +49,6 @@ class NotesTalent(BaseTalent):
     _LIST_PHRASES = [
         "list notes", "list my notes", "show notes", "show my notes",
         "my notes", "recent notes", "all notes",
-        "my tasks", "my todo", "my to-do", "todo list", "to-do list",
-        "task list", "list tasks", "show tasks", "show my tasks",
-        "what's on my list",
     ]
 
     _DELETE_PHRASES = [
@@ -326,8 +318,6 @@ class NotesTalent(BaseTalent):
             "remember this:", "remember this that", "remember this",
             "make a note about", "make a note that", "make a note",
             "note that", "note about",
-            "add a task about", "add a task", "add task", "new task",
-            "add to my list", "add to my todo",
         ]:
             if lower.startswith(prefix):
                 content = cmd[len(prefix):].strip()
