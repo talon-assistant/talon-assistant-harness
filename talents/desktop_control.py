@@ -16,6 +16,8 @@ class DesktopControlTalent(BaseTalent):
         "launch the calculator",
         "type hello world in notepad",
         "press ctrl+c",
+        "what's in notepad right now",
+        "read the text on screen",
     ]
     priority = 40
 
@@ -113,6 +115,7 @@ class DesktopControlTalent(BaseTalent):
         actions = action_plan.get("actions", [])
         results = []
         all_successful = True
+        clipboard_text = None
 
         for action in actions:
             result = self._execute_single_action(action)
@@ -120,14 +123,23 @@ class DesktopControlTalent(BaseTalent):
             results.append({"action": action, "result": result, "success": success})
             if not success:
                 all_successful = False
+            # Capture clipboard content from read_clipboard action
+            if action.get("action") == "read_clipboard" and success:
+                clipboard_text = result.replace("Clipboard: ", "", 1)
             print(f"  -> {result}")
             time.sleep(self.action_delay)
 
+        # Build response — include clipboard content if we read it
+        if clipboard_text:
+            response_text = f"Here's what I found:\n\n{clipboard_text}"
+        else:
+            response_text = "Done!" if all_successful else "Some actions failed."
+
         return {
             "success": all_successful,
-            "response": "Done!" if all_successful else "Some actions failed.",
+            "response": response_text,
             "actions_taken": results,
-            "spoken": True
+            "spoken": True if not clipboard_text else False,
         }
 
     def _append_action_schema(self, prompt):
@@ -143,6 +155,17 @@ Available actions:
 - {"action": "type", "text": "<text to type>"}
 - {"action": "press_key", "key": "<key name like 'enter', 'tab', etc>"}
 - {"action": "hotkey", "keys": ["ctrl", "c"]}
+- {"action": "read_clipboard"} — read and return the current clipboard text to the user
+
+Example — reading text from an application:
+{
+  "explanation": "Reading the text from Notepad",
+  "actions": [
+    {"action": "hotkey", "keys": ["ctrl", "a"]},
+    {"action": "hotkey", "keys": ["ctrl", "c"]},
+    {"action": "read_clipboard"}
+  ]
+}
 
 Example — opening a website:
 {
@@ -290,6 +313,14 @@ Respond ONLY with valid JSON, no additional text."""
                 keys = action_data.get("keys")
                 pyautogui.hotkey(*keys)
                 return f"Hotkey: {'+'.join(keys)}"
+
+            elif action_type == "read_clipboard":
+                import pyperclip
+                time.sleep(0.3)  # brief wait for clipboard to populate
+                text = pyperclip.paste()
+                if text:
+                    return f"Clipboard: {text}"
+                return "Clipboard: (empty)"
 
             else:
                 return f"Unknown action: {action_type}"
