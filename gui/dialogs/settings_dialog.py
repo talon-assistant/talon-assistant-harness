@@ -54,16 +54,25 @@ class ListEditor(QWidget):
 
     def _move_up(self):
         row = self.list_widget.currentRow()
+        if row < 0 and self.list_widget.count() > 0:
+            # Nothing selected — select the first item so user knows to pick one
+            self.list_widget.setCurrentRow(0)
+            return
         if row > 0:
-            item = self.list_widget.takeItem(row)
-            self.list_widget.insertItem(row - 1, item)
+            text = self.list_widget.item(row).text()
+            self.list_widget.takeItem(row)
+            self.list_widget.insertItem(row - 1, QListWidgetItem(text))
             self.list_widget.setCurrentRow(row - 1)
 
     def _move_down(self):
         row = self.list_widget.currentRow()
+        if row < 0 and self.list_widget.count() > 0:
+            self.list_widget.setCurrentRow(0)
+            return
         if 0 <= row < self.list_widget.count() - 1:
-            item = self.list_widget.takeItem(row)
-            self.list_widget.insertItem(row + 1, item)
+            text = self.list_widget.item(row).text()
+            self.list_widget.takeItem(row)
+            self.list_widget.insertItem(row + 1, QListWidgetItem(text))
             self.list_widget.setCurrentRow(row + 1)
 
     def get_items(self):
