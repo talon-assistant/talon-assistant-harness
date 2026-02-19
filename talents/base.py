@@ -1,3 +1,4 @@
+import re
 from abc import ABC, abstractmethod
 
 
@@ -135,5 +136,20 @@ class BaseTalent(ABC):
         self._enabled = value
 
     def keyword_match(self, command: str) -> bool:
-        """Helper: check if any of this talent's keywords appear in the command."""
-        return any(kw in command for kw in self.keywords)
+        """Helper: check if any of this talent's keywords appear in the command.
+
+        Uses word-boundary matching so 'note' doesn't match inside 'notepad'.
+        Multi-word keywords (e.g. 'save a note') use simple substring match
+        since they're specific enough not to cause false positives.
+        """
+        cmd_lower = command.lower()
+        for kw in self.keywords:
+            if " " in kw:
+                # Multi-word keyword: substring match is fine
+                if kw in cmd_lower:
+                    return True
+            else:
+                # Single-word keyword: require word boundaries
+                if re.search(rf'\b{re.escape(kw)}\b', cmd_lower):
+                    return True
+        return False
