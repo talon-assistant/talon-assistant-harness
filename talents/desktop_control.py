@@ -8,7 +8,7 @@ from talents.base import BaseTalent
 
 class DesktopControlTalent(BaseTalent):
     name = "desktop_control"
-    description = "Control desktop applications via keyboard and mouse"
+    description = "Control desktop applications via keyboard and mouse, or describe what is on screen using vision"
     keywords = ["open", "click", "type", "press", "close", "start", "launch", "run",
                 "change", "make", "set"]
     examples = [
@@ -16,12 +16,29 @@ class DesktopControlTalent(BaseTalent):
         "launch the calculator",
         "type hello world in notepad",
         "press ctrl+c",
-        "what's in notepad right now",
+        "what's on my screen right now",
+        "what's in notepad",
         "read the text on screen",
+        "describe what you see",
     ]
     priority = 40
 
     VISION_KEYWORDS = ["screen", "see", "show", "what", "find", "read", "window", "where"]
+
+    # Phrases that indicate the user is ASKING about visual content,
+    # not requesting a desktop action.  These trigger the vision-only path.
+    _VISION_QUERY_PATTERNS = [
+        r"\bwhat.{0,10}(?:on|in|at)\b.*\b(?:screen|display|monitor|desktop)\b",
+        r"\bwhat.{0,10}(?:see|showing|visible|displayed|happening)\b",
+        r"\bwhat.{0,20}(?:notepad|chrome|browser|window|editor|app|application)\b",
+        r"\bdescribe\b.*\b(?:screen|window|display|what)\b",
+        r"\bread\b.*\b(?:screen|text|window|page|display)\b",
+        r"\bwhat.{0,6}(?:is|does|do)\b.*\b(?:say|read|show)\b",
+        r"\blook\b.*\bat\b",
+        r"\bcan you (?:see|read)\b",
+        r"\btell me what\b",
+        r"\bwhat.{0,6}(?:text|content|message)\b",
+    ]
 
     APP_COMMANDS = {
         "calculator": "calc.exe",
@@ -78,9 +95,78 @@ class DesktopControlTalent(BaseTalent):
         speak_response = context.get("speak_response", True)
         voice = context.get("voice")
 
-        # Determine if vision is needed
-        needs_vision = any(kw in command for kw in self.VISION_KEYWORDS)
+        # ── Branch: vision query vs. desktop action ──────────────
+        if self._is_vision_query(command):
+            return self._handle_vision_query(
+                command, llm, vision, memory_context, speak_response, voice)
+        else:
+            return self._handle_desktop_action(
+                command, llm, vision, memory_context, speak_response, voice)
 
+    # ── Vision query path ────────────────────────────────────────
+
+    def _handle_vision_query(self, command, llm, vision,
+                             memory_context, speak_response, voice):
+        """Use the screenshot + LLM to DESCRIBE what's on screen.
+
+        No keyboard/mouse actions — purely visual analysis.
+        """
+        print("   [desktop_control] Vision query detected — capturing screenshot")
+        screenshot_b64 = vision.capture_screenshot()
+
+        if not screenshot_b64:
+            return {
+                "success": False,
+                "response": "I couldn't capture a screenshot.",
+                "actions_taken": [],
+                "spoken": False,
+            }
+
+        prompt = (
+            f"The user asked: \"{command}\"\n\n"
+            "You are looking at a screenshot of their desktop. "
+            "Answer the user's question by describing what you see. "
+            "Be specific and helpful — mention application names, text content, "
+            "UI elements, and anything relevant to their question. "
+            "If you can read text in the screenshot, include it in your answer."
+        )
+        if memory_context:
+            prompt = f"{memory_context}\n{prompt}"
+
+        response = llm.generate(
+            prompt,
+            use_vision=True,
+            screenshot_b64=screenshot_b64,
+        )
+
+        description = (response or "").strip()
+        if not description:
+            description = "I captured a screenshot but couldn't describe it."
+
+        # Speak the description
+        if speak_response and voice:
+            voice.speak(description)
+            spoken = True
+        else:
+            print(f"\n{description}")
+            spoken = False
+
+        return {
+            "success": True,
+            "response": description,
+            "actions_taken": [{"action": "vision_query", "result": "screenshot analysed"}],
+            "spoken": spoken,
+        }
+
+    # ── Desktop action path ──────────────────────────────────────
+
+    def _handle_desktop_action(self, command, llm, vision,
+                               memory_context, speak_response, voice):
+        """Generate and execute keyboard/mouse actions via LLM JSON."""
+
+        # Some action commands still benefit from a screenshot for context
+        # (e.g. "click the save button") — supply one if vision keywords present
+        needs_vision = any(kw in command for kw in self.VISION_KEYWORDS)
         screenshot_b64 = None
         if needs_vision:
             screenshot_b64 = vision.capture_screenshot()
@@ -91,7 +177,8 @@ class DesktopControlTalent(BaseTalent):
             prompt = f"{memory_context}{prompt}"
         prompt = self._append_action_schema(prompt)
 
-        response = llm.generate(prompt, use_vision=needs_vision, screenshot_b64=screenshot_b64)
+        response = llm.generate(
+            prompt, use_vision=needs_vision, screenshot_b64=screenshot_b64)
 
         # Parse JSON
         action_plan = self._parse_action_json(response)
@@ -327,6 +414,45 @@ Respond ONLY with valid JSON, no additional text."""
 
         except Exception as e:
             return f"Error: {str(e)}"
+
+    def _is_vision_query(self, command: str) -> bool:
+        """Decide whether *command* is a question about the screen (vision path)
+        or an action request (keyboard/mouse path).
+
+        Returns True  → use vision to describe what's on screen
+        Returns False → generate desktop actions (open, type, click, etc.)
+        """
+        cmd = command.lower().strip()
+
+        # ── Definite action verbs → always action path ───────────
+        _ACTION_VERBS = (
+            "open", "launch", "start", "run", "close", "quit", "exit",
+            "type", "write", "press", "click", "drag", "scroll",
+            "copy", "paste", "cut", "undo", "redo", "save",
+            "switch", "minimize", "maximize", "resize", "move",
+        )
+        # "read" is intentionally NOT here — "read the text on screen"
+        # is a vision query, not a desktop action.
+        first_word = cmd.split()[0] if cmd else ""
+        if first_word in _ACTION_VERBS:
+            return False
+
+        # ── Regex patterns for vision queries ────────────────────
+        for pattern in self._VISION_QUERY_PATTERNS:
+            if re.search(pattern, cmd):
+                return True
+
+        # ── Fallback heuristic: question words + vision keywords ─
+        # If the command starts with a question word and contains a
+        # vision keyword, treat it as a vision query.
+        _QUESTION_STARTERS = ("what", "where", "how", "can you see",
+                              "tell me", "describe", "is there")
+        has_question = any(cmd.startswith(q) for q in _QUESTION_STARTERS)
+        has_vision_kw = any(kw in cmd for kw in self.VISION_KEYWORDS)
+        if has_question and has_vision_kw:
+            return True
+
+        return False
 
     @staticmethod
     def _is_calculator_text(text):
