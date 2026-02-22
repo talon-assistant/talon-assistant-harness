@@ -29,6 +29,9 @@ class TalonAssistant:
         "- If the command mentions a task list or todo list, choose todo.\n"
         "- If the command starts with 'whenever', 'when I say', 'if I say', "
         "or defines a new behavioral rule, choose conversation.\n"
+        "- If the command describes a multi-step routine or sequence of actions "
+        "(e.g. 'good morning', 'movie night', 'evening routine', 'set up my workspace', "
+        "or any command that clearly requires multiple different actions), choose planner.\n"
         "- If the command is general knowledge or chitchat, choose conversation.\n"
         "- Respond with ONLY the handler name. No punctuation, no explanation."
     )
@@ -286,6 +289,7 @@ class TalonAssistant:
             "config": self.config,
             "memory_context": memory_context,
             "speak_response": speak_response,
+            "assistant": self,  # Allows talents (e.g. PlannerTalent) to call process_command()
         }
         if self.notify_callback:
             ctx["notify"] = self.notify_callback
