@@ -133,7 +133,7 @@ Available actions:
 - {{"action": "hue_light", "hue_action": "off"}}
 - {{"action": "hue_light", "hue_action": "brighten"}}
 - {{"action": "hue_light", "hue_action": "dim"}}
-- {{"action": "hue_light", "hue_action": "brightness", "level": 0-254}}
+- {{"action": "hue_light", "hue_action": "brightness", "level": 0-100}}  (percentage)
 - {{"action": "hue_light", "hue_action": "color", "color": "{available_colors}"}}
 
 Example response:
@@ -212,17 +212,40 @@ Respond ONLY with valid JSON, no additional text."""
                 return "Dimmed lights"
 
             elif hue_action == "brightness":
-                level = action_data.get("level", 254)
+                level = int(action_data.get("level", 254))
+                # If the LLM gave a percentage (0-100), scale to Hue range (0-254)
+                if level <= 100:
+                    level = int(level * 254 / 100)
+                level = max(0, min(254, level))
                 for light in all_lights:
-                    light.brightness = int(level)
-                return f"Set lights to {level}"
+                    light.brightness = level
+                return f"Set brightness to {level}"
 
             elif hue_action == "color":
                 color = action_data.get("color", "white")
                 color_lower = color.lower()
 
-                if color_lower in self.color_map:
-                    xy = self.color_map[color_lower]
+                # Built-in XY values cover common colours so hue_config.json
+                # "colors" key is optional — user entries override these defaults.
+                _BUILTIN_COLORS = {
+                    "red":     [0.675, 0.322],
+                    "green":   [0.409, 0.518],
+                    "blue":    [0.167, 0.040],
+                    "yellow":  [0.431, 0.450],
+                    "orange":  [0.600, 0.382],
+                    "purple":  [0.253, 0.100],
+                    "pink":    [0.385, 0.160],
+                    "magenta": [0.385, 0.160],
+                    "cyan":    [0.170, 0.340],
+                    "white":   [0.313, 0.329],
+                    "warm white": [0.450, 0.410],
+                    "cool white": [0.250, 0.250],
+                    "daylight": [0.313, 0.329],
+                }
+
+                # User config overrides built-ins
+                xy = self.color_map.get(color_lower) or _BUILTIN_COLORS.get(color_lower)
+                if xy:
                     for light in all_lights:
                         light.xy = xy
                     return f"Changed to {color}"
