@@ -122,10 +122,13 @@ class LLMServerManager:
         download_url = None
         asset_name = None
 
+        # Asset names look like: llama-b1234-bin-win-cuda-12.4-x64.zip
+        # cudart assets look like: cudart-llama-bin-win-cuda-12.4-x64.zip (DLLs only, no exe)
         for asset in assets:
             name = asset.get("name", "").lower()
-            # Look for the Windows CUDA 12 build ZIP
-            if ("win" in name and "cuda" in name and "cu12" in name
+            # Prefer CUDA 12.x Windows build; exclude cudart-only packages
+            if ("win" in name and "cuda" in name
+                    and ("cuda-12" in name or "cu12" in name)
                     and name.endswith(".zip")
                     and "cudart" not in name):
                 download_url = asset.get("browser_download_url")
@@ -133,10 +136,20 @@ class LLMServerManager:
                 break
 
         if not download_url:
-            # Fallback: try any Windows build with CUDA
+            # Fallback: any Windows CUDA build (excluding cudart-only packages)
             for asset in assets:
                 name = asset.get("name", "").lower()
-                if "win" in name and "cuda" in name and name.endswith(".zip"):
+                if ("win" in name and "cuda" in name and name.endswith(".zip")
+                        and "cudart" not in name):
+                    download_url = asset.get("browser_download_url")
+                    asset_name = asset.get("name")
+                    break
+
+        if not download_url:
+            # Last resort: any Windows build at all (vulkan, cpu, etc.)
+            for asset in assets:
+                name = asset.get("name", "").lower()
+                if "win" in name and name.endswith(".zip") and "cudart" not in name:
                     download_url = asset.get("browser_download_url")
                     asset_name = asset.get("name")
                     break
@@ -206,21 +219,20 @@ class LLMServerManager:
             print(f"   [LLMServer]   ... and {len(all_extracted_files) - 15} more")
 
         if server_exe and server_exe.parent != bin_dir:
-            # Move all files from the nested folder to bin_dir
-            nested = server_exe.parent
-            for item in nested.iterdir():
-                dest = bin_dir / item.name
-                if dest.exists():
-                    if dest.is_dir():
-                        shutil.rmtree(dest)
-                    else:
-                        dest.unlink()
-                shutil.move(str(item), str(dest))
-            # Clean up empty nested folder(s)
-            try:
-                nested.rmdir()
-            except OSError:
-                pass
+            # Files extracted into a nested folder — flatten everything up to bin_dir.
+            # Find the top-level subfolder (immediate child of bin_dir that is a dir).
+            top_level = server_exe.parent
+            while top_level.parent != bin_dir:
+                top_level = top_level.parent
+
+            print(f"   [LLMServer] Flattening {top_level.name}/ -> {bin_dir}/")
+            for item in list(top_level.rglob("*")):
+                if item.is_file():
+                    dest = bin_dir / item.name
+                    if not dest.exists():
+                        shutil.copy2(str(item), str(dest))
+            # Remove the top-level folder now that everything is copied
+            shutil.rmtree(str(top_level), ignore_errors=True)
 
         # If the binary was found but has a different name, create an alias
         if server_exe and server_exe.name.lower() != "llama-server.exe":

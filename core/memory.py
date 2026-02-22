@@ -473,7 +473,7 @@ class MemorySystem:
                   f"(distance={distance:.3f}, threshold={threshold:.1f})")
 
             if distance <= threshold:
-                rule_id = meta.get("rule_id")
+                rule_id = int(meta.get("rule_id", 0))
 
                 # Verify the rule is still enabled in SQLite
                 conn = sqlite3.connect(self.db_path)

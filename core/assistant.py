@@ -447,10 +447,16 @@ class TalonAssistant:
                 f"Analyze this message:\n\n{command}",
                 system_prompt=self._RULE_DETECTION_SYSTEM_PROMPT,
                 temperature=0.1,
-                max_length=150,
+                max_length=256,
             )
 
-            json_match = re.search(r'\{[^}]+\}', response, re.DOTALL)
+            # Strip markdown fences if the model wrapped the JSON
+            clean = response.strip()
+            if clean.startswith("```"):
+                clean = re.sub(r"^```[a-z]*\n?", "", clean)
+                clean = re.sub(r"\n?```$", "", clean.strip())
+
+            json_match = re.search(r'\{.*\}', clean, re.DOTALL)
             if not json_match:
                 return None
 
@@ -494,6 +500,20 @@ class TalonAssistant:
         """Handle commands that no talent matched -- general conversation"""
         cmd_lower = command.lower()
 
+        # Fast-path: rule definition detected — store it and acknowledge directly
+        # without wasting an LLM call on a conversational reply.
+        if any(ind in cmd_lower for ind in self._RULE_INDICATORS):
+            rule = self._detect_and_store_rule(command)
+            if rule:
+                response = (f"Got it! I'll {rule['action']} whenever you say "
+                            f"\"{rule['trigger']}\".")
+                self.memory.log_command(command, success=True, response=response)
+                if speak_response:
+                    self.voice.speak(response)
+                else:
+                    print(f"\nTalon: {response}")
+                return response
+
         # Only trigger vision for phrases that *clearly* ask about the screen.
         vision_phrases = [
             "on my screen", "on the screen", "on screen",
@@ -527,11 +547,7 @@ class TalonAssistant:
         response = self.llm.generate(prompt, use_vision=needs_vision, screenshot_b64=screenshot_b64)
 
         self.memory.log_command(command, success=True, response=response)
-
-        # Check for rule definition first; skip preference if it was a rule
-        rule = self._detect_and_store_rule(command)
-        if not rule:
-            self._detect_preference(command, response)
+        self._detect_preference(command, response)
 
         if speak_response:
             self.voice.speak(response)
