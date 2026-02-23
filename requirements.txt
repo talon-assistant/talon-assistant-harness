@@ -10,7 +10,7 @@ sounddevice
 soundfile
 
 # AI / Memory
-chromadb
+chromadb>=0.6.0
 sentence-transformers
 
 # Talents
