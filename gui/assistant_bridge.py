@@ -4,7 +4,7 @@ import shutil
 import inspect
 import importlib
 from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot
-from gui.workers import CommandWorker, TTSWorker, VoiceListenWorker
+from gui.workers import CommandWorker, TTSWorker, VoiceListenWorker, EmailSendWorker
 from talents.base import BaseTalent
 from core.credential_store import CredentialStore
 
@@ -53,6 +53,9 @@ class AssistantBridge(QObject):
 
     # Reminder alert (dismissable dialog)
     reminder_fired = pyqtSignal(str, str, str, int)  # reminder_id, title, message, default_snooze_minutes
+
+    # Email compose dialog — emitted when talent returns a pending_email draft
+    compose_requested = pyqtSignal(dict)  # {to, subject, body, reply_to_uid}
 
     # LLM server status
     server_status = pyqtSignal(str)  # stopped/starting/running/error
@@ -129,23 +132,47 @@ class AssistantBridge(QObject):
         self._command_worker.error.connect(self._on_command_error)
         self._command_worker.start()
 
-    def _on_command_done(self, command, response, talent_name, success):
+    def _on_command_done(self, command, response, talent_name, success, result):
         """Called when process_command() completes."""
         if talent_name:
             self.talent_activated.emit(talent_name)
 
         self.command_response.emit(command, response)
-        self.notification_requested.emit("Talon", response or "Done!")
         self.activity.emit("idle")
 
-        # Optionally speak the response
-        if self._tts_enabled and response and not response.startswith("Error"):
-            self._speak(response)
+        # Draft + confirm flow: talent returned a pending email — show compose dialog
+        pending = result.get("pending_email") if result else None
+        if pending:
+            self.compose_requested.emit(pending)
+            # Don't TTS the draft preview — user is looking at compose dialog
+        else:
+            self.notification_requested.emit("Talon", response or "Done!")
+            if self._tts_enabled and response and not response.startswith("Error"):
+                self._speak(response)
 
     def _on_command_error(self, command, error_msg):
         """Called if process_command() raises an exception."""
         self.command_error.emit(command, error_msg)
         self.activity.emit("idle")
+
+    # ── Email send (called by MainWindow after compose dialog confirms) ──────
+
+    def send_pending_email(self, draft: dict):
+        """Dispatch an approved email draft via SMTP in a background worker."""
+        self._email_send_worker = EmailSendWorker(self, draft)
+        self._email_send_worker.finished.connect(self._on_email_send_done)
+        self._email_send_worker.error.connect(self._on_email_send_error)
+        self._email_send_worker.start()
+
+    def _on_email_send_done(self, to_addr, subject):
+        msg = f"Email sent to {to_addr}."
+        self.command_response.emit("", msg)
+        self.notification_requested.emit("Talon", msg)
+        if self._tts_enabled:
+            self._speak(msg)
+
+    def _on_email_send_error(self, error_msg):
+        self.command_error.emit("send email", f"Failed to send: {error_msg}")
 
     def _speak(self, text):
         """Run TTS in a background thread."""

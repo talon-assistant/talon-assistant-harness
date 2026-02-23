@@ -32,7 +32,7 @@ class CommandWorker(QThread):
     Calls with speak_response=False so TTS is handled separately by the bridge.
     """
 
-    response_ready = pyqtSignal(str, str, str, bool)  # command, response, talent_name, success
+    response_ready = pyqtSignal(str, str, str, bool, dict)  # command, response, talent_name, success, result
     error = pyqtSignal(str, str)  # command, error_message
 
     def __init__(self, assistant, command):
@@ -48,16 +48,17 @@ class CommandWorker(QThread):
                     self.command,
                     result.get("response", ""),
                     result.get("talent", ""),
-                    result.get("success", True)
+                    result.get("success", True),
+                    result,
                 )
             elif result is None:
                 # Command was too short / empty
                 self.response_ready.emit(
-                    self.command, "Command too short to process.", "", False
+                    self.command, "Command too short to process.", "", False, {}
                 )
             else:
                 # Unexpected return type
-                self.response_ready.emit(self.command, str(result), "", True)
+                self.response_ready.emit(self.command, str(result), "", True, {})
         except Exception as e:
             self.error.emit(self.command, str(e))
 
@@ -281,3 +282,46 @@ class ServerStartWorker(QThread):
             # Restore original callbacks
             self.server_manager.on_ready = original_ready
             self.server_manager.on_error = original_error
+
+
+class EmailSendWorker(QThread):
+    """Sends a composed/edited email draft via SMTP off the GUI thread.
+
+    Receives a draft dict {to, subject, body, reply_to_uid} from the
+    EmailComposeDialog and dispatches it using the email talent's SMTP methods.
+    """
+
+    finished = pyqtSignal(str, str)   # to_addr, subject
+    error    = pyqtSignal(str)
+
+    def __init__(self, bridge, draft: dict):
+        super().__init__()
+        self._bridge = bridge
+        self._draft  = draft
+
+    def run(self):
+        try:
+            talent = self._bridge.get_talent("email")
+            if talent is None:
+                self.error.emit("Email talent not loaded.")
+                return
+            reply_uid = self._draft.get("reply_to_uid", "")
+            to_addr   = self._draft.get("to", "")
+            subject   = self._draft.get("subject", "")
+            body      = self._draft.get("body", "")
+            if reply_uid:
+                talent._send_smtp_reply(
+                    to_addr=to_addr,
+                    subject=subject,
+                    body=body,
+                    reply_uid=reply_uid,
+                )
+            else:
+                talent._send_smtp(
+                    to_addr=to_addr,
+                    subject=subject,
+                    body=body,
+                )
+            self.finished.emit(to_addr, subject)
+        except Exception as e:
+            self.error.emit(str(e))

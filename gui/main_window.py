@@ -312,6 +312,9 @@ class MainWindow(QMainWindow):
         # Reminder alert (dismissable dialog)
         self.bridge.reminder_fired.connect(self._on_reminder_fired)
 
+        # Email compose dialog (draft + confirm flow)
+        self.bridge.compose_requested.connect(self._on_compose_requested)
+
     def _on_init_complete(self):
         """Called when TalonAssistant is fully initialized."""
         self.chat_view.add_system_message("Talon is ready! Type a command or toggle voice mode.")
@@ -611,6 +614,32 @@ class MainWindow(QMainWindow):
     def _on_reminder_snoozed(self, reminder_id, message, snooze_seconds):
         """Reminder was snoozed — re-arm via bridge."""
         self.bridge.snooze_reminder(reminder_id, message, snooze_seconds)
+
+    # ── Email compose dialog (draft + confirm flow) ──────────────
+
+    def _on_compose_requested(self, draft: dict):
+        """Show the email compose dialog for user review before sending."""
+        from gui.dialogs.email_compose_dialog import EmailComposeDialog
+
+        # Restore window if minimized to tray
+        if not self.isVisible():
+            self.show()
+            self.raise_()
+            self.activateWindow()
+
+        dialog = EmailComposeDialog(draft, parent=self)
+        dialog.compose_complete.connect(self._on_compose_send)
+        dialog.compose_cancelled.connect(self._on_compose_cancelled)
+        dialog.exec()   # modal — blocks until Send or Cancel
+
+    def _on_compose_send(self, draft: dict):
+        """User clicked Send in compose dialog — dispatch via bridge worker."""
+        self.bridge.send_pending_email(draft)
+        self.chat_view.add_system_message("Sending email...")
+
+    def _on_compose_cancelled(self):
+        """User cancelled the compose dialog."""
+        self.chat_view.add_system_message("Email cancelled.")
         minutes = snooze_seconds // 60
         self.chat_view.add_system_message(
             f"Reminder snoozed for {minutes} minute(s).")

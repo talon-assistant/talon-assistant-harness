@@ -1,4 +1,4 @@
-"""EmailTalent — check, read, and send email via IMAP/SMTP.
+"""EmailTalent — check, read, send, reply, delete, and manage email via IMAP/SMTP.
 
 Uses stdlib imaplib + smtplib (no third-party mail libraries).
 Credentials are managed centrally by the CredentialStore (OS keyring).
@@ -6,8 +6,14 @@ Credentials are managed centrally by the CredentialStore (OS keyring).
 Examples:
     "check my email"
     "read latest email from John"
+    "read email 2"
+    "read me the email about the hockey game"
     "how many unread emails do I have"
     "send email to john@example.com about the meeting"
+    "reply to the last email from Alice"
+    "delete email 3"
+    "move email from Bob to Archive"
+    "list my email folders"
 """
 
 import re
@@ -25,17 +31,27 @@ from talents.base import BaseTalent
 
 class EmailTalent(BaseTalent):
     name = "email"
-    description = "Check, read, and send email via IMAP/SMTP"
+    description = "Check, read, send, reply, delete, and manage email via IMAP/SMTP"
     keywords = [
         "email", "mail", "inbox", "unread", "send email",
         "compose", "check email", "read email", "new email",
         "send a message", "send message to",
+        "reply", "reply to", "respond to",
+        "delete email", "remove email",
+        "move email", "archive email",
+        "list folders", "show folders",
     ]
     examples = [
         "check my email",
         "how many unread emails do I have",
         "read latest email from John",
+        "read email 2",
+        "read me the email about the hockey game",
         "send email to alice about the meeting",
+        "reply to the last email from Bob",
+        "delete email 3",
+        "list my email folders",
+        "move email to archive",
     ]
     priority = 55
 
@@ -44,6 +60,7 @@ class EmailTalent(BaseTalent):
         "send email", "compose email", "send a message",
         "check email", "check my email", "read email",
         "new email", "latest email", "read my mail",
+        "reply", "delete email", "list folders",
     ]
 
     _SYSTEM_PROMPT_READ = (
@@ -64,10 +81,20 @@ class EmailTalent(BaseTalent):
         "Keep it concise. Return ONLY the JSON object, no markdown, no explanation."
     )
 
+    _SYSTEM_PROMPT_REPLY = (
+        "You are an email reply assistant. "
+        "Given the original email and the user's instruction, write ONLY the reply body text. "
+        "Do not repeat or quote the original email. Keep it concise and professional. "
+        "Return ONLY the reply body text — no subject line, no greeting headers."
+    )
+
     def __init__(self):
         super().__init__()
         self._imap = None
         self._connected = False
+        # Cache of last fetched email list for index/subject-based addressing.
+        # Each entry: {seq_num, from, subject, date, message_id}
+        self._email_cache: list[dict] = []
 
     # ── Config schema ──────────────────────────────────────────────
 
@@ -118,10 +145,19 @@ class EmailTalent(BaseTalent):
                 "spoken": False,
             }
 
-        # Route to the right sub-command
-        if any(w in cmd_lower for w in ["send", "compose", "write"]):
+        # Route to the right sub-command (most specific first)
+        if any(w in cmd_lower for w in ["delete", "trash", "remove"]) and \
+                any(w in cmd_lower for w in ["email", "mail", "message"]):
+            return self._handle_delete(command, context)
+        elif any(w in cmd_lower for w in ["reply", "respond"]):
+            return self._handle_reply(command, context)
+        elif any(w in cmd_lower for w in ["folder", "folders", "move to", "archive",
+                                           "move email", "move message"]):
+            return self._handle_folders(command, context)
+        elif any(w in cmd_lower for w in ["send", "compose", "write"]):
             return self._handle_send(command, context)
-        elif any(w in cmd_lower for w in ["read", "latest", "last", "recent", "from"]):
+        elif any(w in cmd_lower for w in ["read", "latest", "last", "recent",
+                                           "from", "about", "regarding"]):
             return self._handle_read(command, context)
         else:
             # Default: check inbox (unread count + summaries)
@@ -142,11 +178,10 @@ class EmailTalent(BaseTalent):
 
             max_fetch = self._config.get("max_fetch", 5)
 
-            # Fetch the most recent unread (or all recent if few unread)
+            # Fetch the most recent unread (or all recent if none unread)
             if unread_ids:
                 fetch_ids = unread_ids[-max_fetch:]
             else:
-                # No unread — show most recent
                 status, data = imap.search(None, "ALL")
                 all_ids = data[0].split() if data[0] else []
                 fetch_ids = all_ids[-max_fetch:] if all_ids else []
@@ -162,6 +197,18 @@ class EmailTalent(BaseTalent):
 
             summaries = self._fetch_summaries(imap, fetch_ids)
             self._disconnect()
+
+            # Populate index cache for subsequent commands
+            self._email_cache = [
+                {
+                    "seq_num":    mid,
+                    "from":       s["from"],
+                    "subject":    s["subject"],
+                    "date":       s["date"],
+                    "message_id": s.get("message_id", ""),
+                }
+                for mid, s in zip(fetch_ids, summaries)
+            ]
 
             # Build response
             header = f"You have {unread_count} unread email{'s' if unread_count != 1 else ''}.\n"
@@ -189,36 +236,37 @@ class EmailTalent(BaseTalent):
     # ── Read specific email ────────────────────────────────────────
 
     def _handle_read(self, command, context):
-        """Read and summarize a specific email (e.g., "read latest email from John")."""
+        """Read and summarize a specific email.
+
+        Resolves by: numbered index > sender > subject keywords > most recent.
+        """
         try:
             imap = self._connect_imap()
             imap.select("INBOX", readonly=True)
 
-            # Try to extract a sender filter
-            sender_filter = self._extract_sender(command)
-            max_fetch = self._config.get("max_fetch", 5)
-
-            if sender_filter:
-                # Search by sender
-                status, data = imap.search(None, f'FROM "{sender_filter}"')
+            # Try resolving from cache first (index / sender / subject keywords)
+            cache_entry = self._resolve_email_ref(command)
+            if cache_entry:
+                fetch_ids = [cache_entry["seq_num"]]
             else:
-                status, data = imap.search(None, "ALL")
+                # Cold start — fall back to sender filter or most recent
+                sender_filter = self._extract_sender(command)
+                if sender_filter:
+                    status, data = imap.search(None, f'FROM "{sender_filter}"')
+                else:
+                    status, data = imap.search(None, "ALL")
+                msg_ids = data[0].split() if data[0] else []
+                if not msg_ids:
+                    self._disconnect()
+                    return {
+                        "success": True,
+                        "response": "No emails found.",
+                        "actions_taken": [{"action": "email_read"}],
+                        "spoken": False,
+                    }
+                fetch_ids = [msg_ids[-1]]
 
-            msg_ids = data[0].split() if data[0] else []
-
-            if not msg_ids:
-                self._disconnect()
-                who = f" from '{sender_filter}'" if sender_filter else ""
-                return {
-                    "success": True,
-                    "response": f"No emails found{who}.",
-                    "actions_taken": [{"action": "email_read", "filter": sender_filter}],
-                    "spoken": False,
-                }
-
-            # Fetch the latest matching email(s)
-            fetch_ids = msg_ids[-min(max_fetch, len(msg_ids)):]
-            details = self._fetch_full_emails(imap, fetch_ids[-1:])  # just the latest
+            details = self._fetch_full_emails(imap, fetch_ids)
             self._disconnect()
 
             if not details:
@@ -229,7 +277,6 @@ class EmailTalent(BaseTalent):
                     "spoken": False,
                 }
 
-            # Use LLM to summarize
             email_data = details[0]
             llm = context.get("llm")
             if llm:
@@ -272,10 +319,10 @@ class EmailTalent(BaseTalent):
                 "spoken": False,
             }
 
-    # ── Send email ─────────────────────────────────────────────────
+    # ── Send email (draft + confirm flow) ─────────────────────────
 
     def _handle_send(self, command, context):
-        """Compose and send an email using LLM for drafting."""
+        """Compose a draft via LLM and return it for user review in compose dialog."""
         llm = context.get("llm")
         if not llm:
             return {
@@ -285,22 +332,13 @@ class EmailTalent(BaseTalent):
                 "spoken": False,
             }
 
-        # Use LLM to extract to/subject/body
         response = llm.generate(
             f"Compose an email based on this request:\n\n{command}",
             system_prompt=self._SYSTEM_PROMPT_COMPOSE,
             temperature=0.3,
         )
 
-        # Parse JSON
-        composed = None
-        try:
-            json_match = re.search(r'\{[^}]+\}', response, re.DOTALL)
-            if json_match:
-                composed = json.loads(json_match.group())
-        except (json.JSONDecodeError, AttributeError):
-            pass
-
+        composed = self._parse_json_draft(response)
         if not composed or "to" not in composed:
             return {
                 "success": False,
@@ -310,40 +348,348 @@ class EmailTalent(BaseTalent):
                 "spoken": False,
             }
 
-        # Actually send
+        to      = composed["to"]
+        subject = composed.get("subject", "No Subject")
+        body    = composed.get("body", "")
+
+        return {
+            "success": True,
+            "response": (
+                f"Here is my draft email:\n\n"
+                f"To: {to}\n"
+                f"Subject: {subject}\n\n"
+                f"{body}\n\n"
+                f"Review the compose window, then click Send or Cancel."
+            ),
+            "actions_taken": [{"action": "email_draft_created", "to": to}],
+            "spoken": False,
+            "pending_email": {"to": to, "subject": subject, "body": body},
+        }
+
+    # ── Reply to email ─────────────────────────────────────────────
+
+    def _handle_reply(self, command, context):
+        """Fetch the referenced email, draft a reply body, return for compose dialog."""
         try:
-            self._send_smtp(
-                to_addr=composed["to"],
-                subject=composed.get("subject", "No Subject"),
-                body=composed.get("body", ""),
-            )
+            imap = self._connect_imap()
+            imap.select("INBOX", readonly=True)
+
+            cache_entry = self._resolve_email_ref(command)
+            if cache_entry:
+                fetch_ids = [cache_entry["seq_num"]]
+            else:
+                sender_filter = self._extract_sender(command)
+                if sender_filter:
+                    status, data = imap.search(None, f'FROM "{sender_filter}"')
+                else:
+                    status, data = imap.search(None, "ALL")
+                msg_ids = data[0].split() if data[0] else []
+                if not msg_ids:
+                    self._disconnect()
+                    return {
+                        "success": False,
+                        "response": "No email found to reply to.",
+                        "actions_taken": [],
+                        "spoken": False,
+                    }
+                fetch_ids = [msg_ids[-1]]
+
+            details = self._fetch_full_emails(imap, fetch_ids)
+            self._disconnect()
+
+            if not details:
+                return {
+                    "success": False,
+                    "response": "Could not read the email to reply to.",
+                    "actions_taken": [],
+                    "spoken": False,
+                }
+
+            original = details[0]
+            reply_to_addr = self._extract_reply_addr(original["from"])
+            reply_subject = original["subject"]
+            if not reply_subject.lower().startswith("re:"):
+                reply_subject = f"Re: {reply_subject}"
+            original_msg_id = original.get("message_id", "")
+
+            # LLM drafts the reply body
+            reply_body = ""
+            llm = context.get("llm")
+            if llm:
+                prompt = (
+                    f"Original email:\n"
+                    f"From: {original['from']}\n"
+                    f"Subject: {original['subject']}\n"
+                    f"Body:\n{original['body'][:1500]}\n\n"
+                    f"User instruction: {command}\n\n"
+                    f"Write the reply body."
+                )
+                reply_body = llm.generate(
+                    prompt,
+                    system_prompt=self._SYSTEM_PROMPT_REPLY,
+                    temperature=0.4,
+                )
 
             return {
                 "success": True,
-                "response": f"Email sent to {composed['to']}!\n"
-                            f"Subject: {composed.get('subject', 'No Subject')}",
-                "actions_taken": [{"action": "email_send", "to": composed["to"],
-                                   "subject": composed.get("subject", "")}],
+                "response": (
+                    f"Here is my draft reply:\n\n"
+                    f"To: {reply_to_addr}\n"
+                    f"Subject: {reply_subject}\n\n"
+                    f"{reply_body}\n\n"
+                    f"Review the compose window, then click Send or Cancel."
+                ),
+                "actions_taken": [{"action": "email_reply_draft", "to": reply_to_addr}],
+                "spoken": False,
+                "pending_email": {
+                    "to":           reply_to_addr,
+                    "subject":      reply_subject,
+                    "body":         reply_body,
+                    "reply_to_uid": original_msg_id,
+                },
+            }
+
+        except Exception as e:
+            self._disconnect()
+            return {
+                "success": False,
+                "response": f"Error preparing reply: {str(e)}",
+                "actions_taken": [],
+                "spoken": False,
+            }
+
+    # ── Delete email ───────────────────────────────────────────────
+
+    def _handle_delete(self, command, context):
+        """Delete the referenced email (by index, sender, or subject)."""
+        try:
+            imap = self._connect_imap()
+            imap.select("INBOX")   # read-write
+
+            cache_entry = self._resolve_email_ref(command)
+            if cache_entry:
+                target_uid = cache_entry["seq_num"]
+                subject_hint = cache_entry.get("subject", "")
+            else:
+                # Fall back to live search by sender
+                sender_filter = self._extract_sender(command)
+                if sender_filter:
+                    status, data = imap.search(None, f'FROM "{sender_filter}"')
+                else:
+                    status, data = imap.search(None, "ALL")
+                msg_ids = data[0].split() if data[0] else []
+                if not msg_ids:
+                    self._disconnect()
+                    return {
+                        "success": False,
+                        "response": "No matching email found to delete.",
+                        "actions_taken": [],
+                        "spoken": False,
+                    }
+                target_uid = msg_ids[-1]
+                subject_hint = ""
+
+            imap.store(target_uid, '+FLAGS', '\\Deleted')
+            imap.expunge()
+            self._disconnect()
+
+            # Remove from cache
+            self._email_cache = [
+                e for e in self._email_cache if e["seq_num"] != target_uid
+            ]
+
+            desc = f" ({subject_hint})" if subject_hint else ""
+            return {
+                "success": True,
+                "response": f"Email deleted{desc}.",
+                "actions_taken": [{"action": "email_delete"}],
                 "spoken": False,
             }
 
         except Exception as e:
+            self._disconnect()
             return {
                 "success": False,
-                "response": f"Failed to send email: {str(e)}",
-                "actions_taken": [{"action": "email_send_error"}],
+                "response": f"Error deleting email: {str(e)}",
+                "actions_taken": [],
                 "spoken": False,
             }
+
+    # ── Folder management ──────────────────────────────────────────
+
+    def _handle_folders(self, command, context):
+        """List folders or move an email to a folder."""
+        cmd_lower = command.lower()
+        if any(w in cmd_lower for w in ["move", "archive"]):
+            return self._handle_move(command, context)
+        # Default: list folders
+        try:
+            imap = self._connect_imap()
+            status, folder_list = imap.list()
+            self._disconnect()
+
+            folders = []
+            for item in folder_list:
+                if isinstance(item, bytes):
+                    # IMAP LIST: (\Flags) "delim" "Name"
+                    m = re.search(r'"([^"]+)"\s*$|(\S+)\s*$', item.decode())
+                    if m:
+                        name = (m.group(1) or m.group(2)).strip('"')
+                        folders.append(name)
+
+            if not folders:
+                return {"success": True, "response": "No folders found.",
+                        "actions_taken": [], "spoken": False}
+
+            folder_str = "\n".join(f"• {f}" for f in folders[:25])
+            return {
+                "success": True,
+                "response": f"Your email folders:\n\n{folder_str}",
+                "actions_taken": [{"action": "email_list_folders"}],
+                "spoken": False,
+            }
+
+        except Exception as e:
+            self._disconnect()
+            return {
+                "success": False,
+                "response": f"Error listing folders: {str(e)}",
+                "actions_taken": [],
+                "spoken": False,
+            }
+
+    def _handle_move(self, command, context):
+        """Move the referenced email to a target folder."""
+        m = re.search(
+            r'(?:move|archive)\s+(?:email\s+)?(?:\d+\s+)?(?:to\s+)?([a-zA-Z0-9_\-/ ]+)',
+            command, re.IGNORECASE
+        )
+        folder = m.group(1).strip() if m else "Archive"
+        # Strip trailing noise
+        folder = re.sub(r'\s+(email|message|it|this).*$', '', folder,
+                        flags=re.IGNORECASE).strip()
+
+        try:
+            imap = self._connect_imap()
+            imap.select("INBOX")
+
+            cache_entry = self._resolve_email_ref(command)
+            if cache_entry:
+                target_uid = cache_entry["seq_num"]
+            else:
+                sender_filter = self._extract_sender(command)
+                if sender_filter:
+                    status, data = imap.search(None, f'FROM "{sender_filter}"')
+                else:
+                    status, data = imap.search(None, "ALL")
+                msg_ids = data[0].split() if data[0] else []
+                if not msg_ids:
+                    self._disconnect()
+                    return {
+                        "success": False,
+                        "response": "No email found to move.",
+                        "actions_taken": [],
+                        "spoken": False,
+                    }
+                target_uid = msg_ids[-1]
+
+            imap.copy(target_uid, folder)
+            imap.store(target_uid, '+FLAGS', '\\Deleted')
+            imap.expunge()
+            self._disconnect()
+
+            # Remove from cache
+            self._email_cache = [
+                e for e in self._email_cache if e["seq_num"] != target_uid
+            ]
+
+            return {
+                "success": True,
+                "response": f"Email moved to {folder}.",
+                "actions_taken": [{"action": "email_move", "folder": folder}],
+                "spoken": False,
+            }
+
+        except Exception as e:
+            self._disconnect()
+            return {
+                "success": False,
+                "response": f"Error moving email: {str(e)}",
+                "actions_taken": [],
+                "spoken": False,
+            }
+
+    # ── Email reference resolver ───────────────────────────────────
+
+    def _resolve_email_ref(self, command: str) -> dict | None:
+        """Return a cache entry matching the email referenced in the command.
+
+        Resolution priority:
+          1. Numeric index ("email 2", "#3")
+          2. Sender name  ("email from Bob")
+          3. Subject keywords ("email about the hockey game")
+          4. Most recent in cache (silent fallback)
+        """
+        if not self._email_cache:
+            return None
+
+        cmd_lower = command.lower()
+
+        # 1. Numeric index (1-based, user-facing)
+        m = re.search(r'\b(\d+)\b', command)
+        if m:
+            idx = int(m.group(1)) - 1
+            if 0 <= idx < len(self._email_cache):
+                return self._email_cache[idx]
+
+        # 2. Sender name
+        sender = self._extract_sender(command)
+        if sender:
+            for entry in reversed(self._email_cache):
+                if sender.lower() in entry["from"].lower():
+                    return entry
+
+        # 3. Subject keyword matching — strip action/filler words, score by hits
+        topic = re.sub(
+            r'\b(read|delete|reply|send|move|email|message|about|regarding|'
+            r'the|latest|recent|last|me|my|to|from|re|it|this)\b',
+            '', cmd_lower
+        ).strip()
+        if topic:
+            keywords = [w for w in topic.split() if len(w) > 2]
+            if keywords:
+                best_entry, best_score = None, 0
+                for entry in reversed(self._email_cache):
+                    subj_lower = entry["subject"].lower()
+                    score = sum(1 for kw in keywords if kw in subj_lower)
+                    if score > best_score:
+                        best_score = score
+                        best_entry = entry
+                if best_entry and best_score > 0:
+                    return best_entry
+
+        # 4. Fallback: most recent
+        return self._email_cache[-1]
+
+    # ── JSON draft parser ──────────────────────────────────────────
+
+    @staticmethod
+    def _parse_json_draft(llm_response: str) -> dict | None:
+        """Extract and parse a JSON email draft from an LLM response."""
+        try:
+            # Strip markdown fences if present
+            clean = re.sub(r'```(?:json)?\s*', '', llm_response).strip('`').strip()
+            json_match = re.search(r'\{.*\}', clean, re.DOTALL)
+            if json_match:
+                return json.loads(json_match.group())
+        except (json.JSONDecodeError, AttributeError):
+            pass
+        return None
 
     # ── IMAP helpers ───────────────────────────────────────────────
 
     def _get_password(self):
-        """Retrieve password from the in-memory config.
-
-        The real password is injected from the OS keyring at startup by
-        TalonAssistant._inject_secrets(), so it's always available here
-        as long as credentials have been configured.
-        """
+        """Retrieve password from the in-memory config."""
         return self._config.get("password", "")
 
     def _connect_imap(self):
@@ -364,8 +710,6 @@ class EmailTalent(BaseTalent):
         except imaplib.IMAP4.error as e:
             err = str(e).lower()
             if "unmatch" in err or "quote" in err or "parse" in err:
-                # Password has special chars that break IMAP quoting;
-                # open a fresh connection and use SASL PLAIN instead.
                 imap = imaplib.IMAP4_SSL(server, port)
                 auth_string = f"\x00{username}\x00{password}"
                 imap.authenticate("PLAIN",
@@ -393,12 +737,10 @@ class EmailTalent(BaseTalent):
             self._connected = False
 
     def _fetch_summaries(self, imap, msg_ids):
-        """Fetch brief headers (from, subject, date) for given message IDs."""
+        """Fetch brief headers (from, subject, date, message_id) for given message IDs."""
         summaries = []
         for mid in msg_ids:
             try:
-                # BODY.PEEK[HEADER] avoids marking as read and works on
-                # servers (like iCloud) where RFC822.HEADER returns empty.
                 status, data = imap.fetch(mid, "(BODY.PEEK[HEADER])")
                 if status != "OK":
                     continue
@@ -409,9 +751,10 @@ class EmailTalent(BaseTalent):
                     continue
                 msg = email.message_from_bytes(raw_header)
                 summaries.append({
-                    "from": self._decode_header(msg.get("From", "Unknown")),
-                    "subject": self._decode_header(msg.get("Subject", "(no subject)")),
-                    "date": msg.get("Date", "Unknown"),
+                    "from":       self._decode_header(msg.get("From", "Unknown")),
+                    "subject":    self._decode_header(msg.get("Subject", "(no subject)")),
+                    "date":       msg.get("Date", "Unknown"),
+                    "message_id": msg.get("Message-ID", ""),
                 })
             except Exception as e:
                 print(f"   [Email] Error fetching summary: {e}")
@@ -423,8 +766,6 @@ class EmailTalent(BaseTalent):
         emails = []
         for mid in msg_ids:
             try:
-                # BODY.PEEK[] avoids marking as read and works on servers
-                # (like iCloud) where RFC822 returns empty responses.
                 status, data = imap.fetch(mid, "(BODY.PEEK[])")
                 if status != "OK":
                     continue
@@ -437,7 +778,6 @@ class EmailTalent(BaseTalent):
 
                 body = ""
                 if msg.is_multipart():
-                    # Pass 1: prefer text/plain
                     for part in msg.walk():
                         ct = part.get_content_type()
                         if ct == "text/plain":
@@ -448,7 +788,6 @@ class EmailTalent(BaseTalent):
                                 body = payload
                             if body:
                                 break
-                    # Pass 2: fall back to text/html if no plain text
                     if not body:
                         for part in msg.walk():
                             ct = part.get_content_type()
@@ -472,16 +811,14 @@ class EmailTalent(BaseTalent):
                         text = payload
                     else:
                         text = ""
-                    if ct == "text/html":
-                        body = self._strip_html(text)
-                    else:
-                        body = text
+                    body = self._strip_html(text) if ct == "text/html" else text
 
                 emails.append({
-                    "from": self._decode_header(msg.get("From", "Unknown")),
-                    "subject": self._decode_header(msg.get("Subject", "(no subject)")),
-                    "date": msg.get("Date", "Unknown"),
-                    "body": body,
+                    "from":       self._decode_header(msg.get("From", "Unknown")),
+                    "subject":    self._decode_header(msg.get("Subject", "(no subject)")),
+                    "date":       msg.get("Date", "Unknown"),
+                    "body":       body,
+                    "message_id": msg.get("Message-ID", ""),
                 })
             except Exception as e:
                 print(f"   [Email] Error fetching email: {e}")
@@ -493,22 +830,17 @@ class EmailTalent(BaseTalent):
         """Convert HTML email body to readable plain text."""
         if not html_text:
             return ""
-        # Remove <style> and <script> blocks entirely
         text = re.sub(r'<style[^>]*>.*?</style>', '', html_text,
-                       flags=re.DOTALL | re.IGNORECASE)
+                      flags=re.DOTALL | re.IGNORECASE)
         text = re.sub(r'<script[^>]*>.*?</script>', '', text,
-                       flags=re.DOTALL | re.IGNORECASE)
-        # Replace <br>, <p>, <div>, <tr>, <li> with newlines
+                      flags=re.DOTALL | re.IGNORECASE)
         text = re.sub(r'<br\s*/?>',  '\n', text, flags=re.IGNORECASE)
         text = re.sub(r'</p>',       '\n', text, flags=re.IGNORECASE)
         text = re.sub(r'</div>',     '\n', text, flags=re.IGNORECASE)
         text = re.sub(r'</tr>',      '\n', text, flags=re.IGNORECASE)
         text = re.sub(r'</li>',      '\n', text, flags=re.IGNORECASE)
-        # Strip all remaining HTML tags
         text = re.sub(r'<[^>]+>', '', text)
-        # Decode HTML entities (&amp; &lt; &#39; etc.)
         text = _html_mod.unescape(text)
-        # Collapse excessive whitespace
         text = re.sub(r'[ \t]+', ' ', text)
         text = re.sub(r'\n{3,}', '\n\n', text)
         return text.strip()
@@ -538,15 +870,21 @@ class EmailTalent(BaseTalent):
     def _extract_sender(self, command):
         """Extract a sender name or email from the command."""
         cmd = command.lower()
-        # "from <name>" pattern
         match = re.search(r'from\s+([a-z0-9@._\- ]+)', cmd)
         if match:
             sender = match.group(1).strip()
-            # Remove trailing noise words
             for noise in ["about", "regarding", "the", "today", "this"]:
                 sender = re.sub(rf'\s+{noise}.*$', '', sender)
             return sender.strip()
         return ""
+
+    @staticmethod
+    def _extract_reply_addr(from_header: str) -> str:
+        """Extract the bare email address from a From header like 'Name <addr@example.com>'."""
+        match = re.search(r'<([^>]+)>', from_header)
+        if match:
+            return match.group(1)
+        return from_header.strip()
 
     # ── SMTP helpers ───────────────────────────────────────────────
 
@@ -577,3 +915,34 @@ class EmailTalent(BaseTalent):
             smtp.send_message(msg)
 
         print(f"   [Email] Sent!")
+
+    def _send_smtp_reply(self, to_addr, subject, body, reply_uid):
+        """Send a reply email with proper In-Reply-To / References threading headers."""
+        server = self._config.get("smtp_server", "")
+        port = self._config.get("smtp_port", 587)
+        username = self._config["username"]
+        password = self._get_password()
+
+        if not server:
+            raise ValueError("SMTP server not configured.")
+        if not password:
+            raise ValueError("No email password configured.")
+
+        msg = MIMEMultipart()
+        msg["From"] = username
+        msg["To"] = to_addr
+        msg["Subject"] = subject
+        if reply_uid:
+            msg["In-Reply-To"] = reply_uid
+            msg["References"]  = reply_uid
+        msg.attach(MIMEText(body, "plain"))
+
+        print(f"   [Email] Sending reply via SMTP {server}:{port} to {to_addr}...")
+        with smtplib.SMTP(server, port) as smtp:
+            smtp.ehlo()
+            smtp.starttls()
+            smtp.ehlo()
+            smtp.login(username, password)
+            smtp.send_message(msg)
+
+        print(f"   [Email] Reply sent!")
