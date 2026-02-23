@@ -5,6 +5,7 @@ import importlib
 import inspect
 import pkgutil
 import threading
+from collections import deque
 from pathlib import Path
 
 from core.memory import MemorySystem
@@ -61,6 +62,14 @@ class TalonAssistant:
         '- "what time is it" -> {"is_rule": false}\n'
         '- "remind me to buy milk" -> {"is_rule": false}\n\n'
         "Return ONLY the JSON object, no markdown, no explanation."
+    )
+
+    _CONVERSATION_SYSTEM_PROMPT = (
+        "You are Talon, a personal AI desktop assistant. "
+        "You are helpful, concise, and friendly. "
+        "You have access to smart home controls, weather, email, reminders, "
+        "web search, notes, and other tools through your skills. "
+        "Keep responses brief — 1 to 3 sentences unless the user asks for detail."
     )
 
     _RULE_INDICATORS = [
@@ -128,6 +137,11 @@ class TalonAssistant:
 
         # 6. Thread safety  (RLock so rule-triggered recursive calls don't deadlock)
         self.command_lock = threading.RLock()
+
+        # 7. Within-session conversation buffer (last 6 turns: 3 user + 3 Talon)
+        # Used to inject recent context into conversation-path LLM calls only.
+        # Resets on app restart. Planner sub-steps are NOT buffered.
+        self.conversation_buffer: deque = deque(maxlen=6)
 
         print("\n" + "=" * 50)
         print("TALON READY")
@@ -548,7 +562,24 @@ class TalonAssistant:
         if memory_context:
             prompt = f"{memory_context}{prompt}"
 
-        response = self.llm.generate(prompt, use_vision=needs_vision, screenshot_b64=screenshot_b64)
+        # Prepend recent conversation turns for within-session continuity.
+        # Cap at 600 chars to stay within token budget.
+        if self.conversation_buffer:
+            lines = ["[Recent conversation]"]
+            for turn in self.conversation_buffer:
+                role_label = "User" if turn["role"] == "user" else "Talon"
+                lines.append(f"{role_label}: {turn['text']}")
+            history_block = "\n".join(lines) + "\n\n"
+            if len(history_block) > 600:
+                history_block = history_block[-600:]
+            prompt = f"{history_block}{prompt}"
+
+        response = self.llm.generate(
+            prompt,
+            system_prompt=self._CONVERSATION_SYSTEM_PROMPT,
+            use_vision=needs_vision,
+            screenshot_b64=screenshot_b64,
+        )
 
         self.memory.log_command(command, success=True, response=response)
         self._detect_preference(command, response)
@@ -647,6 +678,15 @@ class TalonAssistant:
                 # Step 7: Preference detection
                 self._detect_preference(command, result.get("response", ""))
 
+                # Step 8: Buffer this turn for within-session continuity
+                # Skip for planner sub-steps (_executing_rule=True) to avoid
+                # polluting the buffer with intermediate plan steps.
+                if not _executing_rule:
+                    resp_text = result.get("response", "").strip()
+                    if resp_text:
+                        self.conversation_buffer.append({"role": "user", "text": command})
+                        self.conversation_buffer.append({"role": "talon", "text": resp_text})
+
                 print(f"\n{'=' * 50}\n")
                 return {
                     "response": result.get("response", ""),
@@ -657,6 +697,11 @@ class TalonAssistant:
             else:
                 # No talent matched -- conversational fallback
                 response = self._handle_conversation(command, context, speak_response)
+
+                # Buffer this turn (conversation path)
+                if not _executing_rule and response:
+                    self.conversation_buffer.append({"role": "user", "text": command})
+                    self.conversation_buffer.append({"role": "talon", "text": response.strip()})
 
                 print(f"\n{'=' * 50}\n")
                 return {

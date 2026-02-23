@@ -48,6 +48,10 @@ class MemorySystem:
         print("   [Memory] Loading embedding model...")
         self.embedder = SentenceTransformer(embedding_model)
 
+        # Cache: None = unknown, True/False = cached result
+        # Invalidated whenever a rule is added, deleted, or toggled.
+        self._rules_exist: bool | None = None
+
         print("   [Memory] Memory systems ready!")
 
     def init_database(self):
@@ -397,6 +401,25 @@ class MemorySystem:
 
     # ── Rules CRUD (behavioral rules: trigger → action) ─────────────
 
+    def _check_rules_exist(self) -> bool:
+        """Return True if at least one enabled rule is stored in SQLite.
+
+        Result is cached after the first query and invalidated by any
+        mutation (add_rule, delete_rule, toggle_rule).  This avoids
+        hitting ChromaDB on every command when no rules are defined.
+        """
+        if self._rules_exist is not None:
+            return self._rules_exist
+
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM rules WHERE enabled = 1")
+        count = cursor.fetchone()[0]
+        conn.close()
+
+        self._rules_exist = count > 0
+        return self._rules_exist
+
     def add_rule(self, trigger, action, original_command=""):
         """Store a behavioral rule in SQLite + ChromaDB.
 
@@ -433,6 +456,7 @@ class MemorySystem:
             ids=[chroma_id],
         )
 
+        self._rules_exist = None  # Invalidate cache
         print(f"   [Memory] Stored rule #{rule_id}: "
               f"'{trigger}' -> '{action}'")
         return rule_id
@@ -450,6 +474,11 @@ class MemorySystem:
             dict with keys: id, trigger_phrase, action_text, distance
             or None if no match within threshold.
         """
+        # Fast-path: skip ChromaDB entirely when no enabled rules exist
+        if not self._check_rules_exist():
+            print("   [Rules] Skipping — no rules stored")
+            return None
+
         # Adaptive threshold: short phrases are more likely to be triggers
         word_count = len(command.strip().split())
         threshold = max_distance if word_count < 5 else 0.6
@@ -552,6 +581,7 @@ class MemorySystem:
         except Exception as e:
             print(f"   [Memory] ChromaDB rule delete warning: {e}")
 
+        self._rules_exist = None  # Invalidate cache
         print(f"   [Memory] Deleted rule #{rule_id}")
         return True
 
@@ -572,6 +602,7 @@ class MemorySystem:
         conn.close()
 
         if changed:
+            self._rules_exist = None  # Invalidate cache
             state = "enabled" if enabled else "disabled"
             print(f"   [Memory] Rule #{rule_id} {state}")
         return changed
