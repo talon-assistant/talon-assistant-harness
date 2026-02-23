@@ -3,6 +3,7 @@ from datetime import datetime
 import requests
 from talents.base import BaseTalent
 from ddgs import DDGS
+from core.assistant import _wrap_external, _INJECTION_DEFENSE_CLAUSE
 
 log = logging.getLogger(__name__)
 
@@ -42,6 +43,7 @@ class NewsTalent(BaseTalent):
         "If the articles don't cover the requested topic, say "
         "\"I couldn't find recent news about that topic.\" "
         "NEVER make up news. NEVER guess. NEVER say 'check website X'."
+        + _INJECTION_DEFENSE_CLAUSE
     )
 
     def can_handle(self, command: str) -> bool:
@@ -92,11 +94,9 @@ class NewsTalent(BaseTalent):
         print(f"   -> News topic: '{topic}' via {provider}")
         print(f"   -> Results preview: {news_results[:300]}...")
 
-        # Build user message with clear delimiters
+        # Build user message — wrap results in structural injection-defence markers
         user_message = (
-            f"=== NEWS ARTICLES START ===\n"
-            f"{news_results}\n"
-            f"=== NEWS ARTICLES END ===\n\n"
+            f"{_wrap_external(news_results, 'news articles')}\n\n"
             f"Request: {command}\n\n"
             f"Summarize the most important headlines using ONLY the articles above. "
             f"Include specific details — names, events, dates — from the articles."

@@ -2,6 +2,7 @@ import logging
 import requests
 from talents.base import BaseTalent
 from ddgs import DDGS
+from core.assistant import _wrap_external, _INJECTION_DEFENSE_CLAUSE
 
 log = logging.getLogger(__name__)
 
@@ -29,6 +30,7 @@ class WebSearchTalent(BaseTalent):
         "If the search results do NOT contain enough information, say "
         "\"I couldn't find specific information about that in the search results.\" "
         "NEVER make up data. NEVER guess. NEVER say 'check website X'."
+        + _INJECTION_DEFENSE_CLAUSE
     )
 
     # Lighter touch on query cleaning — only strip command prefixes, keep the question
@@ -65,11 +67,9 @@ class WebSearchTalent(BaseTalent):
         print(f"   -> Search query sent: '{search_query}' via {provider}")
         print(f"   -> Results preview: {web_results[:300]}...")
 
-        # Build the user message with VERY clear delimiters
+        # Build the user message — wrap results in structural injection-defence markers
         user_message = (
-            f"=== SEARCH RESULTS START ===\n"
-            f"{web_results}\n"
-            f"=== SEARCH RESULTS END ===\n\n"
+            f"{_wrap_external(web_results, 'web search results')}\n\n"
             f"Question: {command}\n\n"
             f"Answer the question using ONLY the search results above. "
             f"Include specific facts, numbers, and data found in the results."

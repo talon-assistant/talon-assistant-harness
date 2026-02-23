@@ -27,6 +27,7 @@ from email.mime.multipart import MIMEMultipart
 from email.header import decode_header
 from datetime import datetime
 from talents.base import BaseTalent
+from core.assistant import _wrap_external, _INJECTION_DEFENSE_CLAUSE
 
 
 class EmailTalent(BaseTalent):
@@ -68,6 +69,7 @@ class EmailTalent(BaseTalent):
         "Using ONLY the email data provided, give a concise summary. "
         "Include sender name, subject, and a 1-2 sentence summary of the body. "
         "Do NOT add information not in the data."
+        + _INJECTION_DEFENSE_CLAUSE
     )
 
     _SYSTEM_PROMPT_COMPOSE = (
@@ -86,6 +88,7 @@ class EmailTalent(BaseTalent):
         "Given the original email and the user's instruction, write ONLY the reply body text. "
         "Do not repeat or quote the original email. Keep it concise and professional. "
         "Return ONLY the reply body text — no subject line, no greeting headers."
+        + _INJECTION_DEFENSE_CLAUSE
     )
 
     def __init__(self):
@@ -280,13 +283,14 @@ class EmailTalent(BaseTalent):
             email_data = details[0]
             llm = context.get("llm")
             if llm:
-                user_msg = (
-                    f"=== EMAIL ===\n"
+                email_block = (
                     f"From: {email_data['from']}\n"
                     f"Subject: {email_data['subject']}\n"
                     f"Date: {email_data['date']}\n"
-                    f"Body:\n{email_data['body'][:2000]}\n"
-                    f"=== END EMAIL ===\n\n"
+                    f"Body:\n{email_data['body'][:2000]}"
+                )
+                user_msg = (
+                    f"{_wrap_external(email_block, 'email content')}\n\n"
                     f"User asked: {command}\n\n"
                     f"Summarize this email concisely."
                 )
@@ -416,11 +420,13 @@ class EmailTalent(BaseTalent):
             reply_body = ""
             llm = context.get("llm")
             if llm:
-                prompt = (
-                    f"Original email:\n"
+                original_block = (
                     f"From: {original['from']}\n"
                     f"Subject: {original['subject']}\n"
-                    f"Body:\n{original['body'][:1500]}\n\n"
+                    f"Body:\n{original['body'][:1500]}"
+                )
+                prompt = (
+                    f"{_wrap_external(original_block, 'original email to reply to')}\n\n"
                     f"User instruction: {command}\n\n"
                     f"Write the reply body."
                 )
