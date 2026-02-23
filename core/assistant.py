@@ -603,6 +603,20 @@ class TalonAssistant:
                 print(f"   [Routing] -> {talent.name}")
                 result = talent.execute(command, context)
 
+                # If talent explicitly declined (success=False, blank response,
+                # no actions taken), fall through to conversation rather than
+                # returning a blank response. This lets PlannerTalent hand off
+                # single-step commands without leaving the user with silence.
+                if (not result.get("success")
+                        and not result.get("response", "").strip()
+                        and not result.get("actions_taken")):
+                    print(f"   [Routing] {talent.name} declined — "
+                          f"falling through to conversation")
+                    response = self._handle_conversation(
+                        command, context, speak_response)
+                    print(f"\n{'=' * 50}\n")
+                    return {"response": response or "", "talent": "", "success": True}
+
                 # Step 4: Log to memory
                 command_id = self.memory.log_command(
                     command,
