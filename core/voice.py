@@ -99,8 +99,12 @@ class VoiceSystem:
         if text.startswith("Error:"):
             return True
 
+        # Edge TTS mispronounces "Talon" as "tah-LONE".
+        # Substitute a spelling that produces the correct "TAY-lun" sound.
+        tts_text = text.replace("Talon", "Taylen").replace("talon", "taylen")
+
         self._stop_event.clear()
-        return asyncio.run(self._async_speak(text))
+        return asyncio.run(self._async_speak(tts_text))
 
     def stop_speaking(self):
         """Interrupt any in-progress TTS playback immediately."""
