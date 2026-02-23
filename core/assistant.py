@@ -688,11 +688,14 @@ class TalonAssistant:
                         self.conversation_buffer.append({"role": "talon", "text": resp_text})
 
                 print(f"\n{'=' * 50}\n")
-                return {
+                ret = {
                     "response": result.get("response", ""),
                     "talent": talent.name,
-                    "success": result.get("success", True)
+                    "success": result.get("success", True),
                 }
+                if "pending_email" in result:
+                    ret["pending_email"] = result["pending_email"]
+                return ret
 
             else:
                 # No talent matched -- conversational fallback
