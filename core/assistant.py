@@ -329,7 +329,14 @@ class TalonAssistant:
         return None
 
     def _route_with_llm(self, command):
-        """Ask the LLM which talent should handle this command."""
+        """Ask the LLM which talent should handle this command.
+
+        After the LLM picks a talent, a keyword/example cross-check validates
+        the choice. Three outcomes are possible:
+          1. Chosen talent has keyword/example signal → trust LLM (agreement)
+          2. Chosen has no signal, another talent does → override with keyword winner
+          3. No talent has any signal → trust LLM (NLP-level match, e.g. "good morning")
+        """
         try:
             prompt = self._build_routing_prompt()
             response = self.llm.generate(
@@ -340,11 +347,42 @@ class TalonAssistant:
             )
             if not response or response.startswith("Error:"):
                 return None
+
             talent_name = response.strip().split()[0].strip(".,!\"'").lower()
-            print(f"   [LLM Router] -> {talent_name}")
+
             if talent_name == "conversation":
+                print(f"   [LLM Router] -> conversation")
                 return self._CONVERSATION
-            return self._get_talent_by_name(talent_name)
+
+            chosen = self._get_talent_by_name(talent_name)
+
+            if chosen is None:
+                # LLM hallucinated a talent name — fall through to keyword fallback
+                print(f"   [LLM Router] -> '{talent_name}' (unknown, falling back to keywords)")
+                return None
+
+            # ── Keyword/example cross-check ───────────────────────────────
+            if self._keyword_confidence(chosen, command):
+                print(f"   [LLM Router] -> {talent_name} (confirmed by keyword signal)")
+                return chosen
+
+            # Chosen talent has no signal — find the highest-priority talent that does
+            keyword_winner = None
+            for talent in self.talents:       # sorted by priority descending
+                if talent.enabled and talent is not chosen:
+                    if self._keyword_confidence(talent, command):
+                        keyword_winner = talent
+                        break
+
+            if keyword_winner is not None:
+                print(f"   [LLM Router] -> {talent_name} "
+                      f"(overridden → {keyword_winner.name} by keyword signal)")
+                return keyword_winner
+
+            # No keyword signal anywhere — trust the LLM (NLP-level match)
+            print(f"   [LLM Router] -> {talent_name} (no keyword signal, trusting LLM)")
+            return chosen
+
         except Exception as e:
             print(f"   [LLM Router] Error: {e}")
             return None
@@ -380,6 +418,26 @@ class TalonAssistant:
             if talent.name == name and talent.enabled:
                 return talent
         return None
+
+    def _keyword_confidence(self, talent, command: str) -> bool:
+        """Return True if the command has any affinity with this talent.
+
+        Checks keyword_match() first (word-boundary matching), then falls
+        back to content-word overlap against each of the talent's examples.
+        Keywords are intentionally sparse, so example phrases often carry
+        richer signal for less common phrasings.
+        """
+        if talent.keyword_match(command):
+            return True
+        cmd_words = set(command.lower().split())
+        _STOP = {"the", "a", "an", "my", "me", "to", "for", "on", "in",
+                 "is", "it", "i", "you", "what", "how", "please", "can",
+                 "do", "of", "at", "and", "or", "be"}
+        for example in talent.examples:
+            content = set(example.lower().split()) - _STOP
+            if content and content.intersection(cmd_words):
+                return True
+        return False
 
     def invalidate_routing_cache(self):
         """Clear the cached LLM routing prompt."""
