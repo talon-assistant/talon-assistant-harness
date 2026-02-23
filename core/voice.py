@@ -100,8 +100,8 @@ class VoiceSystem:
             return True
 
         # Edge TTS mispronounces "Talon" as "tah-LONE".
-        # Substitute a spelling that produces the correct "TAY-lun" sound.
-        tts_text = text.replace("Talon", "Taylen").replace("talon", "taylen")
+        # "talun" produces the correct short-a "TAL-un" sound (like "talent" - t).
+        tts_text = text.replace("Talon", "talun").replace("talon", "talun")
 
         self._stop_event.clear()
         return asyncio.run(self._async_speak(tts_text))
