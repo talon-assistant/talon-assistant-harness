@@ -25,6 +25,7 @@ pynput
 
 # Document Ingestion
 pymupdf4llm
+pymupdf_layout
 python-docx
 pandas
 beautifulsoup4
