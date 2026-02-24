@@ -2,8 +2,7 @@ import os
 import json
 from pathlib import Path
 import chromadb
-from sentence_transformers import SentenceTransformer
-import PyPDF2
+import pymupdf4llm
 from docx import Document
 import pandas as pd
 from bs4 import BeautifulSoup
@@ -35,9 +34,6 @@ class DocumentIngester:
             metadata={"description": "User documents for RAG retrieval"}
         )
 
-        print("Loading embedding model...")
-        self.embedder = SentenceTransformer('all-MiniLM-L6-v2')
-
         self.supported_extensions = {
             '.pdf', '.txt', '.docx', '.md', '.markdown',
             '.py', '.js', '.java', '.cpp', '.cs', '.html', '.htm',
@@ -48,7 +44,7 @@ class DocumentIngester:
         print(f"  Documents directory: {self.documents_dir}")
         print(f"  Supported types: {', '.join(self.supported_extensions)}\n")
 
-    def chunk_text(self, text, chunk_size=500, overlap=50):
+    def chunk_text(self, text, chunk_size=200, overlap=30):
         """Split text into overlapping chunks"""
         words = text.split()
         chunks = []
@@ -61,14 +57,14 @@ class DocumentIngester:
         return chunks
 
     def extract_pdf(self, filepath):
-        """Extract text from PDF"""
+        """Extract text from PDF using pymupdf4llm.
+
+        Produces clean Markdown preserving reading order in multi-column
+        layouts, tables, and section headings — far superior to PyPDF2
+        for formatted rulebooks and reference manuals.
+        """
         try:
-            with open(filepath, 'rb') as file:
-                reader = PyPDF2.PdfReader(file)
-                text = ""
-                for page in reader.pages:
-                    text += page.extract_text() + "\n"
-                return text
+            return pymupdf4llm.to_markdown(str(filepath))
         except Exception as e:
             print(f"  ✗ Error reading PDF: {e}")
             return None

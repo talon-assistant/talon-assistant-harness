@@ -24,7 +24,7 @@ Pillow
 pynput
 
 # Document Ingestion
-PyPDF2
+pymupdf4llm
 python-docx
 pandas
 beautifulsoup4

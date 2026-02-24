@@ -315,7 +315,7 @@ class MemorySystem:
                 "use them if helpful, ignore if not:"
             ]
             for filename, text, dist in chunks:
-                truncated = text[:300] + "..." if len(text) > 300 else text
+                truncated = text[:600] + "..." if len(text) > 600 else text
                 lines.append(f"- From {filename}: {truncated}")
 
             return "\n".join(lines) + "\n"
