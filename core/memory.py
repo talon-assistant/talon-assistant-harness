@@ -473,6 +473,55 @@ class MemorySystem:
         self._rules_exist = count > 0
         return self._rules_exist
 
+    def _rebuild_rules_collection(self):
+        """Rebuild the ChromaDB rules collection from SQLite ground truth.
+
+        Called when the HNSW index is missing from disk (e.g. after chroma_db
+        was wiped). SQLite is always the authoritative store for rules data.
+        """
+        print("   [Rules] Rebuilding ChromaDB index from SQLite...")
+
+        # Drop and recreate the collection
+        try:
+            self.chroma_client.delete_collection(name="talon_rules")
+        except Exception:
+            pass
+
+        self.rules_collection = self.chroma_client.get_or_create_collection(
+            name="talon_rules",
+            metadata={"description": "Behavioral rules: trigger phrase semantic matching"}
+        )
+
+        # Re-add all enabled rules from SQLite
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT id, trigger_phrase, action_text, timestamp, chroma_id "
+            "FROM rules WHERE enabled = 1"
+        )
+        rows = cursor.fetchall()
+        conn.close()
+
+        if not rows:
+            print("   [Rules] No enabled rules to restore")
+            return
+
+        for rule_id, trigger, action, timestamp, chroma_id in rows:
+            try:
+                self.rules_collection.add(
+                    documents=[trigger],
+                    metadatas=[{
+                        "rule_id": rule_id,
+                        "action_text": action,
+                        "timestamp": timestamp,
+                    }],
+                    ids=[chroma_id],
+                )
+            except Exception as e:
+                print(f"   [Rules] Could not restore rule #{rule_id}: {e}")
+
+        print(f"   [Rules] Restored {len(rows)} rule(s) from SQLite")
+
     def add_rule(self, trigger, action, original_command=""):
         """Store a behavioral rule in SQLite + ChromaDB.
 
@@ -578,7 +627,33 @@ class MemorySystem:
                 print(f"   [Rules] No match — distance {distance:.3f} "
                       f"> threshold {threshold:.1f}")
         except Exception as e:
-            print(f"   [Memory] Rule match error: {e}")
+            err = str(e)
+            if "Nothing found on disk" in err or "hnsw segment" in err.lower():
+                # HNSW index missing — rebuild from SQLite and retry once
+                self._rebuild_rules_collection()
+                try:
+                    results = self.rules_collection.query(
+                        query_texts=[command],
+                        n_results=1,
+                        include=["documents", "metadatas", "distances"],
+                    )
+                    if results["documents"] and results["documents"][0]:
+                        closest_trigger = results["documents"][0][0]
+                        distance = results["distances"][0][0]
+                        meta = results["metadatas"][0][0]
+                        print(f"   [Rules] Closest match (after rebuild): "
+                              f"'{closest_trigger}' (distance={distance:.3f})")
+                        if distance <= threshold:
+                            return {
+                                "id": int(meta.get("rule_id", 0)),
+                                "trigger_phrase": closest_trigger,
+                                "action_text": meta.get("action_text", ""),
+                                "distance": distance,
+                            }
+                except Exception as retry_e:
+                    print(f"   [Rules] Retry after rebuild failed: {retry_e}")
+            else:
+                print(f"   [Memory] Rule match error: {e}")
         return None
 
     def list_rules(self, limit=20):
