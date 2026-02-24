@@ -55,6 +55,12 @@ class TalonAssistant:
         "that should process it.\n"
         "Respond with a single word — the handler name, nothing else.\n\n"
         "Available handlers:\n{talent_roster}\n"
+        "conversation_rag — The user explicitly wants to search or retrieve "
+        "information from their own uploaded documents, files, notes, or "
+        "reference books (e.g. 'what does my Shadowrun rulebook say', "
+        "'look it up in my documents', 'check the rulebook', 'use RAG', "
+        "'search my files', 'what do my notes say about', "
+        "'find it in my uploaded files', 'what does my document say').\n"
         "conversation — General chat, questions, greetings, opinions, "
         "or anything that doesn't clearly fit a specific handler above.\n\n"
         "Rules:\n"
@@ -65,11 +71,14 @@ class TalonAssistant:
         "- If the command describes a multi-step routine or sequence of actions "
         "(e.g. 'good morning', 'movie night', 'evening routine', 'set up my workspace', "
         "or any command that clearly requires multiple different actions), choose planner.\n"
+        "- If the user explicitly asks to search, check, or look something up in "
+        "their own documents, files, notes, or reference books, choose conversation_rag.\n"
         "- If the command is general knowledge or chitchat, choose conversation.\n"
         "- Respond with ONLY the handler name. No punctuation, no explanation."
     )
 
-    _CONVERSATION = object()  # Sentinel: LLM explicitly chose conversation
+    _CONVERSATION = object()       # Sentinel: LLM explicitly chose conversation
+    _CONVERSATION_RAG = object()   # Sentinel: LLM chose conversation, explicit RAG intent
 
     _RULE_DETECTION_SYSTEM_PROMPT = (
         "You are a rule-detection assistant. The user just said something to a "
@@ -327,7 +336,10 @@ class TalonAssistant:
 
     def _build_context(self, command, speak_response):
         """Build the context dict passed to talent.execute()"""
-        memory_context = self.memory.get_relevant_context(command)
+        # Preferences and patterns only — document RAG is handled separately
+        # in _handle_conversation() with distance-threshold gating.
+        memory_context = self.memory.get_relevant_context(
+            command, include_documents=False)
         ctx = {
             "llm": self.llm,
             "memory": self.memory,
@@ -337,6 +349,7 @@ class TalonAssistant:
             "memory_context": memory_context,
             "speak_response": speak_response,
             "assistant": self,  # Allows talents (e.g. PlannerTalent) to call process_command()
+            "rag_explicit": False,  # Overwritten by process_command() after routing
         }
         if self.notify_callback:
             ctx["notify"] = self.notify_callback
@@ -347,7 +360,9 @@ class TalonAssistant:
         Falls back to keyword matching only if the LLM is unreachable."""
         result = self._route_with_llm(command)
         if result is self._CONVERSATION:
-            return None                          # LLM chose conversation
+            return None                          # LLM chose normal conversation
+        if result is self._CONVERSATION_RAG:
+            return self._CONVERSATION_RAG        # Propagate explicit RAG intent
         if result is not None:
             return result                        # Valid talent
         # LLM unreachable — degraded keyword fallback
@@ -382,6 +397,10 @@ class TalonAssistant:
                 return None
 
             talent_name = response.strip().split()[0].strip(".,!\"'").lower()
+
+            if talent_name == "conversation_rag":
+                print(f"   [LLM Router] -> conversation_rag (explicit RAG intent)")
+                return self._CONVERSATION_RAG
 
             if talent_name == "conversation":
                 print(f"   [LLM Router] -> conversation")
@@ -661,9 +680,18 @@ class TalonAssistant:
             capabilities = self._build_capabilities_summary()
             prompt = f"{capabilities}\n\n{prompt}"
 
+        # ── Document RAG injection (conversation path only) ──────────────────
+        rag_explicit = context.get("rag_explicit", False)
+        doc_context = self.memory.get_document_context(command, explicit=rag_explicit)
+
+        # Inject preferences/patterns with accurate label
         memory_context = context.get("memory_context", "")
         if memory_context:
-            prompt = f"{_wrap_external(memory_context, 'memory and document context')}\n\n{prompt}"
+            prompt = f"{_wrap_external(memory_context, 'user preferences and past patterns')}\n\n{prompt}"
+
+        # Inject document chunks if any passed the threshold (permissive framing)
+        if doc_context:
+            prompt = f"{_wrap_external(doc_context, 'document excerpts — may or may not be relevant')}\n\n{prompt}"
 
         # Prepend recent conversation turns for within-session continuity.
         # Cap at 600 chars to stay within token budget.
@@ -732,6 +760,15 @@ class TalonAssistant:
 
             # Step 3: Route to talent
             talent = self._find_talent(command)
+
+            # Unpack explicit RAG intent sentinel before talent path check.
+            # Normalise to None so the conversation fallback is reached correctly.
+            # Re-entrant rule sub-steps (_executing_rule=True) never return this
+            # sentinel, so rag_explicit stays False for planner sub-steps.
+            rag_explicit = (talent is self._CONVERSATION_RAG)
+            if rag_explicit:
+                talent = None   # Route to conversation path
+            context["rag_explicit"] = rag_explicit
 
             if talent:
                 print(f"   [Routing] -> {talent.name}")

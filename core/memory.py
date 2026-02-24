@@ -227,8 +227,11 @@ class MemorySystem:
             print(f"   [Memory] Document search error: {e}")
             return []
 
-    def get_relevant_context(self, query, max_items=3, include_documents=True):
-        """Get relevant context for a query from both memory and documents.
+    def get_relevant_context(self, query, max_items=3, include_documents=False):
+        """Get relevant context for a query from memory (preferences and patterns only).
+
+        Document RAG is now handled by get_document_context() on the
+        conversation path with distance-threshold gating.
 
         Uses a distance threshold so vague queries (like 'hi') don't pull in
         unrelated memories that cause the LLM to hallucinate past actions.
@@ -245,11 +248,6 @@ class MemorySystem:
         patterns = self.search_memory(query, n_results=2,
                                       memory_type="pattern", max_distance=0.9)
 
-        # Search documents if enabled
-        docs = []
-        if include_documents:
-            docs = self.search_documents(query, n_results=3)
-
         context = ""
 
         if prefs:
@@ -262,14 +260,69 @@ class MemorySystem:
                         "these actions unless explicitly asked):\n")
             context += "\n".join([f"- {p}" for p in patterns[:1]]) + "\n\n"
 
-        if docs:
-            context += ("Background — relevant information from user's documents "
-                        "(reference only):\n")
-            for doc in docs:
-                context += f"- From {doc['filename']}: {doc['text'][:200]}...\n"
-            context += "\n"
-
         return context
+
+    def get_document_context(self, query: str, explicit: bool = False) -> str:
+        """Retrieve document chunks for RAG injection into the conversation path.
+
+        Args:
+            query:    The user's command text, used as the embedding query.
+            explicit: If True, the user explicitly asked for document search —
+                      use a loose distance cap (1.5) and return up to 5 chunks.
+                      If False (ambient), only inject if distance <= 0.55 and
+                      return at most 2 chunks.
+
+        Returns:
+            Formatted string ready for injection, or "" if nothing qualifies.
+        """
+        if len(query.strip()) < 4:
+            return ""
+
+        n_results = 5 if explicit else 2
+        max_distance = 1.5 if explicit else 0.55
+
+        try:
+            results = self.docs_collection.query(
+                query_texts=[query],
+                n_results=n_results,
+                include=["documents", "metadatas", "distances"],
+            )
+
+            if not results["documents"] or not results["documents"][0]:
+                return ""
+
+            chunks = []
+            for doc, meta, dist in zip(
+                results["documents"][0],
+                results["metadatas"][0],
+                results["distances"][0],
+            ):
+                if dist <= max_distance:
+                    filename = meta.get("filename", "unknown file")
+                    chunks.append((filename, doc, dist))
+
+            if not chunks:
+                mode = "explicit" if explicit else "ambient"
+                print(f"   [RAG] No chunks passed threshold "
+                      f"(mode={mode}, threshold={max_distance:.2f})")
+                return ""
+
+            print(f"   [RAG] Injecting {len(chunks)} chunk(s) "
+                  f"(explicit={explicit}, best_dist={chunks[0][2]:.3f})")
+
+            lines = [
+                "The following document excerpts may be relevant — "
+                "use them if helpful, ignore if not:"
+            ]
+            for filename, text, dist in chunks:
+                truncated = text[:300] + "..." if len(text) > 300 else text
+                lines.append(f"- From {filename}: {truncated}")
+
+            return "\n".join(lines) + "\n"
+
+        except Exception as e:
+            print(f"   [RAG] Document context error: {e}")
+            return ""
 
     # ── Notes CRUD (used by NotesTalent) ──────────────────────────────
 
