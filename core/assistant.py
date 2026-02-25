@@ -690,27 +690,33 @@ class TalonAssistant:
 
         # ── Document RAG injection (conversation path only) ──────────────────
 
-        # Query expansion: for explicit RAG, distil the command down to core
-        # search terms before embedding so natural-language phrasing ("tell me
-        # everything about X, be verbose") doesn't dilute the embedding signal.
+        # Multi-query expansion: generate 3 related search queries in one LLM
+        # call so synonyms and cross-referenced terms are covered (e.g. asking
+        # about "Mana Bolt" also retrieves chunks filed under "Manaball").
         rag_query = command
+        rag_alt_queries: list[str] = []
         if rag_explicit:
             try:
-                expanded = self.llm.generate(
-                    f"Extract the key search terms from this query for a document search.\n"
-                    f"Return only a short phrase of 3-8 words, no explanation.\n\n"
-                    f"Query: {command}\nSearch terms:",
-                    max_length=32,
+                raw = self.llm.generate(
+                    f"Generate 3 short search queries (3-6 words each) to find document "
+                    f"chunks relevant to this request. Include synonyms and related terms. "
+                    f"Return a JSON array of 3 strings, nothing else.\n\n"
+                    f"Request: {command}\nQueries:",
+                    max_length=64,
                     temperature=0.0,
                 )
-                expanded = expanded.strip().strip('"').strip("'")
-                if expanded:
-                    print(f"   [RAG] Query expanded: {repr(expanded)}")
-                    rag_query = expanded
+                raw = re.sub(r"```[a-zA-Z]*\n?", "", raw).strip()
+                queries = json.loads(raw)
+                if isinstance(queries, list) and queries:
+                    rag_query = str(queries[0])
+                    rag_alt_queries = [str(q) for q in queries[1:]]
+                    print(f"   [RAG] Queries: {queries}")
             except Exception:
                 pass  # Fall back to raw command silently
 
-        doc_context = self.memory.get_document_context(rag_query, explicit=rag_explicit)
+        doc_context = self.memory.get_document_context(
+            rag_query, explicit=rag_explicit, alt_queries=rag_alt_queries
+        )
 
         # If explicit RAG returned nothing, offer a web search rather than
         # silently continuing with the LLM's training data alone.

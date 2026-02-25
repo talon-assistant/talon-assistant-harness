@@ -44,8 +44,13 @@ class DocumentIngester:
         print(f"  Documents directory: {self.documents_dir}")
         print(f"  Supported types: {', '.join(self.supported_extensions)}\n")
 
-    def chunk_text(self, text, chunk_size=200, overlap=30):
-        """Split text into overlapping chunks"""
+    def chunk_text(self, text, chunk_size=400, overlap=50):
+        """Split text into overlapping chunks.
+
+        Default chunk_size raised to 400 words (from 200) to keep cross-
+        referenced content (e.g. Mana Bolt described under Manaball) within
+        the same chunk, improving RAG retrieval on structured reference books.
+        """
         words = text.split()
         chunks = []
 
@@ -147,7 +152,7 @@ class DocumentIngester:
         else:
             return None
 
-    def ingest_file(self, filepath):
+    def ingest_file(self, filepath, chunk_size=400, overlap=50):
         """Ingest a single file"""
         print(f"  Processing: {filepath.name}")
 
@@ -156,8 +161,8 @@ class DocumentIngester:
             print(f"    ⚠ Skipped (no content or too short)")
             return 0
 
-        chunks = self.chunk_text(text)
-        print(f"    → Created {len(chunks)} chunks")
+        chunks = self.chunk_text(text, chunk_size=chunk_size, overlap=overlap)
+        print(f"    → Created {len(chunks)} chunks ({chunk_size}w/{overlap}w overlap)")
 
         doc_id_base = f"doc_{filepath.stem}_{int(datetime.now().timestamp())}"
 
@@ -181,7 +186,7 @@ class DocumentIngester:
         print(f"    ✓ Ingested {len(chunks)} chunks")
         return len(chunks)
 
-    def ingest_directory(self):
+    def ingest_directory(self, chunk_size=400, overlap=50):
         """Ingest all supported files"""
         if not self.documents_dir.exists():
             print(f"Creating documents directory: {self.documents_dir}")
@@ -204,7 +209,7 @@ class DocumentIngester:
 
         for filepath in files:
             try:
-                chunks = self.ingest_file(filepath)
+                chunks = self.ingest_file(filepath, chunk_size=chunk_size, overlap=overlap)
                 total_chunks += chunks
                 successful += 1
             except Exception as e:
@@ -252,20 +257,26 @@ class DocumentIngester:
 
 
 if __name__ == "__main__":
-    import sys
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Talon document ingester")
+    parser.add_argument("command", nargs="?", default="ingest",
+                        choices=["ingest", "list", "clear"],
+                        help="Command to run (default: ingest)")
+    parser.add_argument("--chunk-size", type=int, default=400,
+                        help="Words per chunk (default: 400)")
+    parser.add_argument("--overlap", type=int, default=50,
+                        help="Overlap words between chunks (default: 50)")
+    args = parser.parse_args()
 
     ingester = DocumentIngester()
 
-    if len(sys.argv) > 1:
-        command = sys.argv[1].lower()
-
-        if command == "list":
-            ingester.list_documents()
-        elif command == "clear":
-            confirm = input("Clear all documents? (yes/no): ")
-            if confirm.lower() == 'yes':
-                ingester.clear_documents()
-        else:
-            print("Unknown command")
+    if args.command == "list":
+        ingester.list_documents()
+    elif args.command == "clear":
+        confirm = input("Clear all documents? (yes/no): ")
+        if confirm.lower() == "yes":
+            ingester.clear_documents()
     else:
-        ingester.ingest_directory()
+        print(f"Chunk size: {args.chunk_size} words, overlap: {args.overlap} words")
+        ingester.ingest_directory(chunk_size=args.chunk_size, overlap=args.overlap)

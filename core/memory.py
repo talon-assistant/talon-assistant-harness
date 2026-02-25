@@ -262,15 +262,19 @@ class MemorySystem:
 
         return context
 
-    def get_document_context(self, query: str, explicit: bool = False) -> str:
+    def get_document_context(self, query: str, explicit: bool = False,
+                             alt_queries: list | None = None) -> str:
         """Retrieve document chunks for RAG injection into the conversation path.
 
         Args:
-            query:    The user's command text, used as the embedding query.
-            explicit: If True, the user explicitly asked for document search —
-                      use a loose distance cap (1.5) and return up to 5 chunks.
-                      If False (ambient), only inject if distance <= 0.55 and
-                      return at most 2 chunks.
+            query:       Primary embedding query (expanded from user command).
+            explicit:    If True, user explicitly asked for document search —
+                         use loose distance cap (1.8) and return up to 8 chunks.
+                         If False (ambient), only inject if distance <= 0.55 and
+                         return at most 2 chunks.
+            alt_queries: Optional list of alternate queries (synonyms / related
+                         terms) whose results are unioned with the primary query
+                         and deduplicated. Explicit mode only.
 
         Returns:
             Formatted string ready for injection, or "" if nothing qualifies.
@@ -278,55 +282,74 @@ class MemorySystem:
         if len(query.strip()) < 4:
             return ""
 
-        n_results = 5 if explicit else 2
-        max_distance = 1.5 if explicit else 0.55
+        n_results = 8 if explicit else 2
+        max_distance = 1.8 if explicit else 0.55
+
+        def _run_query(q: str) -> list[tuple[str, str, float]]:
+            """Run one ChromaDB query and return (filename, text, dist) tuples."""
+            try:
+                results = self.docs_collection.query(
+                    query_texts=[q],
+                    n_results=n_results,
+                    include=["documents", "metadatas", "distances"],
+                )
+                if not results["documents"] or not results["documents"][0]:
+                    return []
+                hits = []
+                for doc, meta, dist in zip(
+                    results["documents"][0],
+                    results["metadatas"][0],
+                    results["distances"][0],
+                ):
+                    if dist <= max_distance:
+                        hits.append((meta.get("filename", "unknown file"), doc, dist))
+                return hits
+            except Exception:
+                return []
 
         try:
-            results = self.docs_collection.query(
-                query_texts=[query],
-                n_results=n_results,
-                include=["documents", "metadatas", "distances"],
-            )
+            # Primary query
+            all_chunks = _run_query(query)
 
-            if not results["documents"] or not results["documents"][0]:
-                return ""
+            # Alt queries (explicit mode only) — union and deduplicate
+            if explicit and alt_queries:
+                seen: set[str] = {text[:100] for _, text, _ in all_chunks}
+                for aq in alt_queries:
+                    if len(aq.strip()) < 4:
+                        continue
+                    for filename, text, dist in _run_query(aq):
+                        key = text[:100]
+                        if key not in seen:
+                            seen.add(key)
+                            all_chunks.append((filename, text, dist))
 
-            chunks = []
-            for doc, meta, dist in zip(
-                results["documents"][0],
-                results["metadatas"][0],
-                results["distances"][0],
-            ):
-                if dist <= max_distance:
-                    filename = meta.get("filename", "unknown file")
-                    chunks.append((filename, doc, dist))
+            # Sort best matches first
+            all_chunks.sort(key=lambda x: x[2])
 
-            if not chunks:
+            if not all_chunks:
                 mode = "explicit" if explicit else "ambient"
                 print(f"   [RAG] No chunks passed threshold "
                       f"(mode={mode}, threshold={max_distance:.2f})")
                 return ""
 
-            print(f"   [RAG] Injecting {len(chunks)} chunk(s) "
-                  f"(explicit={explicit}, best_dist={chunks[0][2]:.3f})")
+            print(f"   [RAG] Injecting {len(all_chunks)} unique chunk(s) "
+                  f"(explicit={explicit}, best_dist={all_chunks[0][2]:.3f})")
 
             if explicit:
                 lines = [
                     "The following excerpts are from the user's own documents. "
-                    "Prioritize this content in your answer. "
-                    "If the excerpts contain the answer, use them directly and cite the source. "
-                    "If the excerpts only partially cover the topic, use what they have and note the gap. "
-                    "If something is not covered in the excerpts, say the document doesn't mention it "
-                    "rather than guessing — but you may supplement with general knowledge where "
-                    "clearly appropriate and label it as such:"
+                    "Prioritize this content — use it directly and cite the source filename. "
+                    "If the excerpts only partially cover the topic, use what they contain and "
+                    "supplement with your general knowledge, clearly labelling what comes from "
+                    "the document vs what comes from your own knowledge:"
                 ]
             else:
                 lines = [
                     "The following document excerpts may be relevant — "
                     "use them if helpful, ignore if not:"
                 ]
-            for filename, text, dist in chunks:
-                truncated = text[:600] + "..." if len(text) > 600 else text
+            for filename, text, dist in all_chunks:
+                truncated = text[:800] + "..." if len(text) > 800 else text
                 lines.append(f"- From {filename}: {truncated}")
 
             return "\n".join(lines) + "\n"
