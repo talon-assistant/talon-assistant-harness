@@ -676,9 +676,10 @@ class TalonAssistant:
         elif rag_explicit:
             prompt = (
                 f"{command}\n\n"
-                f"Answer using the document excerpts provided. "
+                f"Answer using ONLY the document excerpts provided. "
                 f"Cite the source filename when referencing them. "
-                f"Be as detailed as the excerpts allow."
+                f"For specific stats, numbers, or rules: only report values that appear "
+                f"verbatim in the excerpts. If a value is missing from the excerpts, say so."
             )
         else:
             prompt = f"{command}\n\nRespond briefly and conversationally (2-3 sentences max)."

@@ -390,9 +390,10 @@ class MemorySystem:
                 lines = [
                     "The following excerpts are from the user's own documents. "
                     "Prioritize this content — use it directly and cite the source filename. "
-                    "If the excerpts only partially cover the topic, use what they contain and "
-                    "supplement with your general knowledge, clearly labelling what comes from "
-                    "the document vs what comes from your own knowledge:"
+                    "Use ONLY what is explicitly stated in these excerpts. "
+                    "For any specific stat, number, rule, or structured value — if it is not "
+                    "present in the excerpts, say it was not found rather than substituting "
+                    "from general knowledge. General knowledge may contradict the document."
                 ]
             else:
                 lines = [
