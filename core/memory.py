@@ -323,17 +323,33 @@ class MemorySystem:
                             seen.add(key)
                             all_chunks.append((filename, text, dist))
 
-            # Sort best matches first
-            all_chunks.sort(key=lambda x: x[2])
-
             if not all_chunks:
                 mode = "explicit" if explicit else "ambient"
                 print(f"   [RAG] No chunks passed threshold "
                       f"(mode={mode}, threshold={max_distance:.2f})")
                 return ""
 
+            # Keyword re-ranking (explicit mode only): boost chunks that
+            # literally contain search terms so structured stat blocks aren't
+            # buried under prose that merely mentions the topic in passing.
+            all_terms = [query] + (alt_queries or [])
+            keywords = set(w.lower() for t in all_terms for w in t.split() if len(w) > 3)
+
+            def _keyword_score(chunk_text: str) -> int:
+                lower = chunk_text.lower()
+                return sum(1 for kw in keywords if kw in lower)
+
+            if explicit:
+                # Re-sort: primary key = descending keyword hits,
+                # secondary key = ascending semantic distance.
+                all_chunks.sort(key=lambda x: (-_keyword_score(x[1]), x[2]))
+            else:
+                all_chunks.sort(key=lambda x: x[2])
+
             print(f"   [RAG] Injecting {len(all_chunks)} unique chunk(s) "
                   f"(explicit={explicit}, best_dist={all_chunks[0][2]:.3f})")
+            for _fn, _txt, _d in all_chunks:
+                print(f"      {_d:.3f} kw={_keyword_score(_txt)}  {_fn}  |  {_txt[:60].replace(chr(10),' ')!r}")
 
             if explicit:
                 lines = [
