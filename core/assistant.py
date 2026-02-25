@@ -682,16 +682,56 @@ class TalonAssistant:
 
         # ── Document RAG injection (conversation path only) ──────────────────
         rag_explicit = context.get("rag_explicit", False)
-        doc_context = self.memory.get_document_context(command, explicit=rag_explicit)
+
+        # Query expansion: for explicit RAG, distil the command down to core
+        # search terms before embedding so natural-language phrasing ("tell me
+        # everything about X, be verbose") doesn't dilute the embedding signal.
+        rag_query = command
+        if rag_explicit:
+            try:
+                expanded = self.llm.generate(
+                    f"Extract the key search terms from this query for a document search.\n"
+                    f"Return only a short phrase of 3-8 words, no explanation.\n\n"
+                    f"Query: {command}\nSearch terms:",
+                    max_length=32,
+                    temperature=0.0,
+                )
+                expanded = expanded.strip().strip('"').strip("'")
+                if expanded:
+                    print(f"   [RAG] Query expanded: {repr(expanded)}")
+                    rag_query = expanded
+            except Exception:
+                pass  # Fall back to raw command silently
+
+        doc_context = self.memory.get_document_context(rag_query, explicit=rag_explicit)
+
+        # If explicit RAG returned nothing, offer a web search rather than
+        # silently continuing with the LLM's training data alone.
+        if rag_explicit and not doc_context:
+            response = (
+                "I couldn't find that in your documents. "
+                "Would you like me to search the web instead?"
+            )
+            self.memory.log_command(command, success=True, response=response)
+            if speak_response:
+                self.voice.speak(response)
+            else:
+                print(f"\nTalon: {response}")
+            return response
 
         # Inject preferences/patterns with accurate label
         memory_context = context.get("memory_context", "")
         if memory_context:
             prompt = f"{_wrap_external(memory_context, 'user preferences and past patterns')}\n\n{prompt}"
 
-        # Inject document chunks if any passed the threshold (permissive framing)
+        # Inject document chunks if any passed the threshold
         if doc_context:
-            prompt = f"{_wrap_external(doc_context, 'document excerpts — may or may not be relevant')}\n\n{prompt}"
+            source_label = (
+                "document excerpts — source material, prioritize this"
+                if rag_explicit
+                else "document excerpts — may or may not be relevant"
+            )
+            prompt = f"{_wrap_external(doc_context, source_label)}\n\n{prompt}"
 
         # Prepend recent conversation turns for within-session continuity.
         # Cap at 600 chars to stay within token budget.

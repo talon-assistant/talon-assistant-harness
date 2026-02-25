@@ -310,10 +310,21 @@ class MemorySystem:
             print(f"   [RAG] Injecting {len(chunks)} chunk(s) "
                   f"(explicit={explicit}, best_dist={chunks[0][2]:.3f})")
 
-            lines = [
-                "The following document excerpts may be relevant — "
-                "use them if helpful, ignore if not:"
-            ]
+            if explicit:
+                lines = [
+                    "The following excerpts are from the user's own documents. "
+                    "Prioritize this content in your answer. "
+                    "If the excerpts contain the answer, use them directly and cite the source. "
+                    "If the excerpts only partially cover the topic, use what they have and note the gap. "
+                    "If something is not covered in the excerpts, say the document doesn't mention it "
+                    "rather than guessing — but you may supplement with general knowledge where "
+                    "clearly appropriate and label it as such:"
+                ]
+            else:
+                lines = [
+                    "The following document excerpts may be relevant — "
+                    "use them if helpful, ignore if not:"
+                ]
             for filename, text, dist in chunks:
                 truncated = text[:600] + "..." if len(text) > 600 else text
                 lines.append(f"- From {filename}: {truncated}")
