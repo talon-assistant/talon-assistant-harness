@@ -383,6 +383,13 @@ class MemorySystem:
             else:
                 all_chunks.sort(key=lambda x: x[2])
 
+            # Hard cap: $contains fallback can produce many hits (4 keywords ×
+            # 2 case variants × 4 results = up to 32 extra chunks).  Capping
+            # after ranking keeps the highest-signal chunks and prevents the
+            # context window from being flooded with low-relevance noise.
+            MAX_INJECT = 8
+            all_chunks = all_chunks[:MAX_INJECT]
+
             print(f"   [RAG] Injecting {len(all_chunks)} unique chunk(s) "
                   f"(explicit={explicit}, best_dist={all_chunks[0][2]:.3f})")
             for _fn, _txt, _d, _pg in all_chunks:
