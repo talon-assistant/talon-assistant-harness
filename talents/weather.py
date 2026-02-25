@@ -65,10 +65,21 @@ class WeatherTalent(BaseTalent):
         return self.keyword_match(command)
 
     def execute(self, command: str, context: dict) -> dict:
-        # Extract location from command (fall back to configured default)
-        location = self._extract_location(command)
-        if not location:
+        # Use LLM to extract the location — more robust than substring matching.
+        # max_length=20 is enough for any place name; temperature=0 is deterministic.
+        llm = context["llm"]
+        raw_location = llm.generate(
+            f"Extract only the location name from this weather command. "
+            f"Return just the place name (city, region, or country), nothing else. "
+            f"If no location is mentioned, return the single word: NONE\n\n"
+            f"Command: {command}",
+            max_length=20,
+            temperature=0.0,
+        )
+        location = raw_location.strip().strip('"').strip("'")
+        if not location or location.upper() == "NONE":
             location = self._config.get("default_location", "")
+        print(f"   [Weather] Extracted location: {repr(location)}")
 
         provider = self._config.get("provider", "Open-Meteo")
 
@@ -98,9 +109,6 @@ class WeatherTalent(BaseTalent):
 
         print(f"   -> Weather data for '{geo['name']}' via {provider}:")
         print(f"   -> {formatted[:400]}...")
-
-        # Let LLM produce a natural response from the structured data
-        llm = context["llm"]
         user_message = (
             f"=== CURRENT WEATHER DATA ===\n"
             f"{formatted}\n"
