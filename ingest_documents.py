@@ -191,6 +191,19 @@ class DocumentIngester:
             print(f"    ⚠ Skipped (no content or too short)")
             return 0
 
+        # Remove any existing chunks for this file so re-ingest is idempotent
+        # and doesn't accumulate duplicate chunks across multiple runs.
+        try:
+            existing = self.collection.get(
+                where={"filename": filepath.name},
+                include=[],
+            )
+            if existing["ids"]:
+                self.collection.delete(ids=existing["ids"])
+                print(f"    → Replaced {len(existing['ids'])} existing chunks")
+        except Exception as e:
+            print(f"    ⚠ Could not delete existing chunks: {e}")
+
         chunks = self.chunk_text(text, chunk_size=chunk_size, overlap=overlap)
         print(f"    → Created {len(chunks)} chunks ({chunk_size}w/{overlap}w overlap)")
 

@@ -323,6 +323,41 @@ class MemorySystem:
                             seen.add(key)
                             all_chunks.append((filename, text, dist))
 
+            # Text-match fallback (explicit mode only): use ChromaDB $contains
+            # to pull chunks with exact keyword matches, bypassing the semantic
+            # distance cutoff.  Sparse stat-block chunks embed poorly but are
+            # textually exact — this guarantees they surface even when the
+            # embedding distance would otherwise exclude them.
+            if explicit:
+                all_terms = [query] + (alt_queries or [])
+                text_kws = sorted(
+                    {w for t in all_terms for w in t.split() if len(w) > 3},
+                    key=len, reverse=True,
+                )[:4]
+                seen_txt: set[str] = {t[:100] for _, t, _ in all_chunks}
+                for kw in text_kws:
+                    # Try original case and title-case: "mana" → also "Mana"
+                    # so that "Manabolt" is found even when query is lowercase.
+                    for variant in {kw, kw.title()}:
+                        try:
+                            hits = self.docs_collection.get(
+                                where_document={"$contains": variant},
+                                limit=4,
+                                include=["documents", "metadatas"],
+                            )
+                            for doc, meta in zip(
+                                hits.get("documents", []),
+                                hits.get("metadatas", []),
+                            ):
+                                key = doc[:100]
+                                if key not in seen_txt:
+                                    seen_txt.add(key)
+                                    all_chunks.append(
+                                        (meta.get("filename", "unknown file"), doc, 1.0)
+                                    )
+                        except Exception:
+                            pass
+
             if not all_chunks:
                 mode = "explicit" if explicit else "ambient"
                 print(f"   [RAG] No chunks passed threshold "
