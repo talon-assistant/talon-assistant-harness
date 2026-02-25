@@ -1,13 +1,36 @@
 import os
+import sys
 import json
+import base64
+import time
 from pathlib import Path
 import chromadb
 import pymupdf4llm
+import fitz  # PyMuPDF — bundled with pymupdf4llm
 from docx import Document
 import pandas as pd
 from bs4 import BeautifulSoup
 import markdown
 from datetime import datetime
+
+# ---------------------------------------------------------------------------
+# Vision-enhanced ingestion prompt
+#
+# Sent to the vision model once per PDF page.  The model reads the rendered
+# page image and produces a structured plain-text description that is stored
+# as the primary content of the chunk.  This description drives embedding
+# quality; the raw extracted text is appended for exact keyword fallback.
+# ---------------------------------------------------------------------------
+VISION_EXTRACT_PROMPT = (
+    "You are indexing a page from a reference document. Extract all content precisely.\n\n"
+    "Rules:\n"
+    "- Stat blocks / tables: list EVERY entry with ALL values — "
+    "name, category, and every column value exactly as shown.\n"
+    "- Rules / mechanics text: state the rule clearly and list every named game element.\n"
+    "- Prose / narrative: one concise sentence summary only.\n"
+    "- Blank / decorative pages: respond with just the word SKIP.\n\n"
+    "Be complete and exact. Include every name and number visible on the page."
+)
 
 
 class DocumentIngester:
@@ -182,8 +205,188 @@ class DocumentIngester:
         else:
             return None
 
-    def ingest_file(self, filepath, chunk_size=400, overlap=50):
-        """Ingest a single file"""
+    # ------------------------------------------------------------------
+    # Vision-enhanced PDF ingestion
+    # ------------------------------------------------------------------
+
+    def _describe_page(self, llm_client, img_b64: str, page_num: int,
+                       filename: str) -> str:
+        """Call the vision model to describe a single rendered PDF page.
+
+        Returns a plain-text description string, or "" on failure.
+        The model is instructed to return "SKIP" for blank/decorative pages
+        so we can drop those without storing empty chunks.
+        """
+        try:
+            desc = llm_client.generate(
+                VISION_EXTRACT_PROMPT,
+                use_vision=True,
+                screenshot_b64=img_b64,
+                temperature=0.0,
+            )
+            if not desc or desc.startswith("Error:"):
+                print(f"      ⚠ Vision failed p{page_num}: {desc}")
+                return ""
+            if desc.strip().upper() == "SKIP":
+                return ""
+            return desc.strip()
+        except Exception as exc:
+            print(f"      ⚠ Vision exception p{page_num}: {exc}")
+            return ""
+
+    def ingest_pdf_with_vision(self, filepath, llm_client,
+                               chunk_size: int = 400, overlap: int = 50) -> int:
+        """Vision-enhanced PDF ingestion — one chunk per page.
+
+        Each chunk is structured as:
+
+            [VISION: <model description of the page>]
+
+            RAW TEXT:
+            <fitz plain-text extraction>
+
+        The VISION section produces a rich, semantically meaningful embedding
+        (spell names + exact stats, rule names + descriptions, etc.).
+        The RAW TEXT section preserves exact strings for keyword/$contains
+        fallback searches.
+
+        Very long pages (>800 words combined) are sub-split: the vision header
+        is repeated on every sub-chunk so embedding quality is maintained.
+
+        Args:
+            filepath:    Path to the PDF file.
+            llm_client:  Instantiated LLMClient pointing at the running server.
+            chunk_size:  Word count target for raw-text sub-splits (if needed).
+            overlap:     Overlap words for raw-text sub-splits.
+
+        Returns:
+            Number of chunks stored in ChromaDB.
+        """
+        print(f"  Processing (vision): {filepath.name}")
+
+        doc = fitz.open(str(filepath))
+        page_count = doc.page_count
+        print(f"    → {page_count} pages to describe")
+
+        # Remove stale chunks for this file before re-ingesting
+        try:
+            existing = self.collection.get(
+                where={"filename": filepath.name},
+                include=[],
+            )
+            if existing["ids"]:
+                self.collection.delete(ids=existing["ids"])
+                print(f"    → Cleared {len(existing['ids'])} existing chunks")
+        except Exception as exc:
+            print(f"    ⚠ Could not clear existing chunks: {exc}")
+
+        doc_id_base = f"doc_{filepath.stem}_{int(datetime.now().timestamp())}"
+        chunks_stored = 0
+        t_start = time.time()
+
+        for page_idx in range(page_count):
+            page = doc[page_idx]
+            page_num = page_idx + 1  # 1-based for display
+
+            # --- Render page to base64 PNG (100 DPI — legible, compact) ---
+            pixmap = page.get_pixmap(dpi=100)
+            img_b64 = base64.b64encode(pixmap.tobytes("png")).decode()
+
+            # --- Raw text for this page (keyword fallback) ---
+            raw_text = page.get_text().strip()
+
+            # --- ETA display ---
+            elapsed = time.time() - t_start
+            if page_idx > 0:
+                rate = elapsed / page_idx          # seconds per page so far
+                remaining = rate * (page_count - page_idx)
+                eta_str = f"  ETA ~{int(remaining // 60)}m{int(remaining % 60):02d}s"
+            else:
+                eta_str = ""
+            print(f"    [{page_num:>4}/{page_count}] Describing...{eta_str}",
+                  end=" ", flush=True)
+
+            t_page = time.time()
+            vision_desc = self._describe_page(llm_client, img_b64, page_num,
+                                              filepath.name)
+            page_elapsed = time.time() - t_page
+            print(f"{page_elapsed:.1f}s")
+
+            # Skip genuinely empty pages
+            if not vision_desc and not raw_text:
+                print(f"      ↳ skipped (blank page)")
+                continue
+
+            if vision_desc:
+                print(f"      ↳ {vision_desc[:100].replace(chr(10), ' ')}")
+
+            # --- Build enriched chunk text ---
+            parts = []
+            if vision_desc:
+                parts.append(f"[VISION: {vision_desc}]")
+            if raw_text:
+                parts.append(f"RAW TEXT:\n{raw_text}")
+            chunk_text = "\n\n".join(parts)
+
+            # --- Sub-split only if the combined page is very long ---
+            base_meta = {
+                "type": "document",
+                "filename": filepath.name,
+                "filepath": str(filepath),
+                "file_type": filepath.suffix,
+                "page_number": page_idx,
+                "total_pages": page_count,
+                "vision_enhanced": True,
+                "ingested_at": datetime.now().isoformat(),
+            }
+
+            if len(chunk_text.split()) > 800 and raw_text:
+                # Repeat the vision header on every sub-chunk so each one
+                # retains full semantic context in its embedding.
+                vision_header = (f"[VISION: {vision_desc}]\n\n"
+                                 if vision_desc else "")
+                sub_chunks = self.chunk_text(raw_text,
+                                             chunk_size=chunk_size,
+                                             overlap=overlap)
+                for sub_i, raw_sub in enumerate(sub_chunks):
+                    sub_text = f"{vision_header}RAW TEXT:\n{raw_sub}"
+                    doc_id = f"{doc_id_base}_p{page_idx}_s{sub_i}"
+                    meta = {**base_meta, "sub_chunk": sub_i}
+                    self.collection.add(
+                        documents=[sub_text],
+                        metadatas=[meta],
+                        ids=[doc_id],
+                    )
+                    chunks_stored += 1
+            else:
+                doc_id = f"{doc_id_base}_p{page_idx}"
+                meta = {**base_meta, "sub_chunk": 0}
+                self.collection.add(
+                    documents=[chunk_text],
+                    metadatas=[meta],
+                    ids=[doc_id],
+                )
+                chunks_stored += 1
+
+        doc.close()
+        total_elapsed = time.time() - t_start
+        print(f"    ✓ Ingested {chunks_stored} page-chunks "
+              f"in {int(total_elapsed // 60)}m{int(total_elapsed % 60):02d}s "
+              f"(vision-enhanced)")
+        return chunks_stored
+
+    def ingest_file(self, filepath, chunk_size=400, overlap=50,
+                    llm_client=None):
+        """Ingest a single file.
+
+        If ``llm_client`` is provided and the file is a PDF, uses the
+        vision-enhanced page-by-page path instead of the plain text path.
+        """
+        # Vision path: PDF + running LLM server → rich page descriptions
+        if llm_client is not None and filepath.suffix.lower() == ".pdf":
+            return self.ingest_pdf_with_vision(
+                filepath, llm_client, chunk_size=chunk_size, overlap=overlap)
+
         print(f"  Processing: {filepath.name}")
 
         text = self.extract_text(filepath)
@@ -229,8 +432,16 @@ class DocumentIngester:
         print(f"    ✓ Ingested {len(chunks)} chunks")
         return len(chunks)
 
-    def ingest_directory(self, chunk_size=400, overlap=50):
-        """Ingest all supported files"""
+    def ingest_directory(self, chunk_size=400, overlap=50, llm_client=None):
+        """Ingest all supported files.
+
+        Args:
+            chunk_size:  Words per chunk (text path).
+            overlap:     Overlap words between chunks (text path).
+            llm_client:  If provided, PDFs are processed via the vision-
+                         enhanced page-by-page path; other file types still
+                         use plain text extraction.
+        """
         if not self.documents_dir.exists():
             print(f"Creating documents directory: {self.documents_dir}")
             self.documents_dir.mkdir(parents=True, exist_ok=True)
@@ -245,14 +456,20 @@ class DocumentIngester:
             print(f"No documents found in {self.documents_dir}")
             return
 
-        print(f"Found {len(files)} files to ingest\n")
+        vision_note = " (vision mode for PDFs)" if llm_client else ""
+        print(f"Found {len(files)} files to ingest{vision_note}\n")
 
         total_chunks = 0
         successful = 0
 
         for filepath in files:
             try:
-                chunks = self.ingest_file(filepath, chunk_size=chunk_size, overlap=overlap)
+                chunks = self.ingest_file(
+                    filepath,
+                    chunk_size=chunk_size,
+                    overlap=overlap,
+                    llm_client=llm_client,
+                )
                 total_chunks += chunks
                 successful += 1
             except Exception as e:
@@ -302,14 +519,31 @@ class DocumentIngester:
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="Talon document ingester")
+    parser = argparse.ArgumentParser(
+        description="Talon document ingester",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  python ingest_documents.py                  # plain text ingest\n"
+            "  python ingest_documents.py --vision         # vision-enhanced (KoboldCpp must be running)\n"
+            "  python ingest_documents.py list             # list indexed documents\n"
+            "  python ingest_documents.py clear            # wipe the database\n"
+        ),
+    )
     parser.add_argument("command", nargs="?", default="ingest",
                         choices=["ingest", "list", "clear"],
                         help="Command to run (default: ingest)")
     parser.add_argument("--chunk-size", type=int, default=400,
-                        help="Words per chunk (default: 400)")
+                        help="Words per chunk for text path (default: 400)")
     parser.add_argument("--overlap", type=int, default=50,
                         help="Overlap words between chunks (default: 50)")
+    parser.add_argument("--vision", action="store_true",
+                        help=(
+                            "Use vision model to describe each PDF page before "
+                            "chunking. Produces richer embeddings for structured "
+                            "content (tables, stat blocks). Requires KoboldCpp "
+                            "with mmproj to be running."
+                        ))
     args = parser.parse_args()
 
     ingester = DocumentIngester()
@@ -321,5 +555,59 @@ if __name__ == "__main__":
         if confirm.lower() == "yes":
             ingester.clear_documents()
     else:
-        print(f"Chunk size: {args.chunk_size} words, overlap: {args.overlap} words")
-        ingester.ingest_directory(chunk_size=args.chunk_size, overlap=args.overlap)
+        llm_client = None
+
+        if args.vision:
+            # ----------------------------------------------------------------
+            # Vision mode: spin up LLMClient from settings.json so we can
+            # call the running KoboldCpp server during PDF ingestion.
+            # ----------------------------------------------------------------
+            sys.path.insert(0, str(Path(__file__).parent))
+            from core.llm_client import LLMClient  # noqa: E402
+
+            cfg_path = Path("config/settings.json")
+            if cfg_path.exists():
+                with open(cfg_path) as f:
+                    cfg = json.load(f)
+            else:
+                # Sensible defaults if settings.json is missing
+                cfg = {
+                    "llm": {
+                        "endpoint": "http://localhost:5001/api/v1/generate",
+                        "max_length": 512,
+                        "temperature": 0.1,
+                        "top_p": 0.9,
+                        "rep_pen": 1.1,
+                        "timeout": 120,
+                        "stop_sequences": ["<|im_end|>", "<|im_start|>"],
+                        "prompt_template": {
+                            "user_prefix": "<|im_start|>user\n",
+                            "user_suffix": "<|im_end|>\n",
+                            "assistant_prefix": "<|im_start|>assistant\n",
+                            "vision_prefix": (
+                                "<|vision_start|><|image_pad|><|vision_end|>"
+                            ),
+                        },
+                        "api_format": "koboldcpp",
+                    }
+                }
+
+            print("Vision mode — connecting to LLM server...")
+            llm_client = LLMClient(cfg)
+            if not llm_client.test_connection():
+                print(
+                    "⚠  Could not reach LLM server.  "
+                    "PDFs will fall back to plain text extraction.\n"
+                    "   Start KoboldCpp with --mmproj to enable vision.\n"
+                )
+                llm_client = None
+            else:
+                print("✓ LLM server ready — vision ingestion enabled\n")
+
+        mode = "vision" if llm_client else "text"
+        print(f"Mode: {mode}  |  chunk-size: {args.chunk_size}  |  overlap: {args.overlap}\n")
+        ingester.ingest_directory(
+            chunk_size=args.chunk_size,
+            overlap=args.overlap,
+            llm_client=llm_client,
+        )
