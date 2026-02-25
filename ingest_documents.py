@@ -62,16 +62,46 @@ class DocumentIngester:
         return chunks
 
     def extract_pdf(self, filepath):
-        """Extract text from PDF using pymupdf4llm.
+        """Extract text from PDF.
 
-        Produces clean Markdown preserving reading order in multi-column
-        layouts, tables, and section headings — far superior to PyPDF2
-        for formatted rulebooks and reference manuals.
+        Primary: pymupdf4llm.to_markdown() — preserves reading order in
+        multi-column layouts, tables, and headings.
+
+        Fallback: raw fitz page-by-page extraction — used when pymupdf4llm
+        returns suspiciously little content (some PDFs with complex layouts
+        cause pymupdf4llm to silently drop most pages).
         """
+        import fitz  # PyMuPDF — bundled with pymupdf4llm
+
+        # Primary: pymupdf4llm
         try:
-            return pymupdf4llm.to_markdown(str(filepath))
+            result = pymupdf4llm.to_markdown(str(filepath))
+            doc = fitz.open(str(filepath))
+            page_count = doc.page_count
+            doc.close()
+            # Sanity check: ~100 chars per page minimum
+            if result and len(result.strip()) >= page_count * 100:
+                return result
+            print(f"    ⚠ pymupdf4llm returned only {len(result or '')} chars "
+                  f"for {page_count} pages — falling back to raw fitz extraction")
         except Exception as e:
-            print(f"  ✗ Error reading PDF: {e}")
+            print(f"    ⚠ pymupdf4llm failed ({e}) — falling back to raw fitz")
+
+        # Fallback: raw fitz page-by-page
+        try:
+            doc = fitz.open(str(filepath))
+            pages = []
+            for page in doc:
+                text = page.get_text(flags=fitz.TEXT_PRESERVE_WHITESPACE)
+                if text.strip():
+                    pages.append(text)
+            doc.close()
+            full_text = "\n\n".join(pages)
+            print(f"    → fitz fallback: extracted {len(full_text)} chars "
+                  f"from {len(pages)} pages")
+            return full_text if full_text.strip() else None
+        except Exception as e:
+            print(f"  ✗ fitz fallback also failed: {e}")
             return None
 
     def extract_docx(self, filepath):
