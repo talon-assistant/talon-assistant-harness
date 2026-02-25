@@ -285,8 +285,8 @@ class MemorySystem:
         n_results = 8 if explicit else 2
         max_distance = 1.8 if explicit else 0.55
 
-        def _run_query(q: str) -> list[tuple[str, str, float]]:
-            """Run one ChromaDB query and return (filename, text, dist) tuples."""
+        def _run_query(q: str) -> list[tuple[str, str, float, int | None]]:
+            """Run one ChromaDB query and return (filename, text, dist, page_num) tuples."""
             try:
                 results = self.docs_collection.query(
                     query_texts=[q],
@@ -302,7 +302,8 @@ class MemorySystem:
                     results["distances"][0],
                 ):
                     if dist <= max_distance:
-                        hits.append((meta.get("filename", "unknown file"), doc, dist))
+                        hits.append((meta.get("filename", "unknown file"), doc, dist,
+                                     meta.get("page_number")))
                 return hits
             except Exception:
                 return []
@@ -313,15 +314,15 @@ class MemorySystem:
 
             # Alt queries (explicit mode only) — union and deduplicate
             if explicit and alt_queries:
-                seen: set[str] = {text[:100] for _, text, _ in all_chunks}
+                seen: set[str] = {text[:100] for _, text, _, _pg in all_chunks}
                 for aq in alt_queries:
                     if len(aq.strip()) < 4:
                         continue
-                    for filename, text, dist in _run_query(aq):
+                    for filename, text, dist, page_num in _run_query(aq):
                         key = text[:100]
                         if key not in seen:
                             seen.add(key)
-                            all_chunks.append((filename, text, dist))
+                            all_chunks.append((filename, text, dist, page_num))
 
             # Text-match fallback (explicit mode only): use ChromaDB $contains
             # to pull chunks with exact keyword matches, bypassing the semantic
@@ -334,7 +335,7 @@ class MemorySystem:
                     {w for t in all_terms for w in t.split() if len(w) > 3},
                     key=len, reverse=True,
                 )[:4]
-                seen_txt: set[str] = {t[:100] for _, t, _ in all_chunks}
+                seen_txt: set[str] = {t[:100] for _, t, _, _pg in all_chunks}
                 for kw in text_kws:
                     # Try original case and title-case: "mana" → also "Mana"
                     # so that "Manabolt" is found even when query is lowercase.
@@ -353,7 +354,8 @@ class MemorySystem:
                                 if key not in seen_txt:
                                     seen_txt.add(key)
                                     all_chunks.append(
-                                        (meta.get("filename", "unknown file"), doc, 1.0)
+                                        (meta.get("filename", "unknown file"), doc, 1.0,
+                                         meta.get("page_number"))
                                     )
                         except Exception:
                             pass
@@ -383,8 +385,9 @@ class MemorySystem:
 
             print(f"   [RAG] Injecting {len(all_chunks)} unique chunk(s) "
                   f"(explicit={explicit}, best_dist={all_chunks[0][2]:.3f})")
-            for _fn, _txt, _d in all_chunks:
-                print(f"      {_d:.3f} kw={_keyword_score(_txt)}  {_fn}  |  {_txt[:60].replace(chr(10),' ')!r}")
+            for _fn, _txt, _d, _pg in all_chunks:
+                pg_label = f" p{_pg + 1}" if _pg is not None else ""
+                print(f"      {_d:.3f} kw={_keyword_score(_txt)}  {_fn}{pg_label}  |  {_txt[:60].replace(chr(10),' ')!r}")
 
             if explicit:
                 lines = [
@@ -400,9 +403,10 @@ class MemorySystem:
                     "The following document excerpts may be relevant — "
                     "use them if helpful, ignore if not:"
                 ]
-            for filename, text, dist in all_chunks:
+            for filename, text, dist, page_num in all_chunks:
                 truncated = text[:800] + "..." if len(text) > 800 else text
-                lines.append(f"- From {filename}: {truncated}")
+                source = f"{filename} (page {page_num + 1})" if page_num is not None else filename
+                lines.append(f"- From {source}: {truncated}")
 
             return "\n".join(lines) + "\n"
 
