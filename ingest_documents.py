@@ -288,10 +288,6 @@ class DocumentIngester:
             page = doc[page_idx]
             page_num = page_idx + 1  # 1-based for display
 
-            # --- Render page to base64 PNG (100 DPI — legible, compact) ---
-            pixmap = page.get_pixmap(dpi=100)
-            img_b64 = base64.b64encode(pixmap.tobytes("png")).decode()
-
             # --- Raw text for this page (keyword fallback) ---
             raw_text = page.get_text().strip()
 
@@ -306,11 +302,22 @@ class DocumentIngester:
             print(f"    [{page_num:>4}/{page_count}] Describing...{eta_str}",
                   end=" ", flush=True)
 
-            t_page = time.time()
-            vision_desc = self._describe_page(llm_client, img_b64, page_num,
-                                              filepath.name)
-            page_elapsed = time.time() - t_page
-            print(f"{page_elapsed:.1f}s")
+            # Skip vision for image-heavy / art pages — fewer than 15 words of
+            # extractable text means it's almost certainly a full-page artwork,
+            # chapter divider, or blank page.  These render as huge pixmaps and
+            # flood KoboldCpp with image tokens causing stalls or timeouts.
+            if len(raw_text.split()) < 15:
+                print(f"0.0s  (art/blank — vision skipped)")
+                vision_desc = ""
+            else:
+                # Render page to base64 PNG only when we know it has content
+                pixmap = page.get_pixmap(dpi=100)
+                img_b64 = base64.b64encode(pixmap.tobytes("png")).decode()
+                t_page = time.time()
+                vision_desc = self._describe_page(llm_client, img_b64, page_num,
+                                                  filepath.name)
+                page_elapsed = time.time() - t_page
+                print(f"{page_elapsed:.1f}s")
 
             # Skip genuinely empty pages
             if not vision_desc and not raw_text:
