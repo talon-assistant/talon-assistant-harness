@@ -267,6 +267,82 @@ class TalonAssistant:
         # Sort by priority for display order (sidebar) and keyword fallback
         self.talents.sort(key=lambda t: t.priority, reverse=True)
 
+    def load_user_talent(self, filepath: str) -> dict:
+        """Dynamically load a single talent file into the running assistant.
+
+        Mirrors _discover_talents() for one file.  Called by TalentBuilderTalent
+        after generating and writing a new talent to talents/user/.
+
+        Returns:
+            dict: {success (bool), name, description, examples, needs_config, error}
+        """
+        import sys as _sys
+        path = Path(filepath)
+        module_name = path.stem          # filename without .py
+        full_module = f"talents.user.{module_name}"
+
+        try:
+            # Force a fresh import (module may already be partially cached)
+            if full_module in _sys.modules:
+                del _sys.modules[full_module]
+
+            module = importlib.import_module(full_module)
+
+            for attr_name in dir(module):
+                attr = getattr(module, attr_name)
+                if (inspect.isclass(attr)
+                        and issubclass(attr, BaseTalent)
+                        and attr is not BaseTalent):
+
+                    instance = attr()
+                    instance.initialize(self.config)
+
+                    # Apply any per-talent config already in talents.json
+                    try:
+                        with open(os.path.join("config", "talents.json")) as _f:
+                            _tcfg = json.load(_f)
+                    except (FileNotFoundError, json.JSONDecodeError):
+                        _tcfg = {}
+                    per_cfg = _tcfg.get(instance.name, {}).get("config", {})
+                    if per_cfg:
+                        instance.update_config(per_cfg)
+
+                    self.talents.append(instance)
+                    self.talents.sort(key=lambda t: t.priority, reverse=True)
+                    self.invalidate_routing_cache()
+
+                    # Persist enabled state to talents.json
+                    config_path = os.path.join("config", "talents.json")
+                    try:
+                        with open(config_path) as _f:
+                            talents_cfg = json.load(_f)
+                    except (FileNotFoundError, json.JSONDecodeError):
+                        talents_cfg = {}
+                    if instance.name not in talents_cfg:
+                        talents_cfg[instance.name] = {"enabled": True}
+                    with open(config_path, "w") as _f:
+                        json.dump(talents_cfg, _f, indent=2)
+
+                    print(f"   [TalentBuilder] Loaded: {instance.name} "
+                          f"(priority={instance.priority})")
+
+                    schema = instance.get_config_schema() or {}
+                    return {
+                        "success": True,
+                        "name": instance.name,
+                        "description": instance.description,
+                        "examples": instance.examples,
+                        "needs_config": bool(schema.get("fields")),
+                    }
+
+            return {
+                "success": False,
+                "error": f"No BaseTalent subclass found in {path.name}",
+            }
+
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
     def _inject_secrets(self):
         """Fill empty password fields from the OS keyring so talents
         have real credentials at runtime without storing them on disk."""
