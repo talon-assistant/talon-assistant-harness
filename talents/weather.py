@@ -65,20 +65,11 @@ class WeatherTalent(BaseTalent):
         return self.keyword_match(command)
 
     def execute(self, command: str, context: dict) -> dict:
-        # Use LLM to extract the location — more robust than substring matching.
-        # max_length=20 is enough for any place name; temperature=0 is deterministic.
         llm = context["llm"]
-        raw_location = llm.generate(
-            f"Extract only the location name from this weather command. "
-            f"Return just the place name (city, region, or country), nothing else. "
-            f"If no location is mentioned, return the single word: NONE\n\n"
-            f"Command: {command}",
-            max_length=20,
-            temperature=0.0,
+        location = (
+            self._extract_arg(llm, command, "location")
+            or self._config.get("default_location", "")
         )
-        location = raw_location.strip().strip('"').strip("'")
-        if not location or location.upper() == "NONE":
-            location = self._config.get("default_location", "")
         print(f"   [Weather] Extracted location: {repr(location)}")
 
         provider = self._config.get("provider", "Open-Meteo")

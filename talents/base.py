@@ -153,3 +153,73 @@ class BaseTalent(ABC):
                 if re.search(rf'\b{re.escape(kw)}\b', cmd_lower):
                     return True
         return False
+
+    def _extract_arg(
+        self,
+        llm,
+        command: str,
+        what: str,
+        *,
+        options: list | None = None,
+        max_length: int = 20,
+        temperature: float = 0.0,
+        fallback: str | None = None,
+    ) -> str | None:
+        """Extract a single named value from a command string using the LLM.
+
+        Standardised Pattern E extraction: one tight, deterministic LLM call
+        to pull a single value out of natural language.  Suitable for any
+        talent that needs to extract a simple scalar (location, colour, name,
+        duration expressed as a single word/phrase, etc.).
+
+        For complex structured extraction (JSON schemas, multi-field parsing,
+        time expressions with system-prompt injection) keep the talent's own
+        custom LLM call — this helper is not a replacement for those.
+
+        Args:
+            llm:         LLMClient instance (from ``context['llm']``).
+            command:     The raw user command string.
+            what:        Natural-language name of the thing to extract,
+                         e.g. ``"location"``, ``"colour"``, ``"device name"``.
+            options:     Optional list of allowed values.  When provided the
+                         prompt instructs the model to pick from this list,
+                         which reduces hallucination for enum-style args.
+            max_length:  Max tokens to generate (default 20 — enough for any
+                         place name or single-word value).
+            temperature: Sampling temperature (default 0.0 — deterministic).
+            fallback:    Value to return when the model replies ``"NONE"`` or
+                         returns an empty string.  ``None`` by default.
+
+        Returns:
+            Extracted string, or ``fallback`` (default ``None``) if the model
+            reports no value was found.
+
+        Example::
+
+            location = self._extract_arg(llm, command, "location") \\
+                       or self._config.get("default_location", "")
+
+            colour = self._extract_arg(
+                llm, command, "colour",
+                options=["red", "green", "blue", "white"],
+                fallback="white",
+            )
+        """
+        prompt = (
+            f"Extract the {what} from this command.\n"
+            f"Return only the {what}, nothing else.\n"
+        )
+        if options:
+            prompt += f"Must be one of: {', '.join(options)}.\n"
+        prompt += (
+            f"If no {what} is mentioned, return the single word: NONE\n\n"
+            f"Command: {command}"
+        )
+        try:
+            raw = llm.generate(prompt, max_length=max_length, temperature=temperature)
+            result = raw.strip().strip('"').strip("'")
+            if not result or result.upper() == "NONE":
+                return fallback
+            return result
+        except Exception:
+            return fallback
