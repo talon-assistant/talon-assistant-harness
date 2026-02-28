@@ -181,7 +181,6 @@ class WeatherTalent(BaseTalent):
                     "surface_pressure", "is_day",
                 ]),
                 "daily": ",".join([
-                    "time",
                     "weather_code",
                     "temperature_2m_max", "temperature_2m_min",
                     "apparent_temperature_max", "apparent_temperature_min",
