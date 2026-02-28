@@ -41,9 +41,12 @@ class WeatherTalent(BaseTalent):
     _SYSTEM_PROMPT = (
         "You are a weather reporter. "
         "Using ONLY the weather data provided, give a natural conversational summary. "
-        "Include the current temperature, what it feels like, conditions, humidity, and wind. "
-        "Be concise (2-3 sentences). Do NOT add information not in the data."
+        "Include the current temperature, what it feels like, conditions, today's high "
+        "and low, humidity, wind, and any notable precipitation. "
+        "Be concise but complete (3-5 sentences). Do NOT add information not in the data."
     )
+
+    _SCOPE_DAYS = {"today": 1, "tomorrow": 2, "week": 7, "weekend": 7}
 
     def get_config_schema(self) -> dict:
         return {
@@ -72,6 +75,16 @@ class WeatherTalent(BaseTalent):
         )
         print(f"   [Weather] Extracted location: {repr(location)}")
 
+        time_scope = (
+            self._extract_arg(
+                llm, command, "time period",
+                options=["today", "tomorrow", "week", "weekend"],
+                fallback="today",
+            ) or "today"
+        ).lower()
+        forecast_days = self._SCOPE_DAYS.get(time_scope, 1)
+        print(f"   [Weather] Time scope: {time_scope!r}  forecast_days={forecast_days}")
+
         provider = self._config.get("provider", "Open-Meteo")
 
         # Geocode the location to lat/lon (needed for Open-Meteo and OWM)
@@ -85,7 +98,7 @@ class WeatherTalent(BaseTalent):
             }
 
         # Fetch weather data from selected provider
-        weather_data = self._fetch_weather(geo, provider)
+        weather_data = self._fetch_weather(geo, provider, forecast_days)
         if weather_data is None:
             return {
                 "success": False,
@@ -96,7 +109,7 @@ class WeatherTalent(BaseTalent):
             }
 
         # Format the raw data into a readable block for the LLM
-        formatted = self._format_weather(weather_data, geo, provider)
+        formatted = self._format_weather(weather_data, geo, provider, forecast_days)
 
         print(f"   -> Weather data for '{geo['name']}' via {provider}:")
         print(f"   -> {formatted[:400]}...")
@@ -104,8 +117,10 @@ class WeatherTalent(BaseTalent):
             f"=== CURRENT WEATHER DATA ===\n"
             f"{formatted}\n"
             f"=== END WEATHER DATA ===\n\n"
-            f"User asked: {command}\n\n"
-            f"Summarize the current weather using ONLY the data above."
+            f"User asked: {command}\n"
+            f"Time focus: {time_scope}\n\n"
+            f"Summarize the weather using ONLY the data above. "
+            f"Focus on the {time_scope} data."
         )
 
         response = llm.generate(
@@ -124,7 +139,7 @@ class WeatherTalent(BaseTalent):
 
     # ── Provider dispatch ──────────────────────────────────────────
 
-    def _fetch_weather(self, geo, provider):
+    def _fetch_weather(self, geo, provider, forecast_days=1):
         """Fetch weather data from the selected provider."""
         providers = {
             "Open-Meteo": self._fetch_open_meteo,
@@ -132,9 +147,13 @@ class WeatherTalent(BaseTalent):
             "WeatherAPI": self._fetch_weatherapi,
         }
         fetch_fn = providers.get(provider, self._fetch_open_meteo)
+        # Only Open-Meteo supports multi-day natively here; OWM/WeatherAPI
+        # use their existing single-day endpoints and ignore forecast_days.
+        if provider == "Open-Meteo":
+            return fetch_fn(geo, forecast_days)
         return fetch_fn(geo)
 
-    def _format_weather(self, data, geo, provider):
+    def _format_weather(self, data, geo, provider, forecast_days=1):
         """Format weather data into a readable block for the LLM."""
         formatters = {
             "Open-Meteo": self._format_open_meteo,
@@ -142,12 +161,14 @@ class WeatherTalent(BaseTalent):
             "WeatherAPI": self._format_weatherapi,
         }
         fmt_fn = formatters.get(provider, self._format_open_meteo)
+        if provider == "Open-Meteo":
+            return fmt_fn(data, geo, forecast_days)
         return fmt_fn(data, geo)
 
     # ── Open-Meteo (default, no key) ──────────────────────────────
 
-    def _fetch_open_meteo(self, geo):
-        """Fetch current weather + today's forecast from Open-Meteo (free, no API key)."""
+    def _fetch_open_meteo(self, geo, forecast_days=1):
+        """Fetch current weather + forecast from Open-Meteo (free, no API key)."""
         try:
             url = "https://api.open-meteo.com/v1/forecast"
             params = {
@@ -160,6 +181,8 @@ class WeatherTalent(BaseTalent):
                     "surface_pressure", "is_day",
                 ]),
                 "daily": ",".join([
+                    "time",
+                    "weather_code",
                     "temperature_2m_max", "temperature_2m_min",
                     "apparent_temperature_max", "apparent_temperature_min",
                     "sunrise", "sunset", "precipitation_sum",
@@ -169,7 +192,7 @@ class WeatherTalent(BaseTalent):
                 "wind_speed_unit": "mph",
                 "precipitation_unit": "inch",
                 "timezone": "auto",
-                "forecast_days": 1,
+                "forecast_days": forecast_days,
             }
             print(f"   -> Fetching Open-Meteo: lat={geo['lat']}, lon={geo['lon']}")
             resp = requests.get(url, params=params, timeout=10)
@@ -183,7 +206,7 @@ class WeatherTalent(BaseTalent):
             print(f"   -> ERROR fetching Open-Meteo: {e}")
             return None
 
-    def _format_open_meteo(self, data, geo):
+    def _format_open_meteo(self, data, geo, forecast_days=1):
         """Format Open-Meteo JSON into a readable block for the LLM."""
         try:
             current = data.get("current", {})
@@ -218,27 +241,47 @@ class WeatherTalent(BaseTalent):
             )
 
             if daily:
-                max_temps = daily.get("temperature_2m_max", [])
-                min_temps = daily.get("temperature_2m_min", [])
-                sunrises = daily.get("sunrise", [])
-                sunsets = daily.get("sunset", [])
-                uv_maxes = daily.get("uv_index_max", [])
+                max_temps  = daily.get("temperature_2m_max", [])
+                min_temps  = daily.get("temperature_2m_min", [])
+                sunrises   = daily.get("sunrise", [])
+                sunsets    = daily.get("sunset", [])
+                uv_maxes   = daily.get("uv_index_max", [])
                 precip_sums = daily.get("precipitation_sum", [])
+                dates      = daily.get("time", [])
+                codes      = daily.get("weather_code", [])
+                wind_maxes = daily.get("wind_speed_10m_max", [])
 
-                if max_temps:
-                    formatted += f"\nToday's high: {max_temps[0]}{unit}\n"
-                if min_temps:
-                    formatted += f"Today's low: {min_temps[0]}{unit}\n"
-                if sunrises:
-                    sunrise_str = sunrises[0].split("T")[1] if "T" in sunrises[0] else sunrises[0]
-                    formatted += f"Sunrise: {sunrise_str}\n"
-                if sunsets:
-                    sunset_str = sunsets[0].split("T")[1] if "T" in sunsets[0] else sunsets[0]
-                    formatted += f"Sunset: {sunset_str}\n"
-                if uv_maxes:
-                    formatted += f"UV Index (max): {uv_maxes[0]}\n"
-                if precip_sums:
-                    formatted += f"Total precipitation today: {precip_sums[0]} inches\n"
+                if forecast_days == 1:
+                    # Single-day: today's summary (original behaviour)
+                    if max_temps:
+                        formatted += f"\nToday's high: {max_temps[0]}{unit}\n"
+                    if min_temps:
+                        formatted += f"Today's low: {min_temps[0]}{unit}\n"
+                    if sunrises:
+                        sunrise_str = sunrises[0].split("T")[1] if "T" in sunrises[0] else sunrises[0]
+                        formatted += f"Sunrise: {sunrise_str}\n"
+                    if sunsets:
+                        sunset_str = sunsets[0].split("T")[1] if "T" in sunsets[0] else sunsets[0]
+                        formatted += f"Sunset: {sunset_str}\n"
+                    if uv_maxes:
+                        formatted += f"UV Index (max): {uv_maxes[0]}\n"
+                    if precip_sums:
+                        formatted += f"Total precipitation today: {precip_sums[0]} inches\n"
+                else:
+                    # Multi-day: one row per day
+                    formatted += "\nForecast:\n"
+                    days_available = min(forecast_days, len(dates) if dates else forecast_days)
+                    for i in range(days_available):
+                        label = dates[i] if dates else f"Day {i + 1}"
+                        cond  = _WMO_CODES.get(int(codes[i]) if codes else 0, "Unknown")
+                        high  = max_temps[i]   if max_temps   else "?"
+                        low   = min_temps[i]   if min_temps   else "?"
+                        rain  = precip_sums[i] if precip_sums else 0
+                        wind  = wind_maxes[i]  if wind_maxes  else "?"
+                        formatted += (
+                            f"  {label}: High {high}{unit} / Low {low}{unit}, "
+                            f"{cond}, Wind max {wind} mph, Rain {rain} in\n"
+                        )
 
             return formatted
 
