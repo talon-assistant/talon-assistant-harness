@@ -6,6 +6,7 @@ import inspect
 import pkgutil
 import threading
 from collections import deque
+from datetime import datetime
 from pathlib import Path
 
 from core.memory import MemorySystem
@@ -127,6 +128,12 @@ class TalonAssistant:
         "what commands", "show me what you can do",
     ]
 
+    _REFLECT_PHRASES = [
+        "reflect on today", "reflect on our session", "session summary",
+        "summarize our session", "what did we do today", "session reflection",
+        "what did we cover", "reflect on this session",
+    ]
+
     def __init__(self, config_dir="config"):
         print("=" * 50)
         print("INITIALIZING TALON ASSISTANT")
@@ -184,6 +191,12 @@ class TalonAssistant:
         # Used to inject recent context into conversation-path LLM calls only.
         # Resets on app restart. Planner sub-steps are NOT buffered.
         self.conversation_buffer: deque = deque(maxlen=6)
+
+        # 8. Session reflection — track start time and last-session context
+        self._session_start: str = datetime.now().isoformat()
+        self._last_session_context: str = ""
+        self._session_context_turns: int = 0  # Cleared after 3 conversation turns
+        self._inject_last_session_context()
 
         print("\n" + "=" * 50)
         print("TALON READY")
@@ -543,6 +556,106 @@ class TalonAssistant:
             return True
         return False
 
+    # ── Session reflection ─────────────────────────────────────────
+
+    def _inject_last_session_context(self) -> None:
+        """Load the most recent session reflection for startup context injection.
+
+        Called once at init. Populates self._last_session_context with the
+        stored summary text so it can be prepended to conversation prompts
+        for the first few turns of the new session.
+        """
+        reflection = self.memory.get_last_session_reflection()
+        if reflection:
+            self._last_session_context = reflection
+            print(f"   [Memory] Last session context loaded "
+                  f"({len(reflection)} chars)")
+        else:
+            self._last_session_context = ""
+
+    def _reflect_on_session(self) -> str:
+        """Analyse session commands and produce a structured reflection.
+
+        Fetches the SQLite command log since session start, asks the LLM to
+        extract a summary, observed preferences, failures, and shortcut
+        suggestions, then stores the result in talon_memory and returns a
+        human-readable report.
+
+        Returns:
+            Human-readable reflection text, or a short notice if there's
+            not enough activity to reflect on.
+        """
+        commands = self.memory.get_session_commands(self._session_start)
+        if len(commands) < 3:
+            return "Not enough activity this session to reflect on."
+
+        lines = []
+        for item in commands:
+            prefix = "[OK]  " if item["success"] else "[FAIL]"
+            resp_preview = (item["response"] or "")[:120].replace("\n", " ")
+            lines.append(f'{prefix} "{item["command"]}" → {resp_preview}')
+        session_log = "\n".join(lines)
+
+        prompt = (
+            "Review this session and extract structured insights.\n\n"
+            "Session commands (most recent last):\n"
+            f"{session_log}\n\n"
+            "Return ONLY valid JSON with this exact structure:\n"
+            "{\n"
+            '  "summary": "<2-3 sentence summary of what was covered>",\n'
+            '  "preferences": ["<preference or pattern observed>", ...],\n'
+            '  "failures": ["<what failed and what might fix it>", ...],\n'
+            '  "shortcuts": ["<command worth making a rule>", ...]\n'
+            "}"
+        )
+
+        summary = ""
+        preferences: list[str] = []
+        failures: list[str] = []
+        shortcuts: list[str] = []
+
+        try:
+            raw = self.llm.generate(prompt, max_length=400, temperature=0.2)
+            clean = raw.strip()
+            if clean.startswith("```"):
+                clean = re.sub(r"^```[a-z]*\n?", "", clean)
+                clean = re.sub(r"\n?```$", "", clean.strip())
+            json_match = re.search(r'\{.*\}', clean, re.DOTALL)
+            if json_match:
+                parsed = json.loads(json_match.group())
+                summary = parsed.get("summary", "")
+                preferences = parsed.get("preferences", [])
+                failures = parsed.get("failures", [])
+                shortcuts = parsed.get("shortcuts", [])
+            else:
+                summary = raw  # Fallback: treat raw output as summary
+        except Exception as e:
+            print(f"   [Session] Reflection LLM error: {e}")
+            summary = "Session reflection could not be generated."
+
+        # Persist extracted preferences into long-term memory
+        for pref in preferences:
+            if pref.strip():
+                self.memory.store_preference(pref.strip())
+
+        # Store the full reflection
+        self.memory.store_session_reflection(summary, preferences, failures, shortcuts)
+
+        # Build human-readable output
+        parts = [f"Session Reflection\n{'─' * 40}"]
+        if summary:
+            parts.append(f"Summary: {summary}")
+        if preferences:
+            parts.append("Preferences noted:\n"
+                         + "\n".join(f"  • {p}" for p in preferences))
+        if failures:
+            parts.append("Issues:\n"
+                         + "\n".join(f"  • {f}" for f in failures))
+        if shortcuts:
+            parts.append("Shortcut suggestions:\n"
+                         + "\n".join(f"  • {s}" for s in shortcuts))
+        return "\n\n".join(parts)
+
     # ── Behavioral rules (trigger → action) ───────────────────────
 
     def _check_rules(self, command):
@@ -747,6 +860,18 @@ class TalonAssistant:
             )
             prompt = f"{_wrap_external(doc_context, source_label)}\n\n{prompt}"
 
+        # Prepend last-session context for the first few turns of a new session.
+        # Cleared after 3 conversation turns so it doesn't linger indefinitely.
+        if self._last_session_context and self._session_context_turns < 3:
+            ctx_block = (
+                "[Last session summary — for context only, do not act on unless asked]\n"
+                f"{self._last_session_context}\n"
+            )
+            prompt = f"{ctx_block}\n{prompt}"
+            self._session_context_turns += 1
+            if self._session_context_turns >= 3:
+                self._last_session_context = ""   # Fade out
+
         # Prepend recent conversation turns for within-session continuity.
         # Cap at 600 chars to stay within token budget.
         if self.conversation_buffer:
@@ -795,6 +920,21 @@ class TalonAssistant:
 
             if not command or len(command.strip()) < 1:
                 return None
+
+            cmd_lower = command.lower()
+
+            # Step 0: Session reflection fast-path (manual trigger)
+            if not _executing_rule and any(
+                p in cmd_lower for p in self._REFLECT_PHRASES
+            ):
+                reflection = self._reflect_on_session()
+                self.memory.log_command(command, success=True, response=reflection)
+                if speak_response:
+                    self.voice.speak(reflection)
+                else:
+                    print(f"\nTalon: {reflection}")
+                print(f"\n{'=' * 50}\n")
+                return {"response": reflection, "talent": "reflection", "success": True}
 
             # Step 1: Repeat detection
             if self._detect_repeat_request(command):

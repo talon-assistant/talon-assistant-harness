@@ -492,6 +492,15 @@ class AssistantBridge(QObject):
 
     def cleanup(self):
         """Stop all workers before app exit."""
+        # Auto-reflect on session before tearing down workers.
+        # Silent: no TTS, no GUI update — just stores in memory for next startup.
+        try:
+            if self.assistant and hasattr(self.assistant, '_reflect_on_session'):
+                self.assistant._reflect_on_session()
+                print("[Session] Reflection stored on exit.")
+        except Exception as e:
+            print(f"[Session] Reflection failed on exit: {e}")
+
         try:
             if self._voice_worker:
                 self._voice_worker.stop()

@@ -175,6 +175,94 @@ class MemorySystem:
             ids=[doc_id]
         )
 
+    # ── Session reflection ────────────────────────────────────────────
+
+    def get_session_commands(self, since_timestamp: str, limit: int = 40) -> list[dict]:
+        """Return commands logged at or after since_timestamp (ISO format).
+
+        Returns:
+            list[dict] with keys: command, success, response
+        """
+        conn = sqlite3.connect(self.db_path)
+        rows = conn.execute(
+            "SELECT command_text, success, response FROM commands "
+            "WHERE timestamp >= ? ORDER BY id LIMIT ?",
+            (since_timestamp, limit),
+        ).fetchall()
+        conn.close()
+        return [{"command": r[0], "success": bool(r[1]), "response": r[2]} for r in rows]
+
+    def store_session_reflection(
+        self,
+        summary: str,
+        preferences: list[str],
+        failures: list[str],
+        shortcuts: list[str] | None = None,
+    ) -> None:
+        """Store a session reflection in talon_memory ChromaDB.
+
+        Keeps only the last 5 reflections — the oldest is deleted before
+        adding a new one whenever the count would exceed 5.
+        """
+        # Build document text
+        parts = [f"Session Summary: {summary}"]
+        if preferences:
+            parts.append("Preferences: " + "; ".join(preferences))
+        if failures:
+            parts.append("Failures: " + "; ".join(failures))
+        if shortcuts:
+            parts.append("Shortcuts: " + "; ".join(shortcuts))
+        doc_text = "\n".join(parts)
+
+        # Enforce 5-reflection cap
+        try:
+            existing = self.memory_collection.get(
+                where={"type": "session_reflection"},
+                include=["metadatas"],
+            )
+            ids = existing.get("ids", [])
+            metas = existing.get("metadatas", [])
+            if len(ids) >= 5:
+                # Sort ascending by timestamp — delete the oldest
+                paired = sorted(zip(ids, metas),
+                                key=lambda x: x[1].get("timestamp", ""))
+                oldest_id = paired[0][0]
+                self.memory_collection.delete(ids=[oldest_id])
+                print(f"   [Memory] Pruned oldest session reflection ({oldest_id})")
+        except Exception as e:
+            print(f"   [Memory] Could not prune old reflections: {e}")
+
+        doc_id = f"reflect_{int(time.time() * 1000)}"
+        timestamp = datetime.now().isoformat()
+        self.memory_collection.add(
+            documents=[doc_text],
+            metadatas=[{"type": "session_reflection", "timestamp": timestamp}],
+            ids=[doc_id],
+        )
+        print(f"   [Memory] Stored session reflection ({doc_id})")
+
+    def get_last_session_reflection(self) -> str:
+        """Return the most recent session reflection text, or '' if none exists."""
+        try:
+            results = self.memory_collection.get(
+                where={"type": "session_reflection"},
+                include=["documents", "metadatas"],
+            )
+            docs = results.get("documents", [])
+            metas = results.get("metadatas", [])
+            if not docs:
+                return ""
+            # Sort descending by timestamp — most recent first
+            paired = sorted(
+                zip(docs, metas),
+                key=lambda x: x[1].get("timestamp", ""),
+                reverse=True,
+            )
+            return paired[0][0]
+        except Exception as e:
+            print(f"   [Memory] Could not retrieve session reflection: {e}")
+            return ""
+
     def search_memory(self, query, n_results=3, memory_type=None,
                        max_distance=1.2):
         """Search conversation memory semantically.
