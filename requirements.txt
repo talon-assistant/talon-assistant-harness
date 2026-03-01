@@ -36,4 +36,8 @@ keyring
 plyer
 
 # Optional — LoRA fine-tuning (talent: lora_train)
-# pip install unsloth trl
+# unsloth requires a platform-specific install — see https://github.com/unslothai/unsloth
+# Windows + CUDA 12:  pip install "unsloth[cu124-torch260] @ git+https://github.com/unslothai/unsloth.git"
+# Linux / WSL2:       pip install unsloth
+trl
+datasets
