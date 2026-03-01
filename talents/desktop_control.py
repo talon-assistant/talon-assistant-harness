@@ -243,6 +243,7 @@ Available actions:
 - {"action": "press_key", "key": "<key name like 'enter', 'tab', etc>"}
 - {"action": "hotkey", "keys": ["ctrl", "c"]}
 - {"action": "read_clipboard"} — read and return the current clipboard text to the user
+- {"action": "screenshot"} — silently capture the full screen (no interactive dialog); returns the saved file path
 
 Example — reading text from an application:
 {
@@ -397,7 +398,14 @@ Respond ONLY with valid JSON, no additional text."""
                 return f"Pressed: {key}"
 
             elif action_type == "hotkey":
-                keys = action_data.get("keys")
+                keys = action_data.get("keys", [])
+                # Win+L cannot be sent reliably via pyautogui (Windows blocks
+                # simulated Windows-key presses for security hotkeys).
+                # Use the LockWorkStation() API directly instead.
+                if {k.lower() for k in keys} == {"winleft", "l"}:
+                    import ctypes
+                    ctypes.windll.user32.LockWorkStation()
+                    return "Locked workstation"
                 pyautogui.hotkey(*keys)
                 return f"Hotkey: {'+'.join(keys)}"
 
@@ -408,6 +416,16 @@ Respond ONLY with valid JSON, no additional text."""
                 if text:
                     return f"Clipboard: {text}"
                 return "Clipboard: (empty)"
+
+            elif action_type == "screenshot":
+                # Silent full-screen capture — no interactive dialog.
+                # PIL.ImageGrab.grab() works on Windows without any UI.
+                from PIL import ImageGrab
+                import os, tempfile
+                img = ImageGrab.grab()
+                path = os.path.join(tempfile.gettempdir(), "talon_screenshot.png")
+                img.save(path, "PNG")
+                return f"Screenshot: {path}"
 
             else:
                 return f"Unknown action: {action_type}"

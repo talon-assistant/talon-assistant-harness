@@ -314,6 +314,15 @@ class SignalRemoteTalent(BaseTalent):
         if len(response) > max_chars:
             response = response[:max_chars - 3] + "..."
 
+        # 6b. Collect file attachments from actions_taken (e.g. screenshots)
+        attachments = []
+        for action_result in (result.get("actions_taken") or []):
+            ar = action_result.get("result", "")
+            if isinstance(ar, str) and ar.startswith("Screenshot: "):
+                path = ar[len("Screenshot: "):].strip()
+                if path and __import__("os").path.exists(path):
+                    attachments.append(path)
+
         with self._lock:
             self._stats["commands_processed"] += 1
 
@@ -321,33 +330,29 @@ class SignalRemoteTalent(BaseTalent):
         #    (the user's own number) rather than sender (also their number, same thing,
         #    but sync_dest is more explicit and correct)
         reply_to = sync_dest or sender
-        self._send_reply(reply_to, response or "(no response)")
+        self._send_reply(reply_to, response or "(no response)", attachments=attachments)
 
-    def _send_reply(self, recipient: str, message: str) -> None:
-        """Send a Signal message back to the sender."""
+    def _send_reply(self, recipient: str, message: str,
+                    attachments: list | None = None) -> None:
+        """Send a Signal message (with optional file attachments) back to the sender."""
         cfg = self.talent_config
         cli = cfg.get("signal_cli_path", "signal-cli")
         config_dir = cfg.get("config_dir", "data/signal-cli-config")
         account = cfg.get("account_number", "")
 
+        cmd = [cli, "--config", config_dir, "-a", account, "send",
+               "-m", message]
+        for path in (attachments or []):
+            cmd += ["--attachment", path]
+        cmd.append(recipient)
+
         try:
-            result = subprocess.run(
-                [
-                    cli,
-                    "--config", config_dir,
-                    "-a", account,
-                    "send",
-                    "-m", message,
-                    recipient,
-                ],
-                capture_output=True,
-                text=True,
-                timeout=20,
-            )
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
             if result.returncode != 0:
                 print(f"   [Signal] Send failed: {result.stderr.strip()[:200]}")
             else:
-                print(f"   [Signal] Reply sent to {recipient}.")
+                att_note = f" (+{len(attachments)} attachment(s))" if attachments else ""
+                print(f"   [Signal] Reply sent to {recipient}{att_note}.")
         except Exception as e:
             print(f"   [Signal] Send error: {e}")
 
