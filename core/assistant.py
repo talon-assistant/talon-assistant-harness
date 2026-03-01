@@ -840,7 +840,57 @@ class TalonAssistant:
             except Exception as e:
                 print(f"   [Harvest] Failed: {e}")
 
+        # 6. Suggest a rule if this mistake keeps recurring (every 3 occurrences)
+        if prev_command:
+            try:
+                count = self.memory.count_similar_corrections(prev_command)
+                if count >= 3 and count % 3 == 0:
+                    suggestion = (
+                        f"\n\n💡 I've made this mistake {count} times. "
+                        "Want to add a rule? Try: 'whenever I ask [X], always [Y]'."
+                    )
+                    if result and result.get("response"):
+                        result["response"] = result["response"] + suggestion
+            except Exception as e:
+                print(f"   [Correction] Rule suggestion check failed: {e}")
+
         return result
+
+    # ── Buffer eviction consolidation ─────────────────────────────
+
+    def _maybe_evict_consolidate(self) -> None:
+        """If the buffer is full and the oldest pair is user+talon, spawn a
+        background consolidation thread before the deque evicts them."""
+        if len(self.conversation_buffer) < self.conversation_buffer.maxlen:
+            return
+        if len(self.conversation_buffer) < 2:
+            return
+        oldest = self.conversation_buffer[0]
+        second = self.conversation_buffer[1]
+        if oldest["role"] == "user" and second["role"] == "talon":
+            threading.Thread(
+                target=self._consolidate_evicted_turn,
+                args=(oldest["text"], second["text"]),
+                daemon=True,
+            ).start()
+
+    def _consolidate_evicted_turn(self, user_text: str, talon_text: str) -> None:
+        """Background thread: ask the LLM if the evicted turn contains anything
+        worth remembering long-term. If yes, store it as an insight."""
+        prompt = (
+            f"User said: {user_text}\n"
+            f"You responded: {talon_text}\n\n"
+            "Does this exchange reveal a user preference, habit, or fact worth "
+            "remembering long-term? If yes, state it in one concise sentence. "
+            "If no, reply: nothing"
+        )
+        try:
+            insight = self.llm.generate(prompt, max_length=60, temperature=0.1).strip()
+            if insight and insight.lower() not in ("nothing", "no", "none", "n/a", ""):
+                self.memory.store_preference(insight, category="insight")
+                print(f"   [Buffer] Eviction insight: {insight[:80]}")
+        except Exception as e:
+            print(f"   [Buffer] Consolidation error: {e}")
 
     # ── Behavioral rules (trigger → action) ───────────────────────
 
@@ -1146,6 +1196,7 @@ class TalonAssistant:
                         print(f"\nTalon: {resp}")
                     # Buffer the corrected result as if it were a normal turn
                     if not _executing_rule:
+                        self._maybe_evict_consolidate()
                         self.conversation_buffer.append({"role": "user", "text": command})
                         if resp:
                             self.conversation_buffer.append({"role": "talon", "text": resp})
@@ -1234,6 +1285,7 @@ class TalonAssistant:
                 if not _executing_rule:
                     resp_text = result.get("response", "").strip()
                     if resp_text:
+                        self._maybe_evict_consolidate()
                         self.conversation_buffer.append({"role": "user", "text": command})
                         self.conversation_buffer.append({"role": "talon", "text": resp_text})
 
@@ -1253,6 +1305,7 @@ class TalonAssistant:
 
                 # Buffer this turn (conversation path)
                 if not _executing_rule and response:
+                    self._maybe_evict_consolidate()
                     self.conversation_buffer.append({"role": "user", "text": command})
                     self.conversation_buffer.append({"role": "talon", "text": response.strip()})
 

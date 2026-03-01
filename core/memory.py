@@ -246,6 +246,28 @@ class MemorySystem:
             print(f"   [Memory] get_relevant_corrections error: {e}")
             return []
 
+    def count_similar_corrections(self, command: str, threshold: float = 0.60) -> int:
+        """Count stored corrections whose prev_command is semantically close to command.
+
+        Uses a slightly looser threshold than get_relevant_corrections (0.60 vs 0.55)
+        to catch near-duplicates for frequency counting purposes.
+        """
+        try:
+            total = self.corrections_collection.count()
+            if total == 0:
+                return 0
+            n = min(total, 20)
+            results = self.corrections_collection.query(
+                query_texts=[command],
+                n_results=n,
+                include=["distances"],
+            )
+            distances = results["distances"][0] if results["distances"] else []
+            return sum(1 for d in distances if d <= threshold)
+        except Exception as e:
+            print(f"   [Memory] count_similar_corrections error: {e}")
+            return 0
+
     # ── Session reflection ────────────────────────────────────────────
 
     def get_session_commands(self, since_timestamp: str, limit: int = 40) -> list[dict]:
