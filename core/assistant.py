@@ -1066,8 +1066,8 @@ class TalonAssistant:
                 role_label = "User" if turn["role"] == "user" else "Talon"
                 lines.append(f"{role_label}: {turn['text']}")
             history_block = "\n".join(lines) + "\n\n"
-            if len(history_block) > 600:
-                history_block = history_block[-600:]
+            if len(history_block) > 1200:
+                history_block = history_block[-1200:]
             prompt = f"{history_block}{prompt}"
 
         # Inject correction hints: if a similar command was previously corrected,

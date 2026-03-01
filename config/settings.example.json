@@ -20,7 +20,7 @@
     "model_path": "",
     "port": 8080,
     "n_gpu_layers": -1,
-    "ctx_size": 4096,
+    "ctx_size": 12288,
     "threads": 4,
     "bin_path": "bin/",
     "extra_args": ""
