@@ -199,6 +199,13 @@ class TalonAssistant:
         # 3d. Inject keyring secrets into talent configs for runtime use
         self._inject_secrets()
 
+        # 3e. Give any talent that needs a direct assistant reference one
+        #     (e.g. SignalRemoteTalent starts its background polling thread here,
+        #     after configs + secrets are fully loaded)
+        for talent in self.talents:
+            if hasattr(talent, 'set_assistant'):
+                talent.set_assistant(self)
+
         # 4. Notification callback (set by bridge for talents that need it)
         self.notify_callback = None
 
