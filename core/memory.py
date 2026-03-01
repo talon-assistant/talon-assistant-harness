@@ -285,6 +285,46 @@ class MemorySystem:
         conn.close()
         return [{"command": r[0], "success": bool(r[1]), "response": r[2]} for r in rows]
 
+    def search_commands(
+        self,
+        keyword: str | None = None,
+        start_ts: str | None = None,
+        end_ts: str | None = None,
+        success_filter: bool | None = None,
+        limit: int = 10,
+    ) -> list[dict]:
+        """Search command history with optional keyword, date range, and success filters.
+
+        Returns:
+            list[dict] with keys: timestamp, command, success, response
+        """
+        conditions, params = [], []
+        if start_ts:
+            conditions.append("timestamp >= ?")
+            params.append(start_ts)
+        if end_ts:
+            conditions.append("timestamp <= ?")
+            params.append(end_ts)
+        if keyword:
+            conditions.append("(command_text LIKE ? OR response LIKE ?)")
+            params += [f"%{keyword}%", f"%{keyword}%"]
+        if success_filter is not None:
+            conditions.append("success = ?")
+            params.append(1 if success_filter else 0)
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        params.append(limit)
+        conn = sqlite3.connect(self.db_path)
+        rows = conn.execute(
+            f"SELECT timestamp, command_text, success, response FROM commands "
+            f"{where} ORDER BY timestamp DESC LIMIT ?",
+            params,
+        ).fetchall()
+        conn.close()
+        return [
+            {"timestamp": r[0], "command": r[1], "success": bool(r[2]), "response": r[3]}
+            for r in rows
+        ]
+
     def store_session_reflection(
         self,
         summary: str,
