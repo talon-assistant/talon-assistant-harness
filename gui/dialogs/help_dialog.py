@@ -15,7 +15,8 @@ HELP_TOPICS["Getting Started"] = """
 <h2>Getting Started</h2>
 <p>Talon Assistant is a local-first desktop AI assistant. It connects to a
 local LLM server for inference and provides voice control, smart home
-integration, and an extensible talent plugin system.</p>
+integration, an extensible talent plugin system, and a self-improvement
+pipeline that learns from your corrections over time.</p>
 
 <h3>First Run</h3>
 <ol>
@@ -30,6 +31,7 @@ integration, and an extensible talent plugin system.</p>
 <li><b>Toggle voice mode</b> with the microphone button in the voice panel.</li>
 <li><b>Browse talents</b> in the sidebar on the left (toggle with Ctrl+B).</li>
 <li><b>Check the status bar</b> at the bottom for LLM connection, voice state, and activity.</li>
+<li><b>Correct mistakes</b> by saying "no I meant X" &mdash; Talon re-executes and learns.</li>
 </ul>
 
 <h3>System Tray</h3>
@@ -88,13 +90,16 @@ talent based on its description and examples.</p>
 <h3>Built-in Talents</h3>
 <table cellpadding="4" cellspacing="0" border="0" width="100%">
 <tr><td><b>Talent</b></td><td><b>Priority</b></td><td><b>Description</b></td></tr>
+<tr><td>planner</td><td>85</td><td>Multi-step routine executor</td></tr>
 <tr><td>news</td><td>80</td><td>Latest headlines via DuckDuckGo News</td></tr>
 <tr><td>weather</td><td>75</td><td>Current weather and forecast</td></tr>
 <tr><td>hue_lights</td><td>70</td><td>Philips Hue smart light control</td></tr>
 <tr><td>reminder</td><td>65</td><td>Timers, reminders, and alarms</td></tr>
+<tr><td>lora_train</td><td>60</td><td>Fine-tune the LLM on usage data <i>(disabled by default)</i></td></tr>
 <tr><td>web_search</td><td>60</td><td>Web search with LLM-synthesized answers</td></tr>
 <tr><td>email</td><td>55</td><td>Check, read, and send email</td></tr>
 <tr><td>notes</td><td>45</td><td>Save, search, and manage notes</td></tr>
+<tr><td>history</td><td>43</td><td>Search past commands by date, keyword, or outcome</td></tr>
 <tr><td>desktop_control</td><td>40</td><td>Launch apps, type text, automation</td></tr>
 <tr><td>conversation</td><td>&mdash;</td><td>General LLM conversation (fallback)</td></tr>
 </table>
@@ -108,8 +113,139 @@ talent based on its description and examples.</p>
 <li>"Search for Python decorators" &rarr; web_search talent</li>
 <li>"Check my email" &rarr; email talent</li>
 <li>"Save a note: buy groceries tomorrow" &rarr; notes talent</li>
+<li>"What did I ask yesterday?" &rarr; history talent</li>
 <li>"Open notepad" &rarr; desktop_control talent</li>
 </ul>
+"""
+
+HELP_TOPICS["Correction Learning"] = """
+<h2>Correction Learning</h2>
+<p>When Talon gets something wrong, just say so in plain English. Talon will
+re-execute the right command immediately and remember the correction for next time.</p>
+
+<h3>Correction Phrases</h3>
+<p>Talon recognises phrases like:</p>
+<ul>
+<li>"no I meant summarize it"</li>
+<li>"that's wrong, open Chrome instead"</li>
+<li>"actually I wanted the bedroom lights"</li>
+<li>"try again but make it shorter"</li>
+<li>"I said email, not notes"</li>
+</ul>
+
+<h3>What Happens</h3>
+<ol>
+<li>Talon detects the correction phrase and extracts your intended command.</li>
+<li>The corrected command is executed immediately.</li>
+<li>The correction (original command &rarr; correct response) is stored in memory.</li>
+<li>On future commands that resemble the original mistake, the correction is
+injected as a hint into the LLM prompt.</li>
+</ol>
+
+<h3>Proactive Rule Proposals</h3>
+<p>If Talon makes the same type of mistake 3 times, it appends a suggestion to
+the correction response:</p>
+<blockquote><i>&#128161; I've made this mistake 3 times. Want to add a rule?
+Try: "whenever I ask [X], always [Y]".</i></blockquote>
+<p>Rules are stored permanently in ChromaDB and persist across restarts.</p>
+
+<h3>Training Pair Harvesting</h3>
+<p>Every correction is also saved as a supervised training pair in
+<code>data/training_pairs.jsonl</code> (Alpaca format). Web search results
+are harvested the same way. These pairs accumulate silently and can later be
+used to fine-tune the local LLM via the <b>lora_train</b> talent.</p>
+<p>Toggle harvesting in <code>config/settings.json</code> under
+<code>training.harvest_pairs</code> (default: true).</p>
+"""
+
+HELP_TOPICS["History Search"] = """
+<h2>History Search</h2>
+<p>Every command you send &mdash; and Talon's response &mdash; is logged to the
+SQLite database. The <b>history</b> talent lets you query that log in natural language.</p>
+
+<h3>Example Commands</h3>
+<ul>
+<li>"What did I ask you yesterday?"</li>
+<li>"Did I ever ask about Python async?"</li>
+<li>"Show me my recent commands"</li>
+<li>"Show failed commands from today"</li>
+<li>"What did I ask last Monday?"</li>
+<li>"Show me everything about lights this week"</li>
+</ul>
+
+<h3>Filters Available</h3>
+<table cellpadding="4" cellspacing="0" border="0" width="100%">
+<tr><td><b>Filter</b></td><td><b>How to use it</b></td></tr>
+<tr><td>Date range</td><td>today, yesterday, this week, last week, this month, last Monday&hellip;</td></tr>
+<tr><td>Keyword</td><td>Any topic word — searches both the command text and Talon's response</td></tr>
+<tr><td>Success filter</td><td>"failed commands" / "successful commands"</td></tr>
+<tr><td>Limit</td><td>Default 10 results; say "show me all" for up to 30</td></tr>
+</table>
+
+<h3>Output Format</h3>
+<p>Results are listed newest-first with a timestamp, a ✓/✗ status icon, and the command text:</p>
+<pre>Found 3 command(s) matching 'lights':
+  ✓ 2026-03-01 14:23 — turn the living room lights blue
+  ✓ 2026-03-01 09:11 — dim the lights to 40%
+  ✗ 2026-02-28 21:05 — set lights to warm white</pre>
+"""
+
+HELP_TOPICS["LoRA Fine-tuning"] = """
+<h2>LoRA Fine-tuning</h2>
+<p>After accumulating enough training pairs, you can fine-tune the local LLM
+on your own usage patterns. The <b>lora_train</b> talent handles this entirely
+in the background — it pauses the inference server, trains, and restarts it
+automatically.</p>
+
+<h3>Setup</h3>
+<ol>
+<li>Install the optional dependencies:
+<pre>pip install unsloth trl</pre>
+(Windows + CUDA 12 needs a platform-specific unsloth wheel &mdash; see <code>requirements.txt</code>)
+</li>
+<li>Enable the talent: <b>Settings &rarr; Talent Config &rarr; lora_train</b></li>
+<li>Set <b>HuggingFace Model Path</b> to the directory containing your model's
+<code>.safetensors</code> weights (not the GGUF &mdash; the full HuggingFace format).</li>
+<li>Adjust hyperparameters if desired (rank, alpha, epochs, batch size).</li>
+</ol>
+
+<h3>Running a Training Session</h3>
+<p>Once enabled and configured, say one of:</p>
+<ul>
+<li>"start LoRA training"</li>
+<li>"fine tune the model"</li>
+<li>"train from history"</li>
+<li>"retrain from corrections"</li>
+</ul>
+<p>Talon will:</p>
+<ol>
+<li>Check prerequisites (minimum pairs, base model path, unsloth installed).</li>
+<li>Stop the inference server.</li>
+<li>Launch <code>scripts/train_lora.py</code> in the background.</li>
+<li>Return immediately with an ETA estimate.</li>
+<li>Notify you when training completes and restart the server.</li>
+</ol>
+
+<h3>Loading the Adapter</h3>
+<p>After training, the adapter is saved to <code>data/lora_adapters/</code>.
+To load it in KoboldCpp, add to <b>Settings &rarr; LLM Server &rarr; Extra Args</b>:</p>
+<pre>--lora data/lora_adapters/adapter.gguf</pre>
+<p>The adapter is non-destructive — your base GGUF stays unchanged. Swap or
+remove the adapter at any time by editing Extra Args.</p>
+
+<h3>Talent Config Options</h3>
+<table cellpadding="4" cellspacing="0" border="0" width="100%">
+<tr><td><b>Setting</b></td><td><b>Description</b></td><td><b>Default</b></td></tr>
+<tr><td>Enabled</td><td>Whether this talent is active</td><td>Off</td></tr>
+<tr><td>HuggingFace Model Path</td><td>Path to safetensors model directory</td><td>(required)</td></tr>
+<tr><td>Adapter Output Directory</td><td>Where the trained adapter is saved</td><td>data/lora_adapters</td></tr>
+<tr><td>Min Pairs to Train</td><td>Minimum collected pairs before training is allowed</td><td>100</td></tr>
+<tr><td>LoRA Rank</td><td>Adapter rank (higher = more capacity, more VRAM)</td><td>16</td></tr>
+<tr><td>LoRA Alpha</td><td>Adapter alpha (usually equal to rank)</td><td>16</td></tr>
+<tr><td>Training Epochs</td><td>Number of full passes through the training data</td><td>3</td></tr>
+<tr><td>Batch Size</td><td>Examples per gradient step (reduce if OOM)</td><td>2</td></tr>
+<tr><td>Max Sequence Length</td><td>Context length during training</td><td>2048</td></tr>
+</table>
 """
 
 HELP_TOPICS["Marketplace"] = """
@@ -227,7 +363,17 @@ created from <code>config/settings.example.json</code> on first run.</p>
 <tr><td>desktop</td><td>PyAutoGUI timing, failsafe toggle, app launch delay</td></tr>
 <tr><td>appearance</td><td>Theme (dark/light), base font size</td></tr>
 <tr><td>system_tray</td><td>Minimize to tray, notifications, global hotkey</td></tr>
+<tr><td>training</td><td>Training pair harvesting toggle; LoRA settings live in Talent Config</td></tr>
 </table>
+
+<h3>Training Settings</h3>
+<p>The <code>training</code> section has one key you might want to change:</p>
+<ul>
+<li><code>harvest_pairs</code> (true/false) &mdash; whether corrections and web searches
+are automatically saved as training data. Default: true.</li>
+</ul>
+<p>All LoRA hyperparameters (rank, alpha, epochs, etc.) are configured per-talent
+in <b>Settings &rarr; Talent Config &rarr; lora_train</b>.</p>
 
 <h3>Upgrading</h3>
 <p>When new settings are added in an update, run <code>python setup.py</code>
@@ -264,7 +410,6 @@ class MyTalent(BaseTalent):
             "success": True,
             "response": response,
             "actions_taken": [{"action": "my_action"}],
-            "spoken": False,
         }
 </pre>
 
@@ -293,7 +438,7 @@ class MyTalent(BaseTalent):
 <table cellpadding="4" cellspacing="0" border="0" width="100%">
 <tr><td><b>Method</b></td><td><b>Description</b></td></tr>
 <tr><td>can_handle(command)</td><td>Keyword fallback for degraded mode (default uses keyword_match)</td></tr>
-<tr><td>routing_available</td><td>Property: return False to hide from the LLM router (e.g. backend disconnected)</td></tr>
+<tr><td>routing_available</td><td>Property: return False to hide from the LLM router</td></tr>
 </table>
 
 <h3>Context Dict Keys</h3>
@@ -306,6 +451,8 @@ class MyTalent(BaseTalent):
 <tr><td>config</td><td>dict</td><td>Full settings.json contents</td></tr>
 <tr><td>memory_context</td><td>str</td><td>Pre-fetched relevant context</td></tr>
 <tr><td>notify</td><td>callable</td><td>Send desktop notifications</td></tr>
+<tr><td>server_manager</td><td>LLMServerManager | None</td><td>Stop/start the built-in server (builtin mode only)</td></tr>
+<tr><td>assistant</td><td>TalonAssistant</td><td>The main assistant instance</td></tr>
 </table>
 
 <h3>Optional: GUI-Configurable Settings</h3>
@@ -376,11 +523,29 @@ after Qt initializes its platform plugins.</p>
 <li>Verify the TTS voice name in Settings &gt; Voice is valid.</li>
 </ul>
 
+<h3>LoRA Training Won't Start</h3>
+<ul>
+<li>Enable the talent first: <b>Settings &rarr; Talent Config &rarr; lora_train &rarr; Enable LoRA Training</b>.</li>
+<li>Set a valid <b>HuggingFace Model Path</b> (the safetensors directory, not a .gguf file).</li>
+<li>Install unsloth and trl: see platform-specific instructions in <code>requirements.txt</code>.</li>
+<li>At least <b>100 training pairs</b> (default minimum) must be collected before training is allowed.
+Check <code>data/training_pairs.jsonl</code> line count.</li>
+</ul>
+
+<h3>Correction Learning Not Working</h3>
+<ul>
+<li>Start your correction with a recognised phrase: "no I meant", "that's wrong",
+"actually I wanted", etc.</li>
+<li>Make sure the previous command response is still in the conversation buffer
+(within the last ~16 turns).</li>
+<li>Check the console for <code>[Correction]</code> log lines to confirm detection.</li>
+</ul>
+
 <h3>Resetting Configuration</h3>
 <ol>
 <li>Delete <code>config/settings.json</code> (or the specific config file).</li>
 <li>Run <code>python setup.py</code> to regenerate from the template.</li>
-<li>Your user data (conversations, notes, memory) in <code>data/</code> is not affected.</li>
+<li>Your user data (conversations, notes, memory, training pairs) in <code>data/</code> is not affected.</li>
 </ol>
 """
 

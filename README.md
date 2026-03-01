@@ -1,11 +1,11 @@
 # Talon Assistant
 
-A local-first desktop AI assistant for windows with voice control, smart home integration, and a talent plugin system. Talon is not OpenClaw, it is not autonomous. 
+A local-first desktop AI assistant for Windows with voice control, smart home integration, a talent plugin system, and a self-improvement pipeline. Talon is not OpenClaw, it is not autonomous.
 
-You should install [CUDA 12 SDK](https://developer.nvidia.com/cuda-12-0-0-download-archive?target_os=Windows) prior to installing this!  
+You should install [CUDA 12 SDK](https://developer.nvidia.com/cuda-12-0-0-download-archive?target_os=Windows) prior to installing this!
 
 THIS IS AN ALPHA RELEASE!
-Definitely works in Python 3.10.6, probably works in 3.11 and 3.12 branches, after that it gets dicey with chromadb and ctranslate2.  
+Definitely works in Python 3.10.6, probably works in 3.11 and 3.12 branches, after that it gets dicey with chromadb and ctranslate2.
 
 Talon runs entirely on your machine. It connects to a local LLM server for inference, uses Whisper for speech recognition, and provides a modular talent system for extending functionality. No cloud accounts required.
 
@@ -16,10 +16,16 @@ Talon runs entirely on your machine. It connects to a local LLM server for infer
 - **Built-in llama.cpp server** with automatic download and GPU acceleration
 - **Talent plugin system** with auto-discovery and per-talent configuration
 - **Talent Marketplace** for browsing and installing community talents
+- **Correction learning** — say "no I meant X" and Talon re-executes correctly, stores the correction, and uses it as a hint on similar future commands
+- **Command history search** — "what did I ask yesterday?", "show failed commands from last week"
+- **Conversation memory** — insights from older conversation turns are distilled to long-term memory before the buffer evicts them
+- **Proactive rule proposals** — after correcting the same mistake 3 times, Talon suggests adding a permanent rule
+- **Training pair harvesting** — corrections and web search results are silently saved as Alpaca-format training pairs for future LoRA fine-tuning
+- **LoRA self-improvement** — fine-tune the local LLM on your accumulated usage data (optional, disabled by default)
 - **Philips Hue** smart light control (colors, brightness, scenes)
 - **Web search** and news aggregation via DuckDuckGo (no API key needed)
 - **Weather** from Open-Meteo, OpenWeatherMap, or WeatherAPI
-- **Email** checking. displaying, and eventually sending/deleting (IMAP/SMTP with OS keyring credentials)
+- **Email** checking, displaying, and eventually sending/deleting (IMAP/SMTP with OS keyring credentials)
 - **Reminders and timers** with desktop notifications
 - **Notes** with semantic search (SQLite + ChromaDB)
 - **Desktop automation** (launch apps, type text, browser navigation)
@@ -33,9 +39,9 @@ Talon runs entirely on your machine. It connects to a local LLM server for infer
 ### Prerequisites
 
 - Python 3.10 or newer
-- Windows 10/11 (primary target; Linux and macOS are not supported yet, though some features may work - cred storage and TTS definitely will not)
+- Windows 10/11 (primary target; Linux and macOS are not supported yet, though some features may work — credential storage and TTS definitely will not)
 - An LLM server: [KoboldCpp](https://github.com/LostRuins/koboldcpp), [llama.cpp](https://github.com/ggerganov/llama.cpp), or any OpenAI-compatible endpoint
-  - CURRENTLY NOT WORKING!!  Or use the **built-in llama.cpp server** (downloaded automatically via File > LLM Server)
+  - Or use the **built-in llama.cpp server** (downloaded automatically via File > LLM Server)
 
 ### Installation
 
@@ -79,6 +85,7 @@ All settings live in `config/settings.json`. Run `python setup.py` to create it 
 | `desktop` | PyAutoGUI timing, failsafe toggle, app launch delays |
 | `appearance` | Theme (dark/light), base font size |
 | `system_tray` | Minimize-to-tray behavior, notifications, global hotkey |
+| `training` | Training pair harvesting toggle; LoRA settings live in Talent Config → lora_train |
 
 ## Built-in Talents
 
@@ -86,17 +93,50 @@ Talents are plugins that handle specific types of commands. When you send a mess
 
 | Talent | Priority | Description |
 |--------|----------|-------------|
+| planner | 85 | Multi-step routine executor |
 | news | 80 | Latest headlines via DuckDuckGo News |
 | weather | 75 | Current weather and forecast (Open-Meteo, OpenWeatherMap, WeatherAPI) |
 | hue_lights | 70 | Philips Hue smart light control via local bridge |
 | reminder | 65 | Timers, reminders, and alarms with desktop notifications |
+| lora_train | 60 | Fine-tune the local LLM on collected training pairs *(disabled by default)* |
 | web_search | 60 | Web search with LLM-synthesized answers |
 | email | 55 | Check, read, and send email (IMAP/SMTP) |
 | notes | 45 | Save, search, and manage personal notes (SQLite + ChromaDB) |
+| history | 43 | Search past commands and responses from the command log |
 | desktop_control | 40 | Launch apps, type text, control mouse and keyboard |
-| conversation | -- | General LLM conversation (fallback when no talent matches) |
+| conversation | — | General LLM conversation (fallback when no talent matches) |
 
-Higher priority means the talent is checked first. Each talent has exclusion lists to avoid intercepting commands meant for other talents.
+Higher priority means the talent is checked first. Disabled talents are skipped entirely.
+
+## Correction Learning
+
+When Talon misunderstands, you can correct it in plain English:
+
+- "no I meant summarize it"
+- "that's wrong, open Chrome instead"
+- "actually I wanted the bedroom lights"
+
+Talon detects the correction, extracts your intent, re-executes the right command, and stores the correction in memory. On similar future commands, the correction is injected as a hint into the LLM prompt. After the same mistake occurs 3 times, Talon appends a suggestion: *"Want to add a rule to prevent this?"*
+
+## Training Pair Harvesting
+
+Talon silently accumulates supervised training data from real use:
+
+- **Corrections** — every corrected command becomes an (original → correct response) pair
+- **Web searches** — synthesized web search answers are saved as (question → answer) pairs
+
+Pairs are written to `data/training_pairs.jsonl` in Alpaca format. Harvesting is enabled by default and can be toggled in `config/settings.json` under `training.harvest_pairs`.
+
+## LoRA Fine-tuning
+
+Once enough training pairs have accumulated, you can fine-tune the local LLM on your own usage patterns:
+
+1. Enable the `lora_train` talent in Settings → Talent Config → lora_train
+2. Set `base_model_path` to your HuggingFace model directory (the safetensors version, not the GGUF)
+3. Say "start LoRA training" — Talon pauses the inference server, trains in the background, and notifies you when done
+4. Add `--lora data/lora_adapters/adapter.gguf` to your server extra args to load the adapter
+
+Requires: `pip install unsloth trl` (see platform-specific instructions in `requirements.txt`)
 
 ## Marketplace
 
@@ -132,7 +172,6 @@ class MyTalent(BaseTalent):
             "success": True,
             "response": response,
             "actions_taken": [],
-            "spoken": False,
         }
 ```
 
@@ -160,6 +199,8 @@ The `context` dictionary passed to `execute()` contains:
 | `config` | dict | Full settings.json contents |
 | `memory_context` | str | Pre-fetched relevant memory for the current command |
 | `notify` | callable | Send desktop notifications: `notify(title, message)` |
+| `server_manager` | LLMServerManager \| None | Stop/start the built-in inference server (set only in builtin mode) |
+| `assistant` | TalonAssistant | The main assistant instance |
 
 ### Optional: configurable settings
 
@@ -231,39 +272,52 @@ Use **File > LLM Server** to download the binary, select a model, and start/stop
 ## Architecture
 
 ```
-main.py                  Entry point (loads models before QApplication)
+main.py                    Entry point (loads models before QApplication)
 core/
-  assistant.py           TalonAssistant: command routing, talent orchestration
-  llm_client.py          Multi-backend LLM API client
-  llm_server.py          Built-in llama.cpp server manager
-  voice.py               Whisper STT, edge-tts TTS, wake-word detection
-  memory.py              SQLite + ChromaDB memory and semantic search
-  vision.py              Screenshot capture and multimodal analysis
-  chat_store.py          Conversation save/load/export
-  marketplace.py         Talent marketplace client (GitHub catalog)
-  credential_store.py    OS keyring credential management
+  assistant.py             TalonAssistant: command routing, talent orchestration,
+                           correction detection, buffer eviction consolidation
+  llm_client.py            Multi-backend LLM API client
+  llm_server.py            Built-in llama.cpp server manager
+  voice.py                 Whisper STT, edge-tts TTS, wake-word detection
+  memory.py                SQLite + ChromaDB memory, corrections, semantic search
+  training_harvester.py    Silently appends training pairs to data/training_pairs.jsonl
+  vision.py                Screenshot capture and multimodal analysis
+  chat_store.py            Conversation save/load/export
+  marketplace.py           Talent marketplace client (GitHub catalog)
+  credential_store.py      OS keyring credential management
+scripts/
+  train_lora.py            Standalone LoRA fine-tuning script (Unsloth + trl)
+  ingest_documents.py      Document ingestion for RAG (--vision flag for multimodal)
 gui/
-  main_window.py         Main window layout and menus
-  assistant_bridge.py    Signal bridge between core and GUI
-  workers.py             QThread workers for blocking operations
-  theme_manager.py       Catppuccin theme switching and font scaling
-  system_tray.py         System tray icon and global hotkey
-  widgets/               ChatView, TextInput, VoicePanel, TalentSidebar, StatusBar
-  dialogs/               Settings, LLMSetup, Marketplace, TalentConfig, Help, About
-  styles/                dark_theme.qss (Mocha), light_theme.qss (Latte)
+  main_window.py           Main window layout and menus
+  assistant_bridge.py      Signal bridge between core and GUI
+  workers.py               QThread workers for blocking operations
+  theme_manager.py         Catppuccin theme switching and font scaling
+  system_tray.py           System tray icon and global hotkey
+  widgets/                 ChatView, TextInput, VoicePanel, TalentSidebar, StatusBar
+  dialogs/                 Settings, LLMSetup, Marketplace, TalentConfig, Help, About
+  styles/                  dark_theme.qss (Mocha), light_theme.qss (Latte)
 talents/
-  base.py                BaseTalent abstract base class
-  weather.py             Weather talent (Open-Meteo, OpenWeatherMap, WeatherAPI)
-  news.py                News headlines (DuckDuckGo News)
-  web_search.py          Web search with LLM synthesis
-  hue_lights.py          Philips Hue smart light control
-  reminder.py            Timers and reminders
-  email_talent.py        IMAP/SMTP email
-  notes.py               Notes with semantic search
-  desktop_control.py     Desktop automation (PyAutoGUI)
-  user/                  User-installed talents (auto-discovered)
+  base.py                  BaseTalent abstract base class
+  planner.py               Multi-step routine executor (priority 85)
+  weather.py               Weather talent (Open-Meteo, OpenWeatherMap, WeatherAPI)
+  news.py                  News headlines (DuckDuckGo News)
+  web_search.py            Web search with LLM synthesis + training pair harvest
+  hue_lights.py            Philips Hue smart light control
+  reminder.py              Timers and reminders
+  email_talent.py          IMAP/SMTP email
+  notes.py                 Notes with semantic search
+  history.py               Command history search (date ranges, keyword, success filter)
+  lora_train.py            LoRA fine-tuning trigger talent (disabled by default)
+  desktop_control.py       Desktop automation (PyAutoGUI)
+  user/                    User-installed talents (auto-discovered)
+data/
+  talon_memory.db          SQLite: commands, corrections, rules, preferences
+  training_pairs.jsonl     Accumulated training pairs (Alpaca format)
+  chroma_db/               ChromaDB: memory, documents, notes, rules, corrections
+  lora_adapters/           LoRA adapter output (after training)
 config/
-  settings.example.json  Configuration template
+  settings.example.json    Configuration template
   hue_config.example.json
   talents.example.json
 ```
