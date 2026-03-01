@@ -402,7 +402,10 @@ Respond ONLY with valid JSON, no additional text."""
                 # Win+L cannot be sent reliably via pyautogui (Windows blocks
                 # simulated Windows-key presses for security hotkeys).
                 # Use the LockWorkStation() API directly instead.
-                if {k.lower() for k in keys} == {"winleft", "l"}:
+                # LLMs may generate "win", "winleft", or "winright" — handle all.
+                key_set = {k.lower() for k in keys}
+                has_win = bool(key_set & {"win", "winleft", "winright"})
+                if has_win and "l" in key_set and len(keys) == 2:
                     import ctypes
                     ctypes.windll.user32.LockWorkStation()
                     return "Locked workstation"

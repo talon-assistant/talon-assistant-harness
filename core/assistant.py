@@ -1305,6 +1305,7 @@ class TalonAssistant:
                     "response": result.get("response", ""),
                     "talent": talent.name,
                     "success": result.get("success", True),
+                    "actions_taken": result.get("actions_taken", []),
                 }
                 if "pending_email" in result:
                     ret["pending_email"] = result["pending_email"]
