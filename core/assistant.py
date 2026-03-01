@@ -181,6 +181,9 @@ class TalonAssistant:
         print("[4/5] Loading Voice System...")
         self.voice = VoiceSystem(self.config, command_callback=self.process_command)
 
+        # Set by main.py when builtin server mode is active
+        self.server_manager = None
+
         # 3. Discover and load talents
         print("[5/5] Loading Talents...")
         self.talents: list[BaseTalent] = []
@@ -455,7 +458,8 @@ class TalonAssistant:
             "config": self.config,
             "memory_context": memory_context,
             "speak_response": speak_response,
-            "assistant": self,  # Allows talents (e.g. PlannerTalent) to call process_command()
+            "assistant": self,        # Allows talents to call process_command()
+            "server_manager": self.server_manager,  # LLMServerManager or None
             "rag_explicit": False,  # Overwritten by process_command() after routing
         }
         if self.notify_callback:

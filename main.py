@@ -135,9 +135,11 @@ def main():
         # Create window
         bridge = AssistantBridge(config_dir="config")
 
-        # Hand the server manager to the bridge (if builtin mode)
+        # Hand the server manager to the bridge and assistant (if builtin mode)
         if server_manager is not None:
             bridge.set_server_manager(server_manager)
+            if assistant is not None:
+                assistant.server_manager = server_manager
 
         window = MainWindow(bridge, theme_manager=theme_manager,
                             config_dir="config")

@@ -70,6 +70,7 @@
     "global_hotkey": "ctrl+shift+j"
   },
   "training": {
-    "harvest_pairs": true
+    "harvest_pairs": true,
+    "_lora_note": "Configure LoRA training in Settings → Talent Config → lora_train"
   }
 }

@@ -34,3 +34,6 @@ Markdown
 # Optional (recommended)
 keyring
 plyer
+
+# Optional — LoRA fine-tuning (talent: lora_train)
+# pip install unsloth trl
