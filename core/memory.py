@@ -44,6 +44,13 @@ class MemorySystem:
             metadata={"description": "Behavioral rules: trigger phrase semantic matching"}
         )
 
+        # Collection for correction learning (previous command → what user actually wanted)
+        self.corrections_collection = self.chroma_client.get_or_create_collection(
+            name="talon_corrections",
+            metadata={"hnsw:space": "cosine",
+                      "description": "Correction memory: maps bad commands to correct intent"}
+        )
+
         # Sentence transformer for embeddings
         print("   [Memory] Loading embedding model...")
         self.embedder = SentenceTransformer(embedding_model)
@@ -111,6 +118,17 @@ class MemorySystem:
                        )
                        """)
 
+        # Corrections table (correction learning)
+        cursor.execute("""
+                       CREATE TABLE IF NOT EXISTS corrections
+                       (
+                           id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                           timestamp    TEXT,
+                           prev_command TEXT,
+                           correction   TEXT
+                       )
+                       """)
+
         conn.commit()
         conn.close()
 
@@ -174,6 +192,59 @@ class MemorySystem:
             metadatas=[{"type": "pattern", "command": command, "timestamp": datetime.now().isoformat()}],
             ids=[doc_id]
         )
+
+    # ── Correction learning ───────────────────────────────────────────
+
+    def store_correction(self, prev_command: str, correction: str):
+        """Store a user correction: what Talon tried vs what the user actually wanted.
+
+        prev_command is embedded in ChromaDB so future similar commands can be
+        matched semantically and the correction injected into the LLM prompt.
+        """
+        ts = datetime.now().isoformat()
+        conn = sqlite3.connect(self.db_path)
+        conn.execute(
+            "INSERT INTO corrections (timestamp, prev_command, correction) VALUES (?,?,?)",
+            (ts, prev_command, correction)
+        )
+        conn.commit()
+        conn.close()
+
+        doc_id = f"correction_{int(time.time() * 1000)}"
+        self.corrections_collection.add(
+            documents=[prev_command],   # embed the previous command for semantic retrieval
+            metadatas=[{"correction": correction, "timestamp": ts}],
+            ids=[doc_id]
+        )
+        print(f"   [Memory] Stored correction: '{prev_command}' → '{correction}'")
+
+    def get_relevant_corrections(self, command: str, max_results: int = 2) -> list[dict]:
+        """Return past corrections whose prev_command is semantically close to command.
+
+        Returns a list of dicts: {"prev_command": str, "correction": str}
+        Only returns results within cosine distance 0.55 (tight — avoids false positives).
+        """
+        try:
+            count = self.corrections_collection.count()
+            if count == 0:
+                return []
+            n = min(max_results, count)
+            results = self.corrections_collection.query(
+                query_texts=[command],
+                n_results=n
+            )
+            out = []
+            for doc, meta, dist in zip(
+                results["documents"][0],
+                results["metadatas"][0],
+                results["distances"][0]
+            ):
+                if dist <= 0.55:
+                    out.append({"prev_command": doc, "correction": meta["correction"]})
+            return out
+        except Exception as e:
+            print(f"   [Memory] get_relevant_corrections error: {e}")
+            return []
 
     # ── Session reflection ────────────────────────────────────────────
 

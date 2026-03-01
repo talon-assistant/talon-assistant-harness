@@ -134,6 +134,24 @@ class TalonAssistant:
         "what did we cover", "reflect on this session",
     ]
 
+    _CORRECTION_PHRASES = [
+        "no i meant", "no, i meant", "i meant",
+        "that's wrong", "that was wrong", "thats wrong",
+        "not that", "not what i wanted", "not what i asked",
+        "that's not right", "thats not right",
+        "actually i want", "actually i wanted",
+        "try again but", "wrong, i",
+        "i didn't want", "i did not want",
+    ]
+
+    # Prefixes to strip when extracting the corrected intent (no LLM call needed)
+    _STRIP_PREFIXES = [
+        "no i meant ", "no, i meant ", "i meant ",
+        "actually i want ", "actually i wanted ",
+        "try again but ", "no that's wrong, ", "that's wrong, ",
+        "thats wrong, ",
+    ]
+
     def __init__(self, config_dir="config"):
         print("=" * 50)
         print("INITIALIZING TALON ASSISTANT")
@@ -732,6 +750,87 @@ class TalonAssistant:
                          + "\n".join(f"  • {s}" for s in shortcuts))
         return "\n\n".join(parts)
 
+    # ── Correction learning ────────────────────────────────────────
+
+    def _is_correction(self, command: str) -> bool:
+        """Return True if the command looks like a correction of the previous response."""
+        low = command.lower().strip()
+        return any(low.startswith(p) or f" {p}" in low for p in self._CORRECTION_PHRASES)
+
+    def _extract_correction_intent(
+        self, llm, correction: str, prev_command: str, prev_response: str
+    ) -> str:
+        """Extract the user's actual intent from a correction phrase.
+
+        Tries simple prefix stripping first (zero latency).  Falls back to a
+        small LLM call when the remainder is too short to be actionable.
+        """
+        low = correction.lower()
+        for prefix in self._STRIP_PREFIXES:
+            if low.startswith(prefix):
+                remainder = correction[len(prefix):].strip()
+                if len(remainder.split()) >= 2:
+                    return remainder
+                break
+
+        # LLM fallback — use conversation context to infer the corrected command
+        ctx = ""
+        if prev_command:
+            ctx = (
+                f"Previous command: '{prev_command}'\n"
+                f"Previous response: '{prev_response[:150]}'\n\n"
+            )
+        prompt = (
+            f"{ctx}"
+            f"User correction: '{correction}'\n\n"
+            "What command should be executed instead? "
+            "Reply with ONLY the corrected command, nothing else."
+        )
+        try:
+            result = llm.generate(prompt, max_length=40, temperature=0.0)
+            return result.strip()
+        except Exception:
+            return ""
+
+    def _handle_correction(self, command: str, context: dict) -> dict:
+        """Re-execute the corrected intent and store the correction for future recall."""
+        llm = context["llm"]
+
+        # 1. Retrieve previous command + response from the in-memory buffer
+        prev_command, prev_response = "", ""
+        for entry in reversed(list(self.conversation_buffer)):
+            if entry["role"] == "talon" and not prev_response:
+                prev_response = entry["text"]
+            elif entry["role"] == "user" and not prev_command:
+                prev_command = entry["text"]
+            if prev_command and prev_response:
+                break
+
+        # 2. Extract what the user actually wanted
+        corrected = self._extract_correction_intent(
+            llm, command, prev_command, prev_response
+        )
+        if not corrected:
+            return {
+                "success": False,
+                "response": "I'm not sure what you wanted instead — could you rephrase?",
+                "actions_taken": [],
+            }
+
+        print(f"   [Correction] '{prev_command}' → '{corrected}'")
+
+        # 3. Persist the correction (non-blocking — don't let storage errors abort)
+        try:
+            if prev_command:
+                self.memory.store_correction(prev_command, corrected)
+        except Exception as e:
+            print(f"   [Correction] Store failed: {e}")
+
+        # 4. Re-execute the corrected command.
+        #    _executing_rule=True prevents recursive correction detection and
+        #    keeps the buffer clean (only the final result gets buffered).
+        return self.process_command(corrected, speak_response=False, _executing_rule=True)
+
     # ── Behavioral rules (trigger → action) ───────────────────────
 
     def _check_rules(self, command):
@@ -960,6 +1059,17 @@ class TalonAssistant:
                 history_block = history_block[-600:]
             prompt = f"{history_block}{prompt}"
 
+        # Inject correction hints: if a similar command was previously corrected,
+        # remind the LLM what the user actually wanted to avoid repeating the mistake.
+        corrections = self.memory.get_relevant_corrections(command, max_results=2)
+        if corrections:
+            lines = ["[Past corrections — do not repeat these mistakes]"]
+            for c in corrections:
+                lines.append(
+                    f"  When asked '{c['prev_command']}', user corrected to: '{c['correction']}'"
+                )
+            prompt = "\n".join(lines) + "\n\n" + prompt
+
         response = self.llm.generate(
             prompt,
             system_prompt=self._CONVERSATION_SYSTEM_PROMPT,
@@ -1011,6 +1121,25 @@ class TalonAssistant:
                     print(f"\nTalon: {reflection}")
                 print(f"\n{'=' * 50}\n")
                 return {"response": reflection, "talent": "reflection", "success": True}
+
+            # Step 0.5: Correction detection
+            if not _executing_rule and self._is_correction(command):
+                print(f"   [Correction] Detected: {command!r}")
+                context = self._build_context(command, speak_response)
+                result = self._handle_correction(command, context)
+                if result and (result.get("success") or result.get("response")):
+                    resp = result.get("response", "")
+                    if speak_response and resp:
+                        self.voice.speak(resp)
+                    elif resp:
+                        print(f"\nTalon: {resp}")
+                    # Buffer the corrected result as if it were a normal turn
+                    if not _executing_rule:
+                        self.conversation_buffer.append({"role": "user", "text": command})
+                        if resp:
+                            self.conversation_buffer.append({"role": "talon", "text": resp})
+                    print(f"\n{'=' * 50}\n")
+                    return result
 
             # Step 1: Repeat detection
             if self._detect_repeat_request(command):
