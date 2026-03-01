@@ -245,8 +245,22 @@ class SignalRemoteTalent(BaseTalent):
         try:
             inner = envelope.get("envelope", {})
             sender = inner.get("source", "")
+
+            # dataMessage: messages received FROM another account TO ours
             data_msg = inner.get("dataMessage") or {}
             text = (data_msg.get("message") or "").strip()
+
+            # syncMessage.sentMessage: Note to Self — messages the user sends
+            # FROM their phone are delivered to linked devices as a sync, not
+            # a dataMessage.  We also extract the destination so we can reply
+            # to the right place (the user's own number).
+            sync_dest = None
+            if not text:
+                sync_msg = inner.get("syncMessage") or {}
+                sent_msg = sync_msg.get("sentMessage") or {}
+                text = (sent_msg.get("message") or "").strip()
+                if text:
+                    sync_dest = sent_msg.get("destination") or sender
         except (AttributeError, TypeError):
             return
 
@@ -303,8 +317,11 @@ class SignalRemoteTalent(BaseTalent):
         with self._lock:
             self._stats["commands_processed"] += 1
 
-        # 7. Send reply
-        self._send_reply(sender, response or "(no response)")
+        # 7. Send reply — for Note to Self (syncMessage), reply to sync_dest
+        #    (the user's own number) rather than sender (also their number, same thing,
+        #    but sync_dest is more explicit and correct)
+        reply_to = sync_dest or sender
+        self._send_reply(reply_to, response or "(no response)")
 
     def _send_reply(self, recipient: str, message: str) -> None:
         """Send a Signal message back to the sender."""
