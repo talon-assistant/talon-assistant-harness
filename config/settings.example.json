@@ -68,5 +68,8 @@
     "minimize_to_tray": true,
     "show_notifications": true,
     "global_hotkey": "ctrl+shift+j"
+  },
+  "training": {
+    "harvest_pairs": true
   }
 }

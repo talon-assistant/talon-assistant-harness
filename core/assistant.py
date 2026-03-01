@@ -205,10 +205,10 @@ class TalonAssistant:
         # 6. Thread safety  (RLock so rule-triggered recursive calls don't deadlock)
         self.command_lock = threading.RLock()
 
-        # 7. Within-session conversation buffer (last 6 turns: 3 user + 3 Talon)
+        # 7. Within-session conversation buffer (last 16 turns: 8 user + 8 Talon)
         # Used to inject recent context into conversation-path LLM calls only.
         # Resets on app restart. Planner sub-steps are NOT buffered.
-        self.conversation_buffer: deque = deque(maxlen=6)
+        self.conversation_buffer: deque = deque(maxlen=16)
 
         # 8. Session reflection — track start time and last-session context
         self._session_start: str = datetime.now().isoformat()
@@ -829,7 +829,18 @@ class TalonAssistant:
         # 4. Re-execute the corrected command.
         #    _executing_rule=True prevents recursive correction detection and
         #    keeps the buffer clean (only the final result gets buffered).
-        return self.process_command(corrected, speak_response=False, _executing_rule=True)
+        result = self.process_command(corrected, speak_response=False, _executing_rule=True)
+
+        # 5. Harvest as training pair (original bad command → correct response)
+        if self.config.get("training", {}).get("harvest_pairs", True):
+            try:
+                from core.training_harvester import append_training_pair
+                if prev_command and result.get("response"):
+                    append_training_pair(prev_command, result["response"], source="correction")
+            except Exception as e:
+                print(f"   [Harvest] Failed: {e}")
+
+        return result
 
     # ── Behavioral rules (trigger → action) ───────────────────────
 

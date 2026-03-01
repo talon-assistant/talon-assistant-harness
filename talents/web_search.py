@@ -85,6 +85,15 @@ class WebSearchTalent(BaseTalent):
 
         print(f"   -> LLM response: {response[:200]}...")
 
+        # Harvest as training pair — web search results are high-signal facts
+        # the base model may not have known, worth learning from.
+        if context.get("config", {}).get("training", {}).get("harvest_pairs", True):
+            try:
+                from core.training_harvester import append_training_pair
+                append_training_pair(command, response, source="web_search")
+            except Exception as e:
+                print(f"   [Harvest] Failed: {e}")
+
         return {
             "success": True,
             "response": response,
