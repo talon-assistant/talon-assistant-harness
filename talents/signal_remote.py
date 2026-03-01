@@ -17,6 +17,7 @@ Flow:
 """
 
 import json
+import os
 import subprocess
 import threading
 import time
@@ -320,7 +321,7 @@ class SignalRemoteTalent(BaseTalent):
             ar = action_result.get("result", "")
             if isinstance(ar, str) and ar.startswith("Screenshot: "):
                 path = ar[len("Screenshot: "):].strip()
-                if path and __import__("os").path.exists(path):
+                if path and os.path.exists(path):
                     attachments.append(path)
 
         with self._lock:

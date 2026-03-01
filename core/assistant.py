@@ -605,7 +605,7 @@ class TalonAssistant:
                  "do", "of", "at", "and", "or", "be"}
         for example in talent.examples:
             content = set(example.lower().split()) - _STOP
-            if content and content.intersection(cmd_words):
+            if content and len(content.intersection(cmd_words)) >= 2:
                 return True
         return False
 
