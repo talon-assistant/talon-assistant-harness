@@ -117,46 +117,68 @@ class LLMServerManager:
         except Exception as e:
             raise RuntimeError(f"Failed to fetch release info: {e}")
 
-        # 2. Find the right Windows CUDA asset
+        # 2. Find the right Windows asset — the one that contains llama-server.exe.
+        #
+        # Recent llama.cpp releases (b4000+) split into two separate zips:
+        #   llama-b{ver}-bin-win-avx2-x64.zip        — server binary, no CUDA
+        #   llama-b{ver}-bin-win-cuda-cu12.x.x-x64.zip — CUDA DLLs only, no binary
+        #
+        # So we look for the binary-carrying zip first (avx2 / vulkan / noavx),
+        # then grab CUDA DLLs separately via _download_cudart().
         assets = release.get("assets", [])
         download_url = None
         asset_name = None
 
-        # Asset names look like: llama-b1234-bin-win-cuda-12.4-x64.zip
-        # cudart assets look like: cudart-llama-bin-win-cuda-12.4-x64.zip (DLLs only, no exe)
+        def _win_zip(name):
+            return "win" in name and name.endswith(".zip") and "cudart" not in name
+
+        # Priority 1: avx2 build (server binary present, good compatibility)
         for asset in assets:
             name = asset.get("name", "").lower()
-            # Prefer CUDA 12.x Windows build; exclude cudart-only packages
-            if ("win" in name and "cuda" in name
-                    and ("cuda-12" in name or "cu12" in name)
-                    and name.endswith(".zip")
-                    and "cudart" not in name):
+            if _win_zip(name) and "avx2" in name and "cuda" not in name:
                 download_url = asset.get("browser_download_url")
                 asset_name = asset.get("name")
                 break
 
         if not download_url:
-            # Fallback: any Windows CUDA build (excluding cudart-only packages)
+            # Priority 2: vulkan build (GPU support without CUDA DLL split)
             for asset in assets:
                 name = asset.get("name", "").lower()
-                if ("win" in name and "cuda" in name and name.endswith(".zip")
-                        and "cudart" not in name):
+                if _win_zip(name) and "vulkan" in name:
                     download_url = asset.get("browser_download_url")
                     asset_name = asset.get("name")
                     break
 
         if not download_url:
-            # Last resort: any Windows build at all (vulkan, cpu, etc.)
+            # Priority 3: noavx build (broadest CPU compatibility)
             for asset in assets:
                 name = asset.get("name", "").lower()
-                if "win" in name and name.endswith(".zip") and "cudart" not in name:
+                if _win_zip(name) and "noavx" in name and "cuda" not in name:
+                    download_url = asset.get("browser_download_url")
+                    asset_name = asset.get("name")
+                    break
+
+        if not download_url:
+            # Priority 4: any Windows zip that doesn't look like a CUDA-DLLs-only package
+            for asset in assets:
+                name = asset.get("name", "").lower()
+                if _win_zip(name) and "cuda" not in name:
+                    download_url = asset.get("browser_download_url")
+                    asset_name = asset.get("name")
+                    break
+
+        if not download_url:
+            # Last resort: any Windows zip (could be old-style bundled CUDA)
+            for asset in assets:
+                name = asset.get("name", "").lower()
+                if _win_zip(name):
                     download_url = asset.get("browser_download_url")
                     asset_name = asset.get("name")
                     break
 
         if not download_url:
             raise RuntimeError(
-                "Could not find a Windows CUDA build in the latest release. "
+                "Could not find a Windows build in the latest release. "
                 f"Release: {release.get('tag_name', 'unknown')}")
 
         if status_cb:
@@ -263,15 +285,33 @@ class LLMServerManager:
             status_cb("Download complete!")
 
     def _download_cudart(self, assets, bin_dir, progress_cb, status_cb):
-        """Download CUDA runtime DLLs if they're in a separate asset."""
+        """Download CUDA runtime DLLs if they're in a separate asset.
+
+        Handles two naming conventions:
+          Old:  cudart-llama-bin-win-cuda-12.x-x64.zip
+          New:  llama-b{ver}-bin-win-cuda-cu12.x.x-x64.zip  (DLLs only, no server binary)
+        """
         cudart_url = None
         cudart_name = None
+
+        # Old-style "cudart-*" asset takes priority if present
         for asset in assets:
             name = asset.get("name", "").lower()
             if "cudart" in name and "win" in name and name.endswith(".zip"):
                 cudart_url = asset.get("browser_download_url")
                 cudart_name = asset.get("name")
                 break
+
+        # New-style: main CUDA zip (DLLs only — no server binary, matched by "cuda-cu" or "cuda-12")
+        if not cudart_url:
+            for asset in assets:
+                name = asset.get("name", "").lower()
+                if ("win" in name and "cuda" in name
+                        and ("cu12" in name or "cu11" in name or "cuda-12" in name)
+                        and name.endswith(".zip")):
+                    cudart_url = asset.get("browser_download_url")
+                    cudart_name = asset.get("name")
+                    break
 
         if not cudart_url:
             return  # Not available as separate asset — may be bundled
