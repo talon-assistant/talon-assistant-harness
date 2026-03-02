@@ -1131,6 +1131,10 @@ class TalonAssistant:
                 history_block = history_block[-1200:]
             prompt = f"{history_block}{prompt}"
 
+        # Inject current date/time so the model can answer temporal queries correctly.
+        now_str = datetime.now().strftime("%A, %B %d, %Y %I:%M %p")
+        prompt = f"[Current date and time: {now_str}]\n\n{prompt}"
+
         # Inject correction hints: if a similar command was previously corrected,
         # remind the LLM what the user actually wanted to avoid repeating the mistake.
         corrections = self.memory.get_relevant_corrections(command, max_results=2)
