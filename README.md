@@ -322,6 +322,23 @@ config/
   talents.example.json
 ```
 
+## Disclaimer
+
+This project is provided as-is, without warranty of any kind. Use at your own risk.
+
+Talon can control your desktop (keyboard, mouse, screenshots), manage smart home
+devices, and accept remote commands via Signal. Misconfiguration — particularly of
+the Signal remote feature — could allow unintended access to your machine. You are
+solely responsible for securing your setup, including keeping `authorized_numbers`
+accurate and your signal-cli config directory private.
+
+AI-generated responses may be inaccurate, incomplete, or inappropriate. Do not rely
+on them for anything safety-critical. Document RAG responses are only as accurate as
+the source material and the model's interpretation of it.
+
+This project is not affiliated with or endorsed by any third party whose software or
+services it integrates with.
+
 ## License
 
 This project is licensed under the [GNU General Public License v3.0](https://www.gnu.org/licenses/gpl-3.0.en.html).
