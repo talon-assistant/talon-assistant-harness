@@ -1083,11 +1083,15 @@ class TalonAssistant:
         if rag_explicit:
             try:
                 raw = self.llm.generate(
-                    f"Generate 3 short search queries (3-6 words each) to find document "
-                    f"chunks relevant to this request. Include synonyms and related terms. "
+                    f"Generate 3 search queries to find relevant document chunks. "
+                    f"Rules: (1) 4-8 words each. "
+                    f"(2) If the request mentions game entities, spells, characters, or "
+                    f"stat blocks, at least one query must name the specific entity and "
+                    f"include words like 'powers', 'attributes', 'statistics', or 'type'. "
+                    f"(3) Include synonyms and related terms. "
                     f"Return a JSON array of 3 strings, nothing else.\n\n"
                     f"Request: {command}\nQueries:",
-                    max_length=64,
+                    max_length=80,
                     temperature=0.0,
                 )
                 raw = re.sub(r"```[a-zA-Z]*\n?", "", raw).strip()

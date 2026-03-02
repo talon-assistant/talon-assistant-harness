@@ -555,7 +555,7 @@ class MemorySystem:
                 text_kws = sorted(
                     {w for t in all_terms for w in t.split() if len(w) > 3},
                     key=len, reverse=True,
-                )[:4]
+                )[:8]
                 seen_txt: set[str] = {t[:100] for _, t, _, _pg in all_chunks}
                 for kw in text_kws:
                     # Try original case and title-case: "mana" → also "Mana"
@@ -564,7 +564,7 @@ class MemorySystem:
                         try:
                             hits = self.docs_collection.get(
                                 where_document={"$contains": variant},
-                                limit=4,
+                                limit=6,
                                 include=["documents", "metadatas"],
                             )
                             for doc, meta in zip(
@@ -604,11 +604,11 @@ class MemorySystem:
             else:
                 all_chunks.sort(key=lambda x: x[2])
 
-            # Hard cap: $contains fallback can produce many hits (4 keywords ×
-            # 2 case variants × 4 results = up to 32 extra chunks).  Capping
+            # Hard cap: $contains fallback can produce many hits (8 keywords ×
+            # 2 case variants × 6 results = up to 96 extra chunks).  Capping
             # after ranking keeps the highest-signal chunks and prevents the
             # context window from being flooded with low-relevance noise.
-            MAX_INJECT = 8
+            MAX_INJECT = 12 if explicit else 8
             all_chunks = all_chunks[:MAX_INJECT]
 
             print(f"   [RAG] Injecting {len(all_chunks)} unique chunk(s) "
