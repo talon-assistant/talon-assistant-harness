@@ -531,26 +531,15 @@ class TalonAssistant:
                 print(f"   [LLM Router] -> '{talent_name}' (unknown, falling back to keywords)")
                 return None
 
-            # ── Keyword/example cross-check ───────────────────────────────
+            # ── Keyword/example cross-check (confirmation only) ───────────────
+            # Keywords confirm the LLM's choice — they do NOT override it.
+            # Overriding caused valid LLM picks (e.g. desktop_control for vision
+            # queries) to be replaced by whichever talent happened to share a
+            # common word with the command (web_search's "what is", etc.).
             if self._keyword_confidence(chosen, command):
                 print(f"   [LLM Router] -> {talent_name} (confirmed by keyword signal)")
-                return chosen
-
-            # Chosen talent has no signal — find the highest-priority talent that does
-            keyword_winner = None
-            for talent in self.talents:       # sorted by priority descending
-                if talent.enabled and talent is not chosen:
-                    if self._keyword_confidence(talent, command):
-                        keyword_winner = talent
-                        break
-
-            if keyword_winner is not None:
-                print(f"   [LLM Router] -> {talent_name} "
-                      f"(overridden → {keyword_winner.name} by keyword signal)")
-                return keyword_winner
-
-            # No keyword signal anywhere — trust the LLM (NLP-level match)
-            print(f"   [LLM Router] -> {talent_name} (no keyword signal, trusting LLM)")
+            else:
+                print(f"   [LLM Router] -> {talent_name} (no keyword signal, trusting LLM)")
             return chosen
 
         except Exception as e:
