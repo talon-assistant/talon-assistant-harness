@@ -995,6 +995,30 @@ class TalonAssistant:
         """Handle commands that no talent matched -- general conversation"""
         cmd_lower = command.lower()
 
+        # Fast-path: current time/date queries — answer directly without an LLM
+        # call so the answer is always exact and never stale.
+        _TIME_TRIGGERS = ("what time", "what's the time", "whats the time",
+                          "current time", "tell me the time")
+        _DATE_TRIGGERS = ("what day", "what's today", "whats today",
+                          "what date", "today's date", "todays date",
+                          "what is today")
+        if any(t in cmd_lower for t in _TIME_TRIGGERS):
+            response = datetime.now().strftime("It's %I:%M %p.")
+            self.memory.log_command(command, success=True, response=response)
+            if speak_response:
+                self.voice.speak(response)
+            else:
+                print(f"\nTalon: {response}")
+            return response
+        if any(t in cmd_lower for t in _DATE_TRIGGERS):
+            response = datetime.now().strftime("Today is %A, %B %d, %Y.")
+            self.memory.log_command(command, success=True, response=response)
+            if speak_response:
+                self.voice.speak(response)
+            else:
+                print(f"\nTalon: {response}")
+            return response
+
         # Fast-path: rule definition detected — store it and acknowledge directly
         # without wasting an LLM call on a conversational reply.
         if any(ind in cmd_lower for ind in self._RULE_INDICATORS):
