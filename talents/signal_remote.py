@@ -339,18 +339,20 @@ class SignalRemoteTalent(BaseTalent):
 
         When recipient is the account's own number (Note-to-Self), signal-cli's
         'send' command strips the self-recipient and returns "No recipients given".
-        Use 'sendNoteToSelf' in that case, which takes no recipient argument.
+        Use 'send --note-to-self' flag instead (no recipient argument needed).
         """
         cfg = self.talent_config
         cli = cfg.get("signal_cli_path", "signal-cli")
         config_dir = cfg.get("config_dir", "data/signal-cli-config")
         account = cfg.get("account_number", "")
 
-        # Detect Note-to-Self: recipient is our own number or empty
+        # Detect Note-to-Self: recipient is our own number or empty.
+        # signal-cli strips self from 'send' recipients ("No recipients given");
+        # use the --note-to-self flag instead (no recipient argument needed).
         is_self = not recipient or recipient == account
         if is_self:
             cmd = [cli, "--config", config_dir, "-a", account,
-                   "sendNoteToSelf", "-m", message]
+                   "send", "--note-to-self", "-m", message]
         else:
             cmd = [cli, "--config", config_dir, "-a", account,
                    "send", "-m", message, recipient]
