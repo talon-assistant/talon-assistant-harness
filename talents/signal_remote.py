@@ -335,17 +335,28 @@ class SignalRemoteTalent(BaseTalent):
 
     def _send_reply(self, recipient: str, message: str,
                     attachments: list | None = None) -> None:
-        """Send a Signal message (with optional file attachments) back to the sender."""
+        """Send a Signal message (with optional file attachments) back to the sender.
+
+        When recipient is the account's own number (Note-to-Self), signal-cli's
+        'send' command strips the self-recipient and returns "No recipients given".
+        Use 'sendNoteToSelf' in that case, which takes no recipient argument.
+        """
         cfg = self.talent_config
         cli = cfg.get("signal_cli_path", "signal-cli")
         config_dir = cfg.get("config_dir", "data/signal-cli-config")
         account = cfg.get("account_number", "")
 
-        cmd = [cli, "--config", config_dir, "-a", account, "send",
-               "-m", message]
+        # Detect Note-to-Self: recipient is our own number or empty
+        is_self = not recipient or recipient == account
+        if is_self:
+            cmd = [cli, "--config", config_dir, "-a", account,
+                   "sendNoteToSelf", "-m", message]
+        else:
+            cmd = [cli, "--config", config_dir, "-a", account,
+                   "send", "-m", message, recipient]
+
         for path in (attachments or []):
             cmd += ["--attachment", path]
-        cmd.append(recipient)
 
         try:
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
@@ -353,7 +364,8 @@ class SignalRemoteTalent(BaseTalent):
                 print(f"   [Signal] Send failed: {result.stderr.strip()[:200]}")
             else:
                 att_note = f" (+{len(attachments)} attachment(s))" if attachments else ""
-                print(f"   [Signal] Reply sent to {recipient}{att_note}.")
+                dest = "Note-to-Self" if is_self else recipient
+                print(f"   [Signal] Reply sent to {dest}{att_note}.")
         except Exception as e:
             print(f"   [Signal] Send error: {e}")
 
