@@ -101,6 +101,18 @@ class LLMSetupDialog(QDialog):
         model_row.addWidget(browse_btn)
         model_form.addRow("Model File:", model_row)
 
+        # mmproj file picker (optional — required for vision/multimodal)
+        mmproj_row = QHBoxLayout()
+        self._mmproj_path_edit = QLineEdit(
+            self._server_config.get("mmproj_path", ""))
+        self._mmproj_path_edit.setPlaceholderText(
+            "Path to mmproj file (optional, required for vision)")
+        mmproj_row.addWidget(self._mmproj_path_edit)
+        mmproj_browse_btn = QPushButton("Browse...")
+        mmproj_browse_btn.clicked.connect(self._browse_mmproj)
+        mmproj_row.addWidget(mmproj_browse_btn)
+        model_form.addRow("mmproj File:", mmproj_row)
+
         layout.addWidget(model_group)
 
         # Server settings
@@ -267,6 +279,14 @@ class LLMSetupDialog(QDialog):
         if filepath:
             self._model_path_edit.setText(filepath)
 
+    def _browse_mmproj(self):
+        filepath, _ = QFileDialog.getOpenFileName(
+            self, "Select mmproj File",
+            os.path.expanduser("~"),
+            "mmproj Files (*.gguf *.bin);;All Files (*)")
+        if filepath:
+            self._mmproj_path_edit.setText(filepath)
+
     def _start_download(self):
         if self._server_manager is None:
             self._download_status.setText("Error: No server manager available.")
@@ -321,6 +341,7 @@ class LLMSetupDialog(QDialog):
         self._server_manager.ctx_size = int(self._ctx_combo.currentText())
         self._server_manager.threads = self._threads_spin.value()
         self._server_manager.extra_args = self._extra_args_edit.text()
+        self._server_manager.mmproj_path = self._mmproj_path_edit.text()
 
         self._start_btn.setEnabled(False)
         self._builtin_status.setText("Status: Starting...")
@@ -451,6 +472,7 @@ class LLMSetupDialog(QDialog):
             "threads": self._threads_spin.value(),
             "bin_path": self._server_config.get("bin_path", "bin/"),
             "extra_args": self._extra_args_edit.text(),
+            "mmproj_path": self._mmproj_path_edit.text(),
         }
 
         # LLM config — update endpoint and format based on mode

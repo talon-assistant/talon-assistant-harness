@@ -54,6 +54,7 @@ class LLMServerManager:
         self.threads = config.get("threads", 4)
         self.bin_path = config.get("bin_path", "bin/")
         self.extra_args = config.get("extra_args", "")
+        self.mmproj_path = config.get("mmproj_path", "")
 
         self._process: subprocess.Popen | None = None
         self._status = "stopped"  # stopped | starting | running | error
@@ -388,6 +389,10 @@ class LLMServerManager:
             "-c", str(self.ctx_size),
             "-t", str(self.threads),
         ]
+
+        # mmproj (multimodal projector — required for vision)
+        if self.mmproj_path and Path(self.mmproj_path).is_file():
+            cmd += ["--mmproj", self.mmproj_path]
 
         # Extra args (user-provided)
         if self.extra_args:
