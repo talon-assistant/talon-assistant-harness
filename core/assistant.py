@@ -155,6 +155,35 @@ class TalonAssistant:
         "correct", "spot on",
     ]
 
+    # ── Intent classification patterns ────────────────────────────
+    # Used by _classify_query_intent() to decide RAG retrieval strategy.
+
+    _SKIP_PATTERNS = [
+        "hello", "hi talon", "hey talon", "good morning", "good evening",
+        "good night", "thank you", "thanks", "cheers", "that's great",
+        "thats great", "nice one", "good job", "well done", "no worries",
+        "sounds good", "never mind", "forget it", "that's all", "thats all",
+        "bye", "goodbye",
+    ]
+
+    _SYNTHESIS_PATTERNS = [
+        "compare", "list all", "summarize", "summarise", "give me all",
+        "show me all", "what are all", "list every", "overview of",
+        "tell me about all", "what's the difference", "whats the difference",
+        "pros and cons", "which is better", "how do they differ",
+    ]
+
+    _DOCUMENT_REFERENCE_WORDS = [
+        "rulebook", "document", "book", "manual", "guide", "handbook",
+        "reference", "sourcebook", "notes", "file", "page", "chapter",
+        "entry", "stat", "stats", "stat block", "profile",
+    ]
+
+    _QUESTION_WORDS = {
+        "what", "how", "why", "when", "where", "who", "which",
+        "does", "is", "are", "can", "tell", "explain", "describe", "define",
+    }
+
     # Prefixes to strip when extracting the corrected intent (no LLM call needed)
     _STRIP_PREFIXES = [
         "no i meant ", "no, i meant ", "i meant ",
@@ -867,6 +896,40 @@ class TalonAssistant:
 
         return result
 
+    def _classify_query_intent(self, command: str) -> str:
+        """Heuristic classification of query intent for RAG routing.
+
+        Returns one of:
+            "skip"      — clearly conversational, no RAG call needed
+            "ambient"   — default ambient RAG behaviour
+            "synthesis" — compare/list-all patterns → wide explicit RAG, no multi-hop
+            "factual"   — question + document cues → full explicit RAG with multi-hop
+        """
+        cmd = command.lower().strip()
+        words = set(cmd.split())
+
+        # "skip": short social phrases — exact or prefix match
+        for pattern in self._SKIP_PATTERNS:
+            if cmd == pattern or cmd.startswith(pattern + " "):
+                return "skip"
+        # Also skip very short commands (1-2 words) with no question words
+        if len(words) <= 2 and not words & self._QUESTION_WORDS:
+            return "skip"
+
+        # "synthesis": comparison / list-all patterns
+        for pattern in self._SYNTHESIS_PATTERNS:
+            if pattern in cmd:
+                return "synthesis"
+
+        # "factual": question word + document reference word, OR
+        #            question word in a longer command (5+ words)
+        has_question = bool(words & self._QUESTION_WORDS)
+        has_doc_ref  = any(ref in cmd for ref in self._DOCUMENT_REFERENCE_WORDS)
+        if has_question and (has_doc_ref or len(words) >= 5):
+            return "factual"
+
+        return "ambient"
+
     def _is_approval(self, command: str) -> bool:
         """Return True if the command looks like praise/approval of the previous response."""
         low = command.lower().strip()
@@ -1106,12 +1169,20 @@ class TalonAssistant:
 
         # ── Document RAG injection (conversation path only) ──────────────────
 
-        # Multi-query expansion: generate 3 related search queries in one LLM
-        # call so synonyms and cross-referenced terms are covered (e.g. asking
-        # about "Mana Bolt" also retrieves chunks filed under "Manaball").
+        # Heuristic intent classification (ambient path only — rag_explicit
+        # is already a deliberate user signal and must not be overridden).
+        intent = "ambient"
+        if not rag_explicit:
+            intent = self._classify_query_intent(command)
+            print(f"   [RAG] Intent: {intent}")
+
+        # Multi-query expansion for explicit/factual/synthesis modes.
         rag_query = command
         rag_alt_queries: list[str] = []
-        if rag_explicit:
+        use_explicit_rag = rag_explicit or intent in ("factual", "synthesis")
+        do_multi_hop     = rag_explicit or intent == "factual"
+
+        if use_explicit_rag:
             try:
                 raw = self.llm.generate(
                     f"Generate 3 search queries to find relevant document chunks. "
@@ -1134,13 +1205,21 @@ class TalonAssistant:
             except Exception:
                 pass  # Fall back to raw command silently
 
-        doc_context = self.memory.get_document_context(
-            rag_query, explicit=rag_explicit, alt_queries=rag_alt_queries
-        )
+        if intent == "skip":
+            doc_context = ""
+        elif use_explicit_rag:
+            doc_context = self.memory.get_document_context(
+                rag_query,
+                explicit=True,
+                alt_queries=rag_alt_queries,
+                multi_hop=do_multi_hop,
+                synthesis=(intent == "synthesis"),
+            )
+        else:
+            doc_context = self.memory.get_document_context(command, explicit=False)
 
-        # If explicit RAG returned nothing, offer a web search rather than
-        # silently continuing with the LLM's training data alone.
-        if rag_explicit and not doc_context:
+        # If explicit/factual/synthesis RAG returned nothing, offer a web search.
+        if use_explicit_rag and not doc_context:
             response = (
                 "I couldn't find that in your documents. "
                 "Would you like me to search the web instead?"
@@ -1161,7 +1240,7 @@ class TalonAssistant:
         if doc_context:
             source_label = (
                 "document excerpts — source material, prioritize this"
-                if rag_explicit
+                if use_explicit_rag
                 else "document excerpts — may or may not be relevant"
             )
             prompt = f"{_wrap_external(doc_context, source_label)}\n\n{prompt}"

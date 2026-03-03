@@ -21,6 +21,32 @@ from datetime import datetime
 # as the primary content of the chunk.  This description drives embedding
 # quality; the raw extracted text is appended for exact keyword fallback.
 # ---------------------------------------------------------------------------
+import re as _re  # used by _strip_thinking below
+
+# ---------------------------------------------------------------------------
+# Metadata extraction prompt
+#
+# Sent to the LLM after each chunk (vision-enhanced or plain text) when
+# --mdextraction is passed.  The output JSON is appended to the chunk as
+# [METADATA: {...}] and key fields are stored in ChromaDB metadata for
+# structured lookup and multi-hop retrieval.
+# ---------------------------------------------------------------------------
+METADATA_EXTRACT_PROMPT = (
+    "You are indexing a reference document page. Extract all named entities as structured JSON.\n\n"
+    "Target entities: creatures, characters, spells, powers, abilities, items, rules, stats, locations.\n"
+    "For each entity extract: name, type, and any attributes/powers/stats visible on this page.\n\n"
+    "Return ONLY valid JSON in this exact format, nothing else:\n"
+    '{"entities": [{"name": "...", "type": "...", "attributes": {}, "powers": []}]}\n\n'
+    'If no named entities are present, return: {"entities": []}\n'
+    "Do NOT include any explanation, markdown, or text outside the JSON."
+)
+
+
+def _strip_thinking(text: str) -> str:
+    """Remove <thinking>...</thinking> blocks from LLM output before parsing."""
+    return _re.sub(r'<thinking>.*?</thinking>', '', text, flags=_re.DOTALL).strip()
+
+
 VISION_EXTRACT_PROMPT = (
     "You are indexing a page from a reference document. Extract all content precisely.\n\n"
     "Rules:\n"
@@ -209,6 +235,34 @@ class DocumentIngester:
     # Vision-enhanced PDF ingestion
     # ------------------------------------------------------------------
 
+    def _extract_metadata(self, llm_client, chunk_text: str,
+                          page_num: int, filename: str) -> dict | None:
+        """Call the LLM to extract structured entity metadata from chunk text.
+
+        Args:
+            llm_client:  Running LLMClient instance.
+            chunk_text:  Chunk text to analyse (vision-enhanced or plain).
+            page_num:    1-based page/chunk number for log messages.
+            filename:    Filename for log messages.
+
+        Returns:
+            Parsed dict with 'entities' list, or None on any failure.
+        """
+        try:
+            prompt = METADATA_EXTRACT_PROMPT + "\n\nText to index:\n" + chunk_text[:1500]
+            raw = llm_client.generate(prompt, max_length=512, temperature=0.0)
+            raw = _strip_thinking(raw)
+            # Extract the outermost JSON object from the response
+            start = raw.index("{")
+            end   = raw.rindex("}") + 1
+            parsed = json.loads(raw[start:end])
+            if isinstance(parsed, dict) and isinstance(parsed.get("entities"), list):
+                return parsed
+            return None
+        except Exception as exc:
+            print(f"      ⚠ Metadata extraction failed p{page_num} {filename}: {exc}")
+            return None
+
     def _describe_page(self, llm_client, img_b64: str, page_num: int,
                        filename: str) -> str:
         """Call the vision model to describe a single rendered PDF page.
@@ -235,7 +289,8 @@ class DocumentIngester:
             return ""
 
     def ingest_pdf_with_vision(self, filepath, llm_client,
-                               chunk_size: int = 400, overlap: int = 50) -> int:
+                               chunk_size: int = 400, overlap: int = 50,
+                               md_extract: bool = False) -> int:
         """Vision-enhanced PDF ingestion — one chunk per page.
 
         Each chunk is structured as:
@@ -335,7 +390,7 @@ class DocumentIngester:
                 parts.append(f"RAW TEXT:\n{raw_text}")
             chunk_text = "\n\n".join(parts)
 
-            # --- Sub-split only if the combined page is very long ---
+            # --- Structured entity metadata extraction (--mdextraction) ---
             base_meta = {
                 "type": "document",
                 "filename": filepath.name,
@@ -346,6 +401,21 @@ class DocumentIngester:
                 "vision_enhanced": True,
                 "ingested_at": datetime.now().isoformat(),
             }
+            if md_extract:
+                entity_meta = self._extract_metadata(
+                    llm_client, chunk_text, page_num, filepath.name)
+                if entity_meta and entity_meta.get("entities"):
+                    entities = entity_meta["entities"]
+                    base_meta["entity_names"] = ", ".join(
+                        e["name"] for e in entities if e.get("name"))
+                    base_meta["entity_types"] = ", ".join(
+                        e["type"] for e in entities if e.get("type"))
+                    base_meta["has_metadata"] = True
+                    chunk_text = chunk_text + (
+                        f"\n\n[METADATA: {json.dumps(entity_meta, ensure_ascii=False)}]"
+                    )
+
+            # --- Sub-split only if the combined page is very long ---
 
             if len(chunk_text.split()) > 800 and raw_text:
                 # Repeat the vision header on every sub-chunk so each one
@@ -383,16 +453,22 @@ class DocumentIngester:
         return chunks_stored
 
     def ingest_file(self, filepath, chunk_size=400, overlap=50,
-                    llm_client=None):
+                    llm_client=None, use_vision=False, md_extract=False):
         """Ingest a single file.
 
-        If ``llm_client`` is provided and the file is a PDF, uses the
-        vision-enhanced page-by-page path instead of the plain text path.
+        Args:
+            filepath:    Path to the file.
+            chunk_size:  Words per chunk (text path).
+            overlap:     Overlap words between chunks (text path).
+            llm_client:  LLMClient instance (required for --vision/--mdextraction).
+            use_vision:  If True and file is a PDF, use vision-enhanced ingestion.
+            md_extract:  If True, run LLM entity metadata extraction per chunk.
         """
-        # Vision path: PDF + running LLM server → rich page descriptions
-        if llm_client is not None and filepath.suffix.lower() == ".pdf":
+        # Vision path: PDF + use_vision flag + running LLM server
+        if use_vision and llm_client is not None and filepath.suffix.lower() == ".pdf":
             return self.ingest_pdf_with_vision(
-                filepath, llm_client, chunk_size=chunk_size, overlap=overlap)
+                filepath, llm_client, chunk_size=chunk_size, overlap=overlap,
+                md_extract=md_extract)
 
         print(f"  Processing: {filepath.name}")
 
@@ -421,33 +497,52 @@ class DocumentIngester:
 
         for i, chunk in enumerate(chunks):
             doc_id = f"{doc_id_base}_chunk_{i}"
+            chunk_text = chunk
+
+            meta: dict = {
+                "type": "document",
+                "filename": filepath.name,
+                "filepath": str(filepath),
+                "file_type": filepath.suffix,
+                "chunk_index": i,
+                "total_chunks": len(chunks),
+                "ingested_at": datetime.now().isoformat(),
+            }
+
+            # Structured entity metadata extraction (--mdextraction, text path)
+            if md_extract and llm_client is not None:
+                entity_meta = self._extract_metadata(
+                    llm_client, chunk_text, i + 1, filepath.name)
+                if entity_meta and entity_meta.get("entities"):
+                    entities = entity_meta["entities"]
+                    meta["entity_names"] = ", ".join(
+                        e["name"] for e in entities if e.get("name"))
+                    meta["entity_types"] = ", ".join(
+                        e["type"] for e in entities if e.get("type"))
+                    meta["has_metadata"] = True
+                    chunk_text = chunk_text + (
+                        f"\n\n[METADATA: {json.dumps(entity_meta, ensure_ascii=False)}]"
+                    )
 
             self.collection.add(
-                documents=[chunk],
-                metadatas=[{
-                    "type": "document",
-                    "filename": filepath.name,
-                    "filepath": str(filepath),
-                    "file_type": filepath.suffix,
-                    "chunk_index": i,
-                    "total_chunks": len(chunks),
-                    "ingested_at": datetime.now().isoformat()
-                }],
-                ids=[doc_id]
+                documents=[chunk_text],
+                metadatas=[meta],
+                ids=[doc_id],
             )
 
         print(f"    ✓ Ingested {len(chunks)} chunks")
         return len(chunks)
 
-    def ingest_directory(self, chunk_size=400, overlap=50, llm_client=None):
+    def ingest_directory(self, chunk_size=400, overlap=50, llm_client=None,
+                         use_vision=False, md_extract=False):
         """Ingest all supported files.
 
         Args:
             chunk_size:  Words per chunk (text path).
             overlap:     Overlap words between chunks (text path).
-            llm_client:  If provided, PDFs are processed via the vision-
-                         enhanced page-by-page path; other file types still
-                         use plain text extraction.
+            llm_client:  LLMClient instance (required for --vision/--mdextraction).
+            use_vision:  If True, PDFs use the vision-enhanced page-by-page path.
+            md_extract:  If True, run LLM entity metadata extraction per chunk.
         """
         if not self.documents_dir.exists():
             print(f"Creating documents directory: {self.documents_dir}")
@@ -463,8 +558,13 @@ class DocumentIngester:
             print(f"No documents found in {self.documents_dir}")
             return
 
-        vision_note = " (vision mode for PDFs)" if llm_client else ""
-        print(f"Found {len(files)} files to ingest{vision_note}\n")
+        mode_parts = []
+        if use_vision:
+            mode_parts.append("vision")
+        if md_extract:
+            mode_parts.append("mdextraction")
+        mode_note = f" ({', '.join(mode_parts)})" if mode_parts else ""
+        print(f"Found {len(files)} files to ingest{mode_note}\n")
 
         total_chunks = 0
         successful = 0
@@ -476,6 +576,8 @@ class DocumentIngester:
                     chunk_size=chunk_size,
                     overlap=overlap,
                     llm_client=llm_client,
+                    use_vision=use_vision,
+                    md_extract=md_extract,
                 )
                 total_chunks += chunks
                 successful += 1
@@ -531,10 +633,12 @@ if __name__ == "__main__":
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Examples:\n"
-            "  python ingest_documents.py                  # plain text ingest\n"
-            "  python ingest_documents.py --vision         # vision-enhanced (KoboldCpp must be running)\n"
-            "  python ingest_documents.py list             # list indexed documents\n"
-            "  python ingest_documents.py clear            # wipe the database\n"
+            "  python ingest_documents.py                              # plain text ingest\n"
+            "  python ingest_documents.py --vision                     # vision-enhanced PDFs\n"
+            "  python ingest_documents.py --mdextraction               # entity metadata extraction\n"
+            "  python ingest_documents.py --vision --mdextraction      # both\n"
+            "  python ingest_documents.py list                         # list indexed documents\n"
+            "  python ingest_documents.py clear                        # wipe the database\n"
         ),
     )
     parser.add_argument("command", nargs="?", default="ingest",
@@ -548,8 +652,15 @@ if __name__ == "__main__":
                         help=(
                             "Use vision model to describe each PDF page before "
                             "chunking. Produces richer embeddings for structured "
-                            "content (tables, stat blocks). Requires KoboldCpp "
+                            "content (tables, stat blocks). Requires LLM server "
                             "with mmproj to be running."
+                        ))
+    parser.add_argument("--mdextraction", action="store_true",
+                        help=(
+                            "Extract structured entity metadata (names, types, "
+                            "attributes) from each chunk via LLM and store as "
+                            "[METADATA: {json}]. Enables multi-hop retrieval. "
+                            "Can be combined with --vision. Requires LLM server."
                         ))
     args = parser.parse_args()
 
@@ -564,10 +675,10 @@ if __name__ == "__main__":
     else:
         llm_client = None
 
-        if args.vision:
+        if args.vision or args.mdextraction:
             # ----------------------------------------------------------------
-            # Vision mode: spin up LLMClient from settings.json so we can
-            # call the running KoboldCpp server during PDF ingestion.
+            # Vision / mdextraction mode: spin up LLMClient from settings.json
+            # so we can call the running LLM server during ingestion.
             # ----------------------------------------------------------------
             sys.path.insert(0, str(Path(__file__).parent))
             from core.llm_client import LLMClient  # noqa: E402
@@ -599,22 +710,33 @@ if __name__ == "__main__":
                     }
                 }
 
-            print("Vision mode — connecting to LLM server...")
+            mode_label = "+".join(
+                m for m, f in [("vision", args.vision), ("mdextraction", args.mdextraction)] if f
+            )
+            print(f"{mode_label} mode — connecting to LLM server...")
             llm_client = LLMClient(cfg)
             if not llm_client.test_connection():
                 print(
                     "⚠  Could not reach LLM server.  "
-                    "PDFs will fall back to plain text extraction.\n"
-                    "   Start KoboldCpp with --mmproj to enable vision.\n"
+                    "Falling back to plain text extraction.\n"
+                    "   Ensure your LLM server is running before using "
+                    "--vision or --mdextraction.\n"
                 )
                 llm_client = None
             else:
-                print("✓ LLM server ready — vision ingestion enabled\n")
+                print(f"✓ LLM server ready — {mode_label} ingestion enabled\n")
 
-        mode = "vision" if llm_client else "text"
+        mode_parts = []
+        if args.vision and llm_client:
+            mode_parts.append("vision")
+        if args.mdextraction and llm_client:
+            mode_parts.append("mdextraction")
+        mode = "+".join(mode_parts) if mode_parts else "text"
         print(f"Mode: {mode}  |  chunk-size: {args.chunk_size}  |  overlap: {args.overlap}\n")
         ingester.ingest_directory(
             chunk_size=args.chunk_size,
             overlap=args.overlap,
             llm_client=llm_client,
+            use_vision=bool(args.vision and llm_client),
+            md_extract=bool(args.mdextraction and llm_client),
         )
