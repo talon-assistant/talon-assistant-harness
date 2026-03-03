@@ -144,6 +144,17 @@ class TalonAssistant:
         "i didn't want", "i did not want",
     ]
 
+    _APPROVAL_PHRASES = [
+        "perfect", "exactly", "that's right", "thats right",
+        "that's correct", "thats correct", "yes that's it", "yes thats it",
+        "well done", "great job", "good job", "nice work",
+        "that's what i wanted", "thats what i wanted",
+        "that's what i asked", "thats what i asked",
+        "yes exactly", "yes perfect", "nailed it",
+        "that's exactly", "thats exactly",
+        "correct", "spot on",
+    ]
+
     # Prefixes to strip when extracting the corrected intent (no LLM call needed)
     _STRIP_PREFIXES = [
         "no i meant ", "no, i meant ", "i meant ",
@@ -856,6 +867,37 @@ class TalonAssistant:
 
         return result
 
+    def _is_approval(self, command: str) -> bool:
+        """Return True if the command looks like praise/approval of the previous response."""
+        low = command.lower().strip()
+        return any(low.startswith(p) or low == p for p in self._APPROVAL_PHRASES)
+
+    def _handle_approval(self, command: str) -> None:
+        """Harvest the previous command/response as a positive training pair."""
+        prev_command, prev_response = "", ""
+        for entry in reversed(list(self.conversation_buffer)):
+            if entry["role"] == "talon" and not prev_response:
+                prev_response = entry["text"]
+            elif entry["role"] == "user" and not prev_command:
+                prev_command = entry["text"]
+            if prev_command and prev_response:
+                break
+
+        if not prev_command or not prev_response:
+            print("   [Approval] No previous turn to harvest.")
+            return
+
+        print(f"   [Approval] Positive feedback on: {prev_command!r}")
+
+        if self.config.get("training", {}).get("harvest_pairs", True):
+            try:
+                from core.training_harvester import append_training_pair
+                written = append_training_pair(prev_command, prev_response, source="positive_feedback")
+                if written:
+                    print("   [Harvest] Saved positive training pair.")
+            except Exception as e:
+                print(f"   [Harvest] Failed: {e}")
+
     # ── Buffer eviction consolidation ─────────────────────────────
 
     def _maybe_evict_consolidate(self) -> None:
@@ -1234,6 +1276,12 @@ class TalonAssistant:
                             self.conversation_buffer.append({"role": "talon", "text": resp})
                     print(f"\n{'=' * 50}\n")
                     return result
+
+            # Step 0.6: Approval / positive feedback detection
+            if not _executing_rule and self._is_approval(command):
+                print(f"   [Approval] Detected: {command!r}")
+                self._handle_approval(command)
+                # Respond naturally and continue — no early return
 
             # Step 1: Repeat detection
             if self._detect_repeat_request(command):
