@@ -19,6 +19,7 @@
     "mode": "external",
     "model_path": "",
     "mmproj_path": "",
+    "lora_path": "",
     "port": 8080,
     "n_gpu_layers": -1,
     "ctx_size": 12288,

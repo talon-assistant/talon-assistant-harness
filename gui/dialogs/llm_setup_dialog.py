@@ -113,6 +113,16 @@ class LLMSetupDialog(QDialog):
         mmproj_row.addWidget(mmproj_browse_btn)
         model_form.addRow("mmproj File:", mmproj_row)
 
+        # LoRA adapter file picker (optional fine-tune)
+        lora_row = QHBoxLayout()
+        self._lora_path_edit = QLineEdit(self._server_config.get("lora_path", ""))
+        self._lora_path_edit.setPlaceholderText("Path to LoRA adapter .gguf (optional)")
+        lora_row.addWidget(self._lora_path_edit)
+        lora_browse_btn = QPushButton("Browse...")
+        lora_browse_btn.clicked.connect(self._browse_lora)
+        lora_row.addWidget(lora_browse_btn)
+        model_form.addRow("LoRA Adapter:", lora_row)
+
         layout.addWidget(model_group)
 
         # Server settings
@@ -287,6 +297,14 @@ class LLMSetupDialog(QDialog):
         if filepath:
             self._mmproj_path_edit.setText(filepath)
 
+    def _browse_lora(self):
+        filepath, _ = QFileDialog.getOpenFileName(
+            self, "Select LoRA Adapter File",
+            os.path.expanduser("~"),
+            "LoRA Files (*.gguf *.bin);;All Files (*)")
+        if filepath:
+            self._lora_path_edit.setText(filepath)
+
     def _start_download(self):
         if self._server_manager is None:
             self._download_status.setText("Error: No server manager available.")
@@ -342,6 +360,7 @@ class LLMSetupDialog(QDialog):
         self._server_manager.threads = self._threads_spin.value()
         self._server_manager.extra_args = self._extra_args_edit.text()
         self._server_manager.mmproj_path = self._mmproj_path_edit.text()
+        self._server_manager.lora_path = self._lora_path_edit.text()
 
         self._start_btn.setEnabled(False)
         self._builtin_status.setText("Status: Starting...")
@@ -473,6 +492,7 @@ class LLMSetupDialog(QDialog):
             "bin_path": self._server_config.get("bin_path", "bin/"),
             "extra_args": self._extra_args_edit.text(),
             "mmproj_path": self._mmproj_path_edit.text(),
+            "lora_path": self._lora_path_edit.text(),
         }
 
         # LLM config — update endpoint and format based on mode

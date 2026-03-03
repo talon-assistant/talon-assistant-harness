@@ -55,6 +55,7 @@ class LLMServerManager:
         self.bin_path = config.get("bin_path", "bin/")
         self.extra_args = config.get("extra_args", "")
         self.mmproj_path = config.get("mmproj_path", "")
+        self.lora_path = config.get("lora_path", "")
 
         self._process: subprocess.Popen | None = None
         self._status = "stopped"  # stopped | starting | running | error
@@ -394,6 +395,10 @@ class LLMServerManager:
         if self.mmproj_path and Path(self.mmproj_path).is_file():
             cmd += ["--mmproj", self.mmproj_path]
 
+        # LoRA adapter (optional fine-tune layer)
+        if self.lora_path and Path(self.lora_path).is_file():
+            cmd += ["--lora", self.lora_path]
+
         # Extra args (user-provided)
         if self.extra_args:
             cmd.extend(self.extra_args.split())
@@ -528,4 +533,6 @@ class LLMServerManager:
             "threads": self.threads,
             "bin_path": self.bin_path,
             "extra_args": self.extra_args,
+            "mmproj_path": self.mmproj_path,
+            "lora_path": self.lora_path,
         }
