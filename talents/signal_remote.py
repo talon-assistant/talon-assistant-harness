@@ -184,19 +184,18 @@ class SignalRemoteTalent(BaseTalent):
         )
 
         if result.returncode != 0:
-            stderr_snippet = result.stderr.strip()[:200]
-            if stderr_snippet:
-                print(f"   [Signal] receive failed: {stderr_snippet}")
+            print(f"   [Signal] receive failed (rc={result.returncode}): {result.stderr.strip()[:300]}")
             return
 
-        for line in result.stdout.splitlines():
-            line = line.strip()
-            if not line:
-                continue
+        lines = [l.strip() for l in result.stdout.splitlines() if l.strip()]
+        print(f"   [Signal] receive ok — {len(lines)} envelope(s)")
+        for line in lines:
             try:
                 envelope = json.loads(line)
+                print(f"   [Signal] envelope keys: {list((envelope.get('envelope') or {}).keys())}")
                 self._handle_envelope(envelope)
             except json.JSONDecodeError:
+                print(f"   [Signal] non-JSON line: {line[:100]}")
                 continue
 
     # ── Message handling ───────────────────────────────────────────
