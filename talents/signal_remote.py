@@ -156,6 +156,14 @@ class SignalRemoteTalent(BaseTalent):
         config_dir = self.talent_config.get("config_dir", "data/signal-cli-config")
         return os.path.normpath(os.path.join(config_dir, "..", "signal-daemon.pid"))
 
+    @staticmethod
+    def _kill_tree(pid: int) -> None:
+        """Kill a process and all its children (e.g. bat launcher + Java JVM)."""
+        subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(pid)],
+            capture_output=True,
+        )
+
     def _kill_orphan_daemon(self) -> None:
         """Kill any signal-cli daemon left running from a previous session."""
         pid_path = self._pid_file_path()
@@ -164,12 +172,11 @@ class SignalRemoteTalent(BaseTalent):
         try:
             with open(pid_path) as f:
                 pid = int(f.read().strip())
-            os.kill(pid, 0)          # raises OSError if process doesn't exist
-            os.kill(pid, 9)          # SIGKILL / TerminateProcess on Windows
-            print(f"   [Signal] Killed orphaned daemon (PID {pid}).")
-            time.sleep(2.0)          # wait for config lock to be released
+            self._kill_tree(pid)
+            print(f"   [Signal] Killed orphaned daemon tree (PID {pid}).")
+            time.sleep(2.0)          # wait for JVM to release config lock
         except (ValueError, OSError):
-            pass                     # process already gone — fine
+            pass
         finally:
             try:
                 os.remove(pid_path)
@@ -253,13 +260,9 @@ class SignalRemoteTalent(BaseTalent):
     def _stop_daemon(self) -> None:
         if self._daemon_proc is not None:
             try:
-                self._daemon_proc.terminate()
-                self._daemon_proc.wait(timeout=5)
+                self._kill_tree(self._daemon_proc.pid)
             except Exception:
-                try:
-                    self._daemon_proc.kill()
-                except Exception:
-                    pass
+                pass
             self._daemon_proc = None
             print("   [Signal] Daemon stopped.")
         # Clean up PID file regardless
@@ -307,13 +310,12 @@ class SignalRemoteTalent(BaseTalent):
 
         return response.get("result")
 
-    # ── Polling loop ───────────────────────────────────────────────
+    # ── Listener loop ──────────────────────────────────────────────
 
     def _poll_loop(self) -> None:
-        """Background daemon thread: poll Signal periodically via JSON-RPC receive."""
-        interval = max(2, int(self.talent_config.get("poll_interval", 5)))
-        while not self._stop_event.wait(interval):
-            # Health check — restart daemon if it died
+        """Background daemon thread: subscribe and listen for push notifications."""
+        backoff = max(2, int(self.talent_config.get("poll_interval", 5)))
+        while not self._stop_event.is_set():
             if self._daemon_proc is None or self._daemon_proc.poll() is not None:
                 print("   [Signal] Daemon died — restarting...")
                 if not self._start_daemon():
@@ -322,26 +324,97 @@ class SignalRemoteTalent(BaseTalent):
                     continue
 
             try:
-                self._check_messages()
+                self._subscribe_and_listen()
             except Exception as e:
-                print(f"   [Signal] Poll error: {e}")
+                print(f"   [Signal] Listener error: {e}")
 
-    def _check_messages(self) -> None:
-        """Call daemon `receive` and dispatch any incoming envelopes."""
-        try:
-            envelopes = self._rpc_call("receive", {"timeout": 3}) or []
-        except Exception as e:
-            print(f"   [Signal] receive RPC failed: {e}")
-            return
+            if not self._stop_event.is_set():
+                print(f"   [Signal] Reconnecting in {backoff}s...")
+                self._stop_event.wait(backoff)
 
-        if not isinstance(envelopes, list):
-            return
+    def _subscribe_and_listen(self) -> None:
+        """Subscribe to push notifications from the daemon."""
+        port = int(self.talent_config.get("daemon_port", 7583))
 
-        for envelope in envelopes:
-            try:
-                self._handle_envelope(envelope)
-            except Exception as e:
-                print(f"   [Signal] Envelope error: {e}")
+        with socket.create_connection(("localhost", port), timeout=10) as sock:
+            with self._lock:
+                self._rpc_id += 1
+                sub_id = self._rpc_id
+
+            sub_req = json.dumps({
+                "jsonrpc": "2.0",
+                "method": "subscribeReceive",
+                "id": sub_id,
+            }) + "\n"
+            sock.sendall(sub_req.encode())
+            print("   [Signal] subscribeReceive sent, waiting for confirmation...")
+
+            buf = b""
+            sock.settimeout(1.0)
+
+            while not self._stop_event.is_set():
+                try:
+                    chunk = sock.recv(4096)
+                    if not chunk:
+                        print("   [Signal] Daemon closed the connection.")
+                        return
+                    buf += chunk
+                except socket.timeout:
+                    continue
+
+                while b"\n" in buf:
+                    line_bytes, buf = buf.split(b"\n", 1)
+                    line = line_bytes.strip()
+                    if not line:
+                        continue
+                    try:
+                        msg = json.loads(line.decode())
+                    except json.JSONDecodeError:
+                        continue
+
+                    if msg.get("id") == sub_id:
+                        if "error" in msg:
+                            print(f"   [Signal] subscribeReceive error: {msg['error']}")
+                            return
+                        print(f"   [Signal] Subscribed (id={msg.get('result')}); listening...")
+                        continue
+
+                    if "method" not in msg or "id" in msg:
+                        continue
+
+                    params = msg.get("params", {})
+
+                    # Two envelope formats: flat {"envelope":{}} or
+                    # subscription-wrapped {"subscription":N,"result":{"envelope":{}}}
+                    result = params.get("result") if isinstance(params.get("result"), dict) else {}
+                    if "envelope" in params:
+                        env_wrapper = params
+                    elif result and "envelope" in result:
+                        env_wrapper = result
+                    else:
+                        continue
+
+                    # Log full envelope when signal-cli reports a decode exception
+                    # so we can see whether syncMessage.sentMessage data survives.
+                    for _exc_src in (params, result):
+                        _exc = _exc_src.get("exception") if isinstance(_exc_src, dict) else None
+                        if _exc:
+                            print(f"   [Signal] exception envelope: {json.dumps(env_wrapper)}")
+                            break
+
+                    # Deduplicate: daemon emits each message in both formats
+                    _ts = (env_wrapper.get("envelope") or {}).get("timestamp")
+                    if _ts:
+                        if _ts in self._seen_msg_ts:
+                            continue
+                        self._seen_msg_ts.add(_ts)
+                        if len(self._seen_msg_ts) > 500:
+                            self._seen_msg_ts = set(list(self._seen_msg_ts)[-250:])
+
+                    try:
+                        self._handle_envelope(env_wrapper)
+                    except Exception as e:
+                        print(f"   [Signal] Envelope error: {e}")
 
     # ── Message handling ───────────────────────────────────────────
 
@@ -496,21 +569,16 @@ class SignalRemoteTalent(BaseTalent):
     def execute(self, command: str, context: dict) -> dict:
         cmd = command.lower()
 
-        # "check signal messages now" → immediate poll
+        # "check signal messages now"
         if any(w in cmd for w in ("check", "now", "poll", "fetch")):
             daemon_alive = (self._daemon_proc is not None
                             and self._daemon_proc.poll() is None)
-            if daemon_alive:
-                try:
-                    self._check_messages()
-                    response = "Checked Signal for new messages."
-                except Exception as e:
-                    response = f"Signal check failed: {e}"
+            thread_alive = bool(self._poll_thread and self._poll_thread.is_alive())
+            if daemon_alive and thread_alive:
+                response = "Signal is actively listening via push notifications."
             else:
-                response = (
-                    "Signal daemon is not running. "
-                    "Enable it in Settings → Talent Config → signal_remote."
-                )
+                response = ("Signal daemon is not running. "
+                            "Enable it in Settings → Talent Config → signal_remote.")
             return {"success": True, "response": response, "actions_taken": []}
 
         # Default: status report
