@@ -100,6 +100,7 @@ class SignalRemoteTalent(BaseTalent):
         self._daemon_proc: subprocess.Popen | None = None
         self._rpc_id = 0
         self._lock = threading.Lock()
+        self._seen_msg_ts: set[int] = set()   # dedup: daemon sends each msg twice
         self._stats: dict = {
             "messages_received": 0,
             "commands_processed": 0,
@@ -390,8 +391,35 @@ class SignalRemoteTalent(BaseTalent):
                     # Push notification: no "id", has "method"
                     if "method" in msg and "id" not in msg:
                         params = msg.get("params", {})
-                        # Normalize: _handle_envelope expects {"envelope": {...}, ...}
-                        env_wrapper = params if "envelope" in params else {"envelope": params}
+
+                        # Normalize envelope — daemon emits two formats per message:
+                        #   Flat (legacy):     params = {"envelope": {...}}
+                        #   Subscription-wrap: params = {"subscription": N,
+                        #                                "result": {"envelope": {...}}}
+                        result = params.get("result") if isinstance(params.get("result"), dict) else {}
+                        if "envelope" in params:
+                            env_wrapper = params
+                        elif result and "envelope" in result:
+                            env_wrapper = result
+                        else:
+                            continue   # no envelope found, skip
+
+                        # Log any signal-cli decode exceptions (e.g. unknown sync format)
+                        for _exc_src in (params, result):
+                            _exc = _exc_src.get("exception") if isinstance(_exc_src, dict) else None
+                            if _exc:
+                                print(f"   [Signal] signal-cli warning: {_exc.get('message', _exc)}")
+                                break
+
+                        # Deduplicate: each message arrives in both formats above
+                        _ts = (env_wrapper.get("envelope") or {}).get("timestamp")
+                        if _ts:
+                            if _ts in self._seen_msg_ts:
+                                continue
+                            self._seen_msg_ts.add(_ts)
+                            if len(self._seen_msg_ts) > 500:
+                                self._seen_msg_ts = set(list(self._seen_msg_ts)[-250:])
+
                         try:
                             self._handle_envelope(env_wrapper)
                         except Exception as e:
