@@ -296,7 +296,7 @@ class SignalRemoteTalent(BaseTalent):
                 "id": sub_id,
             }) + "\n"
             sock.sendall(sub_req.encode())
-            print("   [Signal] Subscribed; listening for messages...")
+            print("   [Signal] subscribeReceive sent, waiting for confirmation...")
 
             buf = b""
             sock.settimeout(1.0)   # short timeout so stop_event is checked regularly
@@ -320,11 +320,19 @@ class SignalRemoteTalent(BaseTalent):
                     try:
                         msg = json.loads(line.decode())
                     except json.JSONDecodeError:
+                        print(f"   [Signal] Non-JSON line: {line[:200]}")
                         continue
 
-                    # Subscription confirmation — skip
+                    # Subscription confirmation
                     if msg.get("id") == sub_id:
+                        if "error" in msg:
+                            print(f"   [Signal] subscribeReceive error: {msg['error']}")
+                            return   # can't continue without subscription
+                        print(f"   [Signal] Subscribed (id={msg.get('result')}); listening for messages...")
                         continue
+
+                    # Log all other messages for debugging
+                    print(f"   [Signal] Raw msg: {json.dumps(msg)[:300]}")
 
                     # Push notification: no "id", has "method"
                     if "method" in msg and "id" not in msg:
