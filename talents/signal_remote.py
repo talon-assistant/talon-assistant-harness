@@ -113,9 +113,33 @@ class SignalRemoteTalent(BaseTalent):
 
     # ── Thread management ──────────────────────────────────────────
 
+    def _kill_orphan_signal_processes(self) -> None:
+        """Kill any Java processes running signal-cli left from previous sessions."""
+        try:
+            result = subprocess.run(
+                ["wmic", "process", "where",
+                 "name='java.exe' and commandline like '%signal-cli%'",
+                 "get", "processid", "/value"],
+                capture_output=True, text=True, timeout=10,
+            )
+            pids = [
+                line.split("=")[1].strip()
+                for line in result.stdout.splitlines()
+                if line.strip().startswith("ProcessId=")
+            ]
+            for pid in pids:
+                subprocess.run(["taskkill", "/F", "/T", "/PID", pid],
+                                capture_output=True)
+                print(f"   [Signal] Killed orphaned signal-cli JVM (PID {pid}).")
+            if pids:
+                time.sleep(1.0)
+        except Exception:
+            pass
+
     def _start_polling(self) -> None:
         if not self._validate_config():
             return
+        self._kill_orphan_signal_processes()
         self._stop_event.clear()
         self._poll_thread = threading.Thread(
             target=self._poll_loop,
