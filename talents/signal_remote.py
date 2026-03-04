@@ -162,7 +162,7 @@ class SignalRemoteTalent(BaseTalent):
             "--config", config_dir,
             "-a", account,
             "daemon",
-            "--tcp", str(port),
+            "--tcp", f"localhost:{port}",
         ]
 
         print(f"   [Signal] Starting daemon on port {port}...")
