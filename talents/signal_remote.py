@@ -251,12 +251,12 @@ class SignalRemoteTalent(BaseTalent):
 
         return response.get("result")
 
-    # ── Polling loop ───────────────────────────────────────────────
+    # ── Listener loop ──────────────────────────────────────────────
 
     def _poll_loop(self) -> None:
-        """Background daemon thread: poll Signal periodically via JSON-RPC."""
-        interval = max(2, int(self.talent_config.get("poll_interval", 5)))
-        while not self._stop_event.wait(interval):
+        """Background daemon thread: subscribe and listen for push notifications."""
+        backoff = max(2, int(self.talent_config.get("poll_interval", 5)))
+        while not self._stop_event.is_set():
             # Health check — restart daemon if it died
             if self._daemon_proc is None or self._daemon_proc.poll() is not None:
                 print("   [Signal] Daemon died — restarting...")
@@ -266,26 +266,75 @@ class SignalRemoteTalent(BaseTalent):
                     continue
 
             try:
-                self._check_messages()
+                self._subscribe_and_listen()   # blocks until connection drops
             except Exception as e:
-                print(f"   [Signal] Poll error: {e}")
+                print(f"   [Signal] Listener error: {e}")
 
-    def _check_messages(self) -> None:
-        """Call daemon `receive` and dispatch any incoming envelopes."""
-        try:
-            envelopes = self._rpc_call("receive", {"timeout": 3}) or []
-        except Exception as e:
-            print(f"   [Signal] receive RPC failed: {e}")
-            return
+            if not self._stop_event.is_set():
+                print(f"   [Signal] Reconnecting in {backoff}s...")
+                self._stop_event.wait(backoff)
 
-        if not isinstance(envelopes, list):
-            return
+    def _subscribe_and_listen(self) -> None:
+        """Open a persistent TCP connection, subscribe to receive push notifications,
+        and dispatch envelopes as they arrive from the daemon.
 
-        for envelope in envelopes:
-            try:
-                self._handle_envelope(envelope)
-            except Exception as e:
-                print(f"   [Signal] Envelope error: {e}")
+        The daemon's `subscribeReceive` call registers this connection for
+        JSON-RPC push notifications (method="receive", no id) whenever a
+        Signal message is received — no polling needed.
+        """
+        port = int(self.talent_config.get("daemon_port", 7583))
+
+        with socket.create_connection(("localhost", port), timeout=10) as sock:
+            # Register for push notifications
+            with self._lock:
+                self._rpc_id += 1
+                sub_id = self._rpc_id
+
+            sub_req = json.dumps({
+                "jsonrpc": "2.0",
+                "method": "subscribeReceive",
+                "id": sub_id,
+            }) + "\n"
+            sock.sendall(sub_req.encode())
+            print("   [Signal] Subscribed; listening for messages...")
+
+            buf = b""
+            sock.settimeout(1.0)   # short timeout so stop_event is checked regularly
+
+            while not self._stop_event.is_set():
+                try:
+                    chunk = sock.recv(4096)
+                    if not chunk:
+                        print("   [Signal] Daemon closed the connection.")
+                        return
+                    buf += chunk
+                except socket.timeout:
+                    continue   # check stop_event then read again
+
+                # Process all complete newline-terminated messages in the buffer
+                while b"\n" in buf:
+                    line_bytes, buf = buf.split(b"\n", 1)
+                    line = line_bytes.strip()
+                    if not line:
+                        continue
+                    try:
+                        msg = json.loads(line.decode())
+                    except json.JSONDecodeError:
+                        continue
+
+                    # Subscription confirmation — skip
+                    if msg.get("id") == sub_id:
+                        continue
+
+                    # Push notification: no "id", has "method"
+                    if "method" in msg and "id" not in msg:
+                        params = msg.get("params", {})
+                        # Normalize: _handle_envelope expects {"envelope": {...}, ...}
+                        env_wrapper = params if "envelope" in params else {"envelope": params}
+                        try:
+                            self._handle_envelope(env_wrapper)
+                        except Exception as e:
+                            print(f"   [Signal] Envelope error: {e}")
 
     # ── Message handling ───────────────────────────────────────────
 
@@ -455,12 +504,12 @@ class SignalRemoteTalent(BaseTalent):
         if any(w in cmd for w in ("check", "now", "poll", "fetch")):
             daemon_alive = (self._daemon_proc is not None
                             and self._daemon_proc.poll() is None)
-            if daemon_alive:
-                try:
-                    self._check_messages()
-                    response = "Checked Signal for new messages."
-                except Exception as e:
-                    response = f"Signal check failed: {e}"
+            thread_alive = bool(self._poll_thread and self._poll_thread.is_alive())
+            if daemon_alive and thread_alive:
+                response = (
+                    "Signal is actively listening — messages arrive automatically "
+                    "via daemon push notifications, no manual poll needed."
+                )
             else:
                 response = (
                     "Signal daemon is not running. "
@@ -477,7 +526,6 @@ class SignalRemoteTalent(BaseTalent):
 
         cfg = self.talent_config
         prefix = cfg.get("command_prefix", "talon: ")
-        interval = cfg.get("poll_interval", 5)
         port = cfg.get("daemon_port", 7583)
         authorized = self._get_authorized_numbers()
         account = cfg.get("account_number", "")
@@ -488,7 +536,7 @@ class SignalRemoteTalent(BaseTalent):
             f"Signal Remote: {status}",
             f"Account: {masked or '(not configured)'}",
             f"Daemon port: {port} ({'up' if daemon_alive else 'down'})",
-            f"Poll interval: every {interval}s",
+            f"Listener: {'active (push)' if thread_alive else 'stopped'}",
             f"Authorized numbers: {len(authorized)}",
             f"Command prefix: '{prefix}'",
             f"Messages received: {stats['messages_received']}",
