@@ -1372,6 +1372,26 @@ class TalonAssistant:
                 rule_action = self._check_rules(command)
                 if rule_action:
                     print(f"   [Rules] Executing rule action: {rule_action}")
+
+                    # "say X" / "respond with X" / "reply X" → return X verbatim,
+                    # bypassing the LLM entirely so no caveats are appended.
+                    stripped = rule_action.strip()
+                    verbatim = None
+                    for _pfx in ("say ", "respond with ", "reply with ", "reply "):
+                        if stripped.lower().startswith(_pfx):
+                            verbatim = stripped[len(_pfx):].strip()
+                            break
+
+                    if verbatim is not None:
+                        if speak_response and hasattr(self, "voice") and self.voice:
+                            self.voice.speak(verbatim)
+                        else:
+                            print(f"\nTalon: {verbatim}")
+                        print(f"\n{'=' * 50}\n")
+                        return {"response": verbatim, "talent": "rule", "success": True}
+
+                    # Command-style rule actions (e.g. "turn the lights to green")
+                    # still route through process_command so talents handle them.
                     return self.process_command(
                         rule_action, speak_response, _executing_rule=True)
 
