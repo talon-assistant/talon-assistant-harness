@@ -500,8 +500,8 @@ class LLMSetupDialog(QDialog):
 
         if is_builtin:
             port = self._port_spin.value()
-            llm_cfg["endpoint"] = f"http://localhost:{port}/completion"
-            llm_cfg["api_format"] = "llamacpp"
+            llm_cfg["endpoint"] = f"http://localhost:{port}/v1/chat/completions"
+            llm_cfg["api_format"] = "openai"
         else:
             llm_cfg["endpoint"] = self._endpoint_edit.text()
             llm_cfg["api_format"] = self._format_combo.currentText()
