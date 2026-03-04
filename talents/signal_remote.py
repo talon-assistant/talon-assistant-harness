@@ -149,6 +149,41 @@ class SignalRemoteTalent(BaseTalent):
         time.sleep(0.5)
         self._start_polling()
 
+    def _pid_file_path(self) -> str:
+        config_dir = self.talent_config.get("config_dir", "data/signal-cli-config")
+        return os.path.normpath(os.path.join(config_dir, "..", "signal-daemon.pid"))
+
+    def _kill_orphan_daemon(self) -> None:
+        """Kill any signal-cli daemon left running from a previous session."""
+        pid_path = self._pid_file_path()
+        if not os.path.exists(pid_path):
+            return
+        try:
+            with open(pid_path) as f:
+                pid = int(f.read().strip())
+            os.kill(pid, 0)          # raises OSError if process doesn't exist
+            os.kill(pid, 9)          # SIGKILL / TerminateProcess on Windows
+            print(f"   [Signal] Killed orphaned daemon (PID {pid}).")
+            time.sleep(0.5)          # brief pause for lock file release
+        except (ValueError, OSError):
+            pass                     # process already gone — fine
+        finally:
+            try:
+                os.remove(pid_path)
+            except OSError:
+                pass
+
+    @staticmethod
+    def _stderr_reader(proc: subprocess.Popen) -> None:
+        """Read daemon stderr line-by-line and log it in real time."""
+        try:
+            for raw in proc.stderr:
+                txt = raw.decode(errors="replace").rstrip()
+                if txt:
+                    print(f"   [signal-cli] {txt}")
+        except Exception:
+            pass
+
     def _start_daemon(self) -> bool:
         """Launch signal-cli in daemon mode. Returns True when the TCP port is ready."""
         cfg = self.talent_config
@@ -156,6 +191,9 @@ class SignalRemoteTalent(BaseTalent):
         config_dir = cfg.get("config_dir", "data/signal-cli-config")
         account = cfg.get("account_number", "")
         port = int(cfg.get("daemon_port", 7583))
+
+        # Kill any orphaned daemon from a previous session so the config lock is free
+        self._kill_orphan_daemon()
 
         cmd = [
             cli,
@@ -176,26 +214,36 @@ class SignalRemoteTalent(BaseTalent):
             print(f"   [Signal] Failed to launch daemon: {e}")
             return False
 
-        # Wait up to 10s for the TCP port to become ready
-        for _ in range(20):
+        # Stream stderr in real time so startup messages are visible immediately
+        threading.Thread(
+            target=self._stderr_reader,
+            args=(self._daemon_proc,),
+            daemon=True,
+            name="signal-cli-stderr",
+        ).start()
+
+        # Wait up to 30s for the TCP port to become ready (signal-cli may wait
+        # briefly for the config lock if a previous instance didn't exit cleanly)
+        for _ in range(60):
             time.sleep(0.5)
             if self._daemon_proc.poll() is not None:
-                # Process already exited
-                try:
-                    stderr = self._daemon_proc.stderr.read().decode(errors="replace")[:500]
-                except Exception:
-                    stderr = "(unreadable)"
-                print(f"   [Signal] Daemon exited early: {stderr}")
+                print("   [Signal] Daemon exited early (see stderr log above).")
                 return False
             try:
                 with socket.create_connection(("localhost", port), timeout=1):
                     pass
                 print(f"   [Signal] Daemon ready on port {port}.")
+                # Record PID so we can kill this daemon if Talon exits uncleanly
+                try:
+                    with open(self._pid_file_path(), "w") as f:
+                        f.write(str(self._daemon_proc.pid))
+                except OSError:
+                    pass
                 return True
             except (ConnectionRefusedError, OSError):
                 pass
 
-        print("   [Signal] Daemon did not become ready within 10s.")
+        print("   [Signal] Daemon did not become ready within 30s.")
         self._stop_daemon()
         return False
 
@@ -211,6 +259,11 @@ class SignalRemoteTalent(BaseTalent):
                     pass
             self._daemon_proc = None
             print("   [Signal] Daemon stopped.")
+        # Clean up PID file regardless
+        try:
+            os.remove(self._pid_file_path())
+        except OSError:
+            pass
 
     # ── JSON-RPC client ────────────────────────────────────────────
 
