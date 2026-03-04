@@ -111,6 +111,13 @@ class SignalRemoteTalent(BaseTalent):
     def can_handle(self, command: str) -> bool:
         return self.keyword_match(command)
 
+    @staticmethod
+    def _build_cmd(cli: str, args: list) -> list:
+        """Wrap .bat paths with cmd /c so Windows can execute them."""
+        if cli.lower().endswith(".bat"):
+            return ["cmd", "/c", cli] + args
+        return [cli] + args
+
     # ── Thread management ──────────────────────────────────────────
 
     def _kill_orphan_signal_processes(self) -> None:
@@ -176,8 +183,8 @@ class SignalRemoteTalent(BaseTalent):
         account = cfg.get("account_number", "")
 
         result = subprocess.run(
-            [cli, "--output=json", "--config", config_dir, "-a", account,
-             "receive", "--timeout", "3"],
+            self._build_cmd(cli, ["--output=json", "--config", config_dir,
+                                  "-a", account, "receive", "--timeout", "3"]),
             capture_output=True,
             text=True,
             timeout=20,
@@ -285,16 +292,17 @@ class SignalRemoteTalent(BaseTalent):
 
         is_self = not recipient or recipient == account
         if is_self:
-            cmd = [cli, "--config", config_dir, "-a", account,
-                   "send", "--note-to-self", "-m", message]
+            base_args = ["--config", config_dir, "-a", account,
+                         "send", "--note-to-self", "-m", message]
         else:
-            cmd = [cli, "--config", config_dir, "-a", account,
-                   "send", "-m", message, recipient]
+            base_args = ["--config", config_dir, "-a", account,
+                         "send", "-m", message, recipient]
 
         if attachments:
             for att in attachments:
-                cmd += ["-a", att]
+                base_args += ["-a", att]
 
+        cmd = self._build_cmd(cli, base_args)
         try:
             r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
             if r.returncode != 0:
@@ -321,12 +329,23 @@ class SignalRemoteTalent(BaseTalent):
 
         cli = cfg.get("signal_cli_path", "signal-cli")
         try:
-            r = subprocess.run([cli, "--version"],
-                               capture_output=True, text=True, timeout=10)
+            r = subprocess.run(self._build_cmd(cli, ["--version"]),
+                               capture_output=True, text=True, timeout=15)
             if r.returncode != 0:
-                raise OSError("non-zero exit")
-        except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+                err = (r.stderr or r.stdout or "").strip()[:300]
+                print(f"   [Signal] Cannot start: signal-cli --version failed "
+                      f"(exit {r.returncode}) at {cli!r}.")
+                if err:
+                    print(f"   [Signal] Output: {err}")
+                return False
+        except FileNotFoundError:
             print(f"   [Signal] Cannot start: signal-cli not found at {cli!r}.")
+            return False
+        except subprocess.TimeoutExpired:
+            print(f"   [Signal] Cannot start: signal-cli --version timed out at {cli!r}.")
+            return False
+        except OSError as e:
+            print(f"   [Signal] Cannot start: OS error running {cli!r}: {e}")
             return False
 
         return True
