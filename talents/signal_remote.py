@@ -273,7 +273,7 @@ class SignalRemoteTalent(BaseTalent):
     def _check_messages(self) -> None:
         """Call daemon `receive` and dispatch any incoming envelopes."""
         try:
-            envelopes = self._rpc_call("receive") or []
+            envelopes = self._rpc_call("receive", {"timeout": 3}) or []
         except Exception as e:
             print(f"   [Signal] receive RPC failed: {e}")
             return
