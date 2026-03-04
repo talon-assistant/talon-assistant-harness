@@ -16,6 +16,7 @@ Flow:
     assistant.process_command(); replies are sent back via daemon's `send` endpoint
 """
 
+import atexit
 import json
 import os
 import socket
@@ -111,6 +112,7 @@ class SignalRemoteTalent(BaseTalent):
     def set_assistant(self, assistant) -> None:
         """Called by TalonAssistant.__init__() after talent discovery."""
         self._assistant = assistant
+        atexit.register(self._stop_daemon)   # clean up daemon on any exit
         if self.talent_config.get("enabled", False):
             self._start_polling()
 
@@ -165,7 +167,7 @@ class SignalRemoteTalent(BaseTalent):
             os.kill(pid, 0)          # raises OSError if process doesn't exist
             os.kill(pid, 9)          # SIGKILL / TerminateProcess on Windows
             print(f"   [Signal] Killed orphaned daemon (PID {pid}).")
-            time.sleep(0.5)          # brief pause for lock file release
+            time.sleep(2.0)          # wait for config lock to be released
         except (ValueError, OSError):
             pass                     # process already gone — fine
         finally:
@@ -351,33 +353,19 @@ class SignalRemoteTalent(BaseTalent):
             inner = envelope.get("envelope", {})
             sender = inner.get("source", "")
 
-            # dataMessage: regular message from another account
-            data_msg = inner.get("dataMessage") or {}
-            text = (data_msg.get("message") or "").strip()
-
-            # syncMessage.sentMessage: Note-to-Self — the user messaged their own
-            # number from their phone; delivered to linked devices as a sync event.
-            sync_dest = None
-            if not text:
-                sync_msg = inner.get("syncMessage") or {}
-                sent_msg = sync_msg.get("sentMessage") or {}
-                text = (sent_msg.get("message") or "").strip()
-                if text:
-                    sync_dest = sent_msg.get("destination") or sender
+            # Only process Note-to-Self (syncMessage.sentMessage).
+            # These arrive when the user sends a message to their own number
+            # from their phone; linked devices receive it as a sync event.
+            # Regular incoming dataMessages from other contacts are ignored.
+            sync_msg = inner.get("syncMessage") or {}
+            sent_msg = sync_msg.get("sentMessage") or {}
+            text = (sent_msg.get("message") or "").strip()
+            sync_dest = (sent_msg.get("destination") or sender) if text else None
         except (AttributeError, TypeError):
             return
 
-        # 1. Skip non-text envelopes (receipts, typing indicators, calls…)
+        # Skip non-Note-to-Self envelopes
         if not text:
-            return
-
-        # 2. Authorization check
-        #    syncMessage (Note-to-Self) can only originate from the registered
-        #    account itself — no external sender can forge a sync event, so we
-        #    skip the allowlist check when sync_dest is set.
-        authorized = self._get_authorized_numbers()
-        if sync_dest is None and sender not in authorized:
-            print(f"   [Signal] Ignored message from unauthorized sender: {sender}")
             return
 
         # 3. Prefix check (case-insensitive)
@@ -544,7 +532,7 @@ class SignalRemoteTalent(BaseTalent):
             f"Signal Remote: {status}",
             f"Account: {masked or '(not configured)'}",
             f"Daemon port: {port} ({'up' if daemon_alive else 'down'})",
-            f"Poll interval: every {self.talent_config.get('poll_interval', 5)}s ({'active' if thread_alive else 'stopped'})",
+            f"Listener: {'active (push)' if thread_alive else 'stopped'}",
             f"Authorized numbers: {len(authorized)}",
             f"Command prefix: '{prefix}'",
             f"Messages received: {stats['messages_received']}",
