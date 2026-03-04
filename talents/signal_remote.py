@@ -428,8 +428,11 @@ class SignalRemoteTalent(BaseTalent):
             return
 
         # 2. Authorization check
+        #    syncMessage (Note-to-Self) can only originate from the registered
+        #    account itself — no external sender can forge a sync event, so we
+        #    skip the allowlist check when sync_dest is set.
         authorized = self._get_authorized_numbers()
-        if sender not in authorized:
+        if sync_dest is None and sender not in authorized:
             print(f"   [Signal] Ignored message from unauthorized sender: {sender}")
             return
 
