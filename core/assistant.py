@@ -268,6 +268,13 @@ class TalonAssistant:
         # Resets on app restart. Planner sub-steps are NOT buffered.
         self.conversation_buffer: deque = deque(maxlen=16)
 
+        # Rolling one-line summary of the current session, generated in the
+        # background every 6 turns (3 exchanges).  Replaces the raw buffer dump
+        # in the prompt once enough turns have accumulated, keeping injected
+        # context to ~summary + last 4 verbatim turns instead of all 16.
+        self._session_summary: str = ""
+        self._session_turn_count: int = 0  # Total turns ever added this session
+
         # 8. Session reflection — track start time and last-session context
         self._session_start: str = datetime.now().isoformat()
         self._last_session_context: str = ""
@@ -1018,6 +1025,57 @@ class TalonAssistant:
         except Exception as e:
             print(f"   [Buffer] Consolidation error: {e}")
 
+    def _buffer_turn(self, command: str, response: str) -> None:
+        """Append a user/talon pair to the conversation buffer.
+
+        Replaces the three scattered append sites so summarisation logic
+        lives in one place.  Every 6 turns (3 exchanges) a background thread
+        compresses the buffer into a one-line session summary used in place of
+        the full raw dump.
+        """
+        self._maybe_evict_consolidate()
+        self.conversation_buffer.append({"role": "user",  "text": command})
+        self.conversation_buffer.append({"role": "talon", "text": response})
+        self._session_turn_count += 2
+        if self._session_turn_count % 6 == 0:
+            threading.Thread(
+                target=self._async_summarize_session,
+                daemon=True,
+                name="session-summarizer",
+            ).start()
+
+    def _async_summarize_session(self) -> None:
+        """Background: compress the current buffer into a one-line session summary.
+
+        Called every 6 turns so the injected context stays compact.  Result
+        is stored in self._session_summary and prepended to the last 4 verbatim
+        turns instead of dumping all 16 turns into the prompt.
+        """
+        turns = list(self.conversation_buffer)
+        if not turns:
+            return
+        lines = []
+        for t in turns:
+            role = "User" if t["role"] == "user" else "Talon"
+            # Cap each turn at 200 chars so the summarisation prompt itself
+            # doesn't balloon for very long previous responses.
+            lines.append(f"{role}: {t['text'][:200]}")
+        transcript = "\n".join(lines)
+        prompt = (
+            f"Conversation so far:\n{transcript}\n\n"
+            "Summarise what has been discussed in 1-2 sentences (max 40 words). "
+            "Focus on topics, requests made, and any stated preferences. "
+            "Be factual and concise."
+        )
+        try:
+            summary = self.llm.generate(
+                prompt, max_length=80, temperature=0.1).strip()
+            if summary:
+                self._session_summary = summary
+                print(f"   [Buffer] Session summary: {summary[:100]}")
+        except Exception as e:
+            print(f"   [Buffer] Summarisation failed: {e}")
+
     # ── Behavioral rules (trigger → action) ───────────────────────
 
     def _check_rules(self, command):
@@ -1310,12 +1368,24 @@ class TalonAssistant:
         # Prepend recent conversation turns for within-session continuity.
         # Skip for planner/rule sub-steps: stale buffer context (e.g. a prior
         # unrelated topic) would contaminate the sub-step response.
-        # Cap at 1200 chars to stay within token budget.
+        #
+        # Once a session summary exists (generated in the background every 6
+        # turns) inject it + only the 4 most recent verbatim turns (~200-400
+        # chars) instead of all 16 raw turns (~1 200 chars).
         if self.conversation_buffer and not context.get("_planner_substep"):
-            lines = ["[Recent conversation]"]
-            for turn in self.conversation_buffer:
-                role_label = "User" if turn["role"] == "user" else "Talon"
-                lines.append(f"{role_label}: {turn['text']}")
+            lines = []
+            if self._session_summary:
+                lines.append(f"[Session so far: {self._session_summary}]")
+                recent_turns = list(self.conversation_buffer)[-4:]
+            else:
+                recent_turns = list(self.conversation_buffer)
+
+            if recent_turns:
+                lines.append("[Recent conversation]")
+                for turn in recent_turns:
+                    role_label = "User" if turn["role"] == "user" else "Talon"
+                    lines.append(f"{role_label}: {turn['text']}")
+
             history_block = "\n".join(lines) + "\n\n"
             if len(history_block) > 1200:
                 history_block = history_block[-1200:]
@@ -1403,11 +1473,8 @@ class TalonAssistant:
                     elif resp:
                         print(f"\nTalon: {resp}")
                     # Buffer the corrected result as if it were a normal turn
-                    if not _executing_rule:
-                        self._maybe_evict_consolidate()
-                        self.conversation_buffer.append({"role": "user", "text": command})
-                        if resp:
-                            self.conversation_buffer.append({"role": "talon", "text": resp})
+                    if not _executing_rule and resp:
+                        self._buffer_turn(command, resp)
                     print(f"\n{'=' * 50}\n")
                     return result
 
@@ -1532,9 +1599,7 @@ class TalonAssistant:
                 if not _executing_rule:
                     resp_text = result.get("response", "").strip()
                     if resp_text:
-                        self._maybe_evict_consolidate()
-                        self.conversation_buffer.append({"role": "user", "text": command})
-                        self.conversation_buffer.append({"role": "talon", "text": resp_text})
+                        self._buffer_turn(command, resp_text)
 
                 print(f"\n{'=' * 50}\n")
                 ret = {
@@ -1553,9 +1618,7 @@ class TalonAssistant:
 
                 # Buffer this turn (conversation path)
                 if not _executing_rule and response:
-                    self._maybe_evict_consolidate()
-                    self.conversation_buffer.append({"role": "user", "text": command})
-                    self.conversation_buffer.append({"role": "talon", "text": response.strip()})
+                    self._buffer_turn(command, response.strip())
 
                 print(f"\n{'=' * 50}\n")
                 return {
