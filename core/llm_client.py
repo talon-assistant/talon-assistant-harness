@@ -98,7 +98,8 @@ class LLMClient:
     # ── Generation ────────────────────────────────────────────
 
     def generate(self, prompt, use_vision=False, screenshot_b64=None,
-                 max_length=None, system_prompt=None, temperature=None):
+                 images_b64=None, max_length=None, system_prompt=None,
+                 temperature=None):
         """Send prompt to LLM server and return generated text.
 
         Dispatches to the appropriate backend based on ``self.api_format``.
@@ -106,27 +107,34 @@ class LLMClient:
         Args:
             prompt: The user message / content to send.
             use_vision: Whether this is a vision request.
-            screenshot_b64: Base64 screenshot for vision.
+            screenshot_b64: Single base64 image (legacy; merged into images_b64).
+            images_b64: List of base64-encoded PNG strings (multi-image support).
             max_length: Override max token generation length.
             system_prompt: Optional system message (ChatML <|im_start|>system).
             temperature: Override temperature for this call.
         """
+        # Normalise: merge legacy screenshot_b64 into images_b64 list.
+        effective_images = list(images_b64) if images_b64 else []
+        if screenshot_b64 and screenshot_b64 not in effective_images:
+            effective_images.insert(0, screenshot_b64)
+        effective_images = effective_images or None
+
         if self.api_format == "llamacpp":
             return self._generate_llamacpp(
-                prompt, use_vision, screenshot_b64,
+                prompt, use_vision, effective_images,
                 max_length, system_prompt, temperature)
         elif self.api_format == "openai":
             return self._generate_openai(
-                prompt, use_vision, screenshot_b64,
+                prompt, use_vision, effective_images,
                 max_length, system_prompt, temperature)
         else:
             return self._generate_koboldcpp(
-                prompt, use_vision, screenshot_b64,
+                prompt, use_vision, effective_images,
                 max_length, system_prompt, temperature)
 
     # ── KoboldCpp Backend ─────────────────────────────────────
 
-    def _generate_koboldcpp(self, prompt, use_vision=False, screenshot_b64=None,
+    def _generate_koboldcpp(self, prompt, use_vision=False, images_b64=None,
                             max_length=None, system_prompt=None, temperature=None):
         """KoboldCpp native API: POST /api/v1/generate."""
         effective_max_length = max_length or self.max_length
@@ -145,8 +153,8 @@ class LLMClient:
             "stop_sequence": self.stop_sequences
         }
 
-        if use_vision and screenshot_b64:
-            payload["images"] = [screenshot_b64]
+        if use_vision and images_b64:
+            payload["images"] = images_b64
 
         try:
             response = requests.post(
@@ -165,7 +173,7 @@ class LLMClient:
 
     # ── llama.cpp Backend ─────────────────────────────────────
 
-    def _generate_llamacpp(self, prompt, use_vision=False, screenshot_b64=None,
+    def _generate_llamacpp(self, prompt, use_vision=False, images_b64=None,
                            max_length=None, system_prompt=None, temperature=None):
         """llama.cpp server API: POST /completion."""
         effective_max_length = max_length or self.max_length
@@ -185,8 +193,10 @@ class LLMClient:
             "stream": False,
         }
 
-        if use_vision and screenshot_b64:
-            payload["image_data"] = [{"data": screenshot_b64, "id": 10}]
+        if use_vision and images_b64:
+            payload["image_data"] = [
+                {"data": b64, "id": 10 + i} for i, b64 in enumerate(images_b64)
+            ]
 
         try:
             response = requests.post(
@@ -205,7 +215,7 @@ class LLMClient:
 
     # ── OpenAI-Compatible Backend ─────────────────────────────
 
-    def _generate_openai(self, prompt, use_vision=False, screenshot_b64=None,
+    def _generate_openai(self, prompt, use_vision=False, images_b64=None,
                          max_length=None, system_prompt=None, temperature=None):
         """OpenAI-compatible API: POST /v1/chat/completions."""
         effective_max_length = max_length or self.max_length
@@ -217,19 +227,14 @@ class LLMClient:
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
 
-        if use_vision and screenshot_b64:
-            messages.append({
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt},
-                    {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": f"data:image/png;base64,{screenshot_b64}"
-                        }
-                    }
-                ]
-            })
+        if use_vision and images_b64:
+            content = [{"type": "text", "text": prompt}]
+            for b64 in images_b64:
+                content.append({
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/png;base64,{b64}"}
+                })
+            messages.append({"role": "user", "content": content})
         else:
             messages.append({"role": "user", "content": prompt})
 

@@ -328,7 +328,9 @@ class MainWindow(QMainWindow):
 
     def _on_command_started(self, command):
         """Command submitted — show user bubble and disable input."""
-        self.chat_view.add_user_message(command)
+        # Grab any attachments stashed by the bridge before the worker started.
+        attachments = getattr(self.bridge, "_pending_attachments", None) or None
+        self.chat_view.add_user_message(command, attachments=attachments)
         self.text_input.set_enabled(False)
 
     def _on_command_response(self, command, response):

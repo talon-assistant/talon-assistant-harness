@@ -68,6 +68,7 @@ class AssistantBridge(QObject):
         self._tts_worker = None
         self._voice_worker = None
         self._tts_enabled = True
+        self._pending_attachments = []  # stashed for main_window chat bubble
         self.credential_store = CredentialStore()
         self.server_manager = None  # LLMServerManager, set by main.py
 
@@ -111,9 +112,14 @@ class AssistantBridge(QObject):
         """Relay server status changes to the GUI."""
         self.server_status.emit(status)
 
-    @pyqtSlot(str)
-    def submit_command(self, command):
-        """Submit a command for processing in a background thread."""
+    @pyqtSlot(str, list)
+    def submit_command(self, command, attachments=None):
+        """Submit a command for processing in a background thread.
+
+        Args:
+            command: The text command from the user.
+            attachments: Optional list of local image file paths to pass to the LLM.
+        """
         if self.assistant is None:
             self.command_error.emit(command, "Assistant not initialized yet")
             return
@@ -124,10 +130,14 @@ class AssistantBridge(QObject):
         # Auto-stop any in-progress TTS when user sends a new command
         self.stop_speaking()
 
+        # Stash attachments so main_window can retrieve them for the chat bubble.
+        self._pending_attachments = list(attachments) if attachments else []
+
         self.command_started.emit(command)
         self.activity.emit("processing")
 
-        self._command_worker = CommandWorker(self.assistant, command)
+        self._command_worker = CommandWorker(
+            self.assistant, command, attachments=self._pending_attachments)
         self._command_worker.response_ready.connect(self._on_command_done)
         self._command_worker.error.connect(self._on_command_error)
         self._command_worker.start()

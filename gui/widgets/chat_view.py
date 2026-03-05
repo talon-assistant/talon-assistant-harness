@@ -1,8 +1,8 @@
 from datetime import datetime
-from PyQt6.QtWidgets import (QScrollArea, QWidget, QVBoxLayout, QLabel,
-                             QFrame, QTextBrowser, QSizePolicy)
+from PyQt6.QtWidgets import (QScrollArea, QWidget, QVBoxLayout, QHBoxLayout,
+                             QLabel, QFrame, QTextBrowser, QSizePolicy)
 from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QFont, QTextDocument
+from PyQt6.QtGui import QFont, QPixmap, QTextDocument
 
 
 class ChatBubble(QFrame):
@@ -12,7 +12,7 @@ class ChatBubble(QFrame):
     and the bubble grows in height to fit all content.
     """
 
-    def __init__(self, text, role, parent=None):
+    def __init__(self, text, role, attachments=None, parent=None):
         super().__init__(parent)
         self.setObjectName(f"chat_bubble_{role}")
 
@@ -27,6 +27,22 @@ class ChatBubble(QFrame):
         role_label.setObjectName("bubble_role")
         role_label.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
         layout.addWidget(role_label)
+
+        # Image thumbnails (user bubbles with attachments)
+        if attachments:
+            thumb_row = QHBoxLayout()
+            thumb_row.setSpacing(6)
+            for path in attachments:
+                pix = QPixmap(path)
+                if not pix.isNull():
+                    pix = pix.scaledToWidth(
+                        160, Qt.TransformationMode.SmoothTransformation)
+                    img_lbl = QLabel()
+                    img_lbl.setPixmap(pix)
+                    img_lbl.setFixedSize(pix.size())
+                    thumb_row.addWidget(img_lbl)
+            thumb_row.addStretch()
+            layout.addLayout(thumb_row)
 
         # Message body — QTextBrowser handles word-wrap + dynamic height
         self.msg_view = QTextBrowser()
@@ -47,7 +63,11 @@ class ChatBubble(QFrame):
         self.msg_view.document().setDocumentMargin(0)
         self.msg_view.setSizePolicy(QSizePolicy.Policy.Expanding,
                                     QSizePolicy.Policy.Fixed)
-        layout.addWidget(self.msg_view)
+        # Hide text widget if the command was attachment-only (empty text)
+        if text:
+            layout.addWidget(self.msg_view)
+        else:
+            self.msg_view.hide()
 
         # Store text for deferred height calculation
         self._text = text
@@ -90,20 +110,25 @@ class ChatView(QScrollArea):
         self._layout.addStretch()
         self.setWidget(container)
 
-    def _add_message(self, text, role):
+    def _add_message(self, text, role, attachments=None):
         """Internal: add bubble and track message."""
         self._messages.append({
             "role": role,
             "text": text,
             "timestamp": datetime.now().isoformat(timespec='seconds'),
         })
-        bubble = ChatBubble(text, role)
+        bubble = ChatBubble(text, role, attachments=attachments)
         self._layout.insertWidget(self._layout.count() - 1, bubble)
         self._scroll_to_bottom()
 
-    def add_user_message(self, text):
-        """Add a user message bubble (right-aligned via QSS margin-left)."""
-        self._add_message(text, "user")
+    def add_user_message(self, text, attachments=None):
+        """Add a user message bubble (right-aligned via QSS margin-left).
+
+        Args:
+            text: Command text (may be empty if only attachments were sent).
+            attachments: Optional list of local image file paths to show as thumbnails.
+        """
+        self._add_message(text, "user", attachments=attachments)
 
     def add_assistant_message(self, text):
         """Add an assistant response bubble (left-aligned via QSS margin-right)."""

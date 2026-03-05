@@ -35,14 +35,17 @@ class CommandWorker(QThread):
     response_ready = pyqtSignal(str, str, str, bool, dict)  # command, response, talent_name, success, result
     error = pyqtSignal(str, str)  # command, error_message
 
-    def __init__(self, assistant, command):
+    def __init__(self, assistant, command, attachments=None):
         super().__init__()
         self.assistant = assistant
         self.command = command
+        self.attachments = attachments or []
 
     def run(self):
         try:
-            result = self.assistant.process_command(self.command, speak_response=False)
+            result = self.assistant.process_command(
+                self.command, speak_response=False,
+                attachments=self.attachments or None)
             if result and isinstance(result, dict):
                 self.response_ready.emit(
                     self.command,
