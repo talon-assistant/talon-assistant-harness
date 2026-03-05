@@ -38,8 +38,20 @@ class TextInput(QWidget):
         row.setContentsMargins(8, 4, 8, 4)
 
         self._attach_btn = QPushButton("📎")
-        self._attach_btn.setFixedWidth(32)
+        self._attach_btn.setFixedSize(32, 32)
         self._attach_btn.setToolTip("Attach image(s)")
+        self._attach_btn.setStyleSheet(
+            "QPushButton {"
+            "  font-size: 16px;"
+            "  border: 1px solid #555;"
+            "  border-radius: 5px;"
+            "  background: #2a2a3a;"
+            "  color: white;"
+            "  padding: 0;"
+            "}"
+            "QPushButton:hover { background: #3a3a4a; border-color: #888; }"
+            "QPushButton:pressed { background: #1a1a2a; }"
+        )
         self._attach_btn.clicked.connect(self._open_file_dialog)
         row.addWidget(self._attach_btn)
 

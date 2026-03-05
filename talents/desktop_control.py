@@ -265,7 +265,7 @@ Example — opening a website:
   ]
 }
 
-Example — calculator:
+Example — calculator (compute only):
 {
   "explanation": "Opening calculator and calculating 2 plus 7",
   "actions": [
@@ -274,6 +274,20 @@ Example — calculator:
     {"action": "press_key", "key": "plus"},
     {"action": "type", "text": "7"},
     {"action": "press_key", "key": "enter"}
+  ]
+}
+
+Example — calculator with result (compute AND read the answer):
+{
+  "explanation": "Calculating 2 plus 7 and reading the result",
+  "actions": [
+    {"action": "open_application", "application": "calculator"},
+    {"action": "type", "text": "2"},
+    {"action": "press_key", "key": "plus"},
+    {"action": "type", "text": "7"},
+    {"action": "press_key", "key": "enter"},
+    {"action": "hotkey", "keys": ["ctrl", "c"]},
+    {"action": "read_clipboard"}
   ]
 }
 
