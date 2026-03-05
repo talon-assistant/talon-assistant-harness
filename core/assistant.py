@@ -780,6 +780,19 @@ class TalonAssistant:
             if pref.strip():
                 self.memory.store_preference(pref.strip())
 
+        # Store shortcut suggestions as individual soft hints.
+        # These are semantically retrieved at query time and injected as
+        # advisory nudges — they influence but do not mandate behaviour,
+        # unlike hard rules in talon_rules.
+        for shortcut in shortcuts:
+            shortcut = shortcut.strip()
+            if not shortcut:
+                continue
+            # Reframe as past-experience advice rather than a directive.
+            if not shortcut.lower().startswith("in past"):
+                shortcut = f"In past sessions: {shortcut}"
+            self.memory.store_soft_hint(shortcut)
+
         # Store the full reflection
         self.memory.store_session_reflection(summary, preferences, failures, shortcuts)
 

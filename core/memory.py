@@ -184,6 +184,43 @@ class MemorySystem:
         )
         print(f"   [Memory] Stored preference: {preference_text}")
 
+    def store_soft_hint(self, hint_text: str) -> None:
+        """Store a soft behavioural hint derived from session reflection shortcuts.
+
+        Soft hints are semantically retrieved at query time and injected as
+        advisory context — they influence the LLM's reasoning without mandating
+        a specific action (unlike hard rules in talon_rules).
+
+        Capped at 30 hints; the oldest is pruned when the cap is reached.
+        """
+        hint_text = hint_text.strip()
+        if not hint_text:
+            return
+
+        # Enforce 30-hint cap
+        try:
+            existing = self.memory_collection.get(
+                where={"type": "soft_hint"},
+                include=["metadatas"],
+            )
+            ids = existing.get("ids", [])
+            metas = existing.get("metadatas", [])
+            if len(ids) >= 30:
+                paired = sorted(zip(ids, metas),
+                                key=lambda x: x[1].get("timestamp", ""))
+                self.memory_collection.delete(ids=[paired[0][0]])
+        except Exception:
+            pass
+
+        doc_id = f"hint_{int(time.time() * 1000)}"
+        self.memory_collection.add(
+            documents=[hint_text],
+            metadatas=[{"type": "soft_hint",
+                        "timestamp": datetime.now().isoformat()}],
+            ids=[doc_id],
+        )
+        print(f"   [Memory] Stored soft hint: {hint_text[:80]}")
+
     def store_successful_pattern(self, command, actions, context=""):
         """Store a successful command pattern in ChromaDB"""
         doc_text = f"Command: {command}\nActions: {json.dumps(actions)}\nContext: {context}"
@@ -470,6 +507,10 @@ class MemorySystem:
         patterns = self.search_memory(query, n_results=2,
                                       memory_type="pattern", max_distance=0.9)
 
+        # Search soft hints (slightly looser — advisory nudges from reflection)
+        hints = self.search_memory(query, n_results=2,
+                                   memory_type="soft_hint", max_distance=1.1)
+
         context = ""
 
         if prefs:
@@ -481,6 +522,11 @@ class MemorySystem:
             context += ("Background — similar past interactions (do NOT repeat "
                         "these actions unless explicitly asked):\n")
             context += "\n".join([f"- {p}" for p in patterns[:1]]) + "\n\n"
+
+        if hints:
+            context += ("Past experience — consider these approaches but use "
+                        "your judgment; they are suggestions, not rules:\n")
+            context += "\n".join([f"- {h}" for h in hints]) + "\n\n"
 
         return context
 
