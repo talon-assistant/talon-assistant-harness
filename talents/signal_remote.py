@@ -217,6 +217,8 @@ class SignalRemoteTalent(BaseTalent):
                                   "-a", account, "receive", "--timeout", "3"]),
             capture_output=True,
             text=True,
+            encoding='utf-8',
+            errors='replace',
             timeout=20,
         )
 
@@ -224,7 +226,7 @@ class SignalRemoteTalent(BaseTalent):
             print(f"   [Signal] receive failed: {result.stderr.strip()[:200]}")
             return
 
-        for line in result.stdout.splitlines():
+        for line in (result.stdout or "").splitlines():
             line = line.strip()
             if not line:
                 continue
@@ -334,7 +336,8 @@ class SignalRemoteTalent(BaseTalent):
 
         cmd = self._build_cmd(cli, base_args)
         try:
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            r = subprocess.run(cmd, capture_output=True, text=True,
+                               encoding='utf-8', errors='replace', timeout=30)
             if r.returncode != 0:
                 print(f"   [Signal] Send failed: {r.stderr.strip()[:200]}")
                 return
@@ -360,7 +363,8 @@ class SignalRemoteTalent(BaseTalent):
         cli = cfg.get("signal_cli_path", "signal-cli")
         try:
             r = subprocess.run(self._build_cmd(cli, ["--version"]),
-                               capture_output=True, text=True, timeout=15)
+                               capture_output=True, text=True,
+                               encoding='utf-8', errors='replace', timeout=15)
             if r.returncode != 0:
                 err = (r.stderr or r.stdout or "").strip()[:300]
                 print(f"   [Signal] Cannot start: signal-cli --version failed "
