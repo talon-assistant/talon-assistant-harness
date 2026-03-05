@@ -51,8 +51,9 @@ Available handlers (what Talon can do):
 {roster}
 
 Rules:
-- Only output a plan if the request clearly needs 2 or more DIFFERENT handlers.
-- Each step must be a natural-language command that Talon can execute on its own.
+- Only output a plan if the request clearly needs 2 or more DIFFERENT handlers (e.g. lights AND weather). If all parts of the request use the same handler (e.g. open calculator, type, press enter, read screen — all desktop_control), set is_multi_step to false.
+- Each step must be completely self-contained and executable on its own with no dependency on any previous step's result.
+- NEVER generate a step like "read the answer", "tell me the result", or "check what it says" that requires knowing the outcome of a prior step. If reading/observing the result is needed, merge it into the same step as the action (e.g. "calculate 2+2 on the calculator and read the result from the screen" as one combined step).
 - Steps are executed in order; keep them short and specific.
 - Maximum 8 steps.
 - If the request is really just a single action, set is_multi_step to false.

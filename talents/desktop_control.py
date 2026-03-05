@@ -235,6 +235,8 @@ class DesktopControlTalent(BaseTalent):
 1. "explanation": Brief explanation of what you'll do (keep it SHORT, 1 sentence max)
 2. "actions": Array of action objects to execute
 
+IMPORTANT: Only include `open_application` if the user's command explicitly says to OPEN, LAUNCH, or START an application. If the command says "type X into the calculator" or "click the button in notepad", the application is ALREADY OPEN — do NOT add an `open_application` step.
+
 Available actions:
 - {"action": "open_application", "application": "calculator/notepad/chrome/etc"}
 - {"action": "open_url", "url": "<full URL to open in default browser>"}

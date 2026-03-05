@@ -1295,8 +1295,10 @@ class TalonAssistant:
                 self._last_session_context = ""   # Fade out
 
         # Prepend recent conversation turns for within-session continuity.
-        # Cap at 600 chars to stay within token budget.
-        if self.conversation_buffer:
+        # Skip for planner/rule sub-steps: stale buffer context (e.g. a prior
+        # unrelated topic) would contaminate the sub-step response.
+        # Cap at 1200 chars to stay within token budget.
+        if self.conversation_buffer and not context.get("_planner_substep"):
             lines = ["[Recent conversation]"]
             for turn in self.conversation_buffer:
                 role_label = "User" if turn["role"] == "user" else "Talon"
@@ -1439,6 +1441,10 @@ class TalonAssistant:
             context = self._build_context(command, speak_response)
             if attachments:
                 context["attachments"] = attachments
+            if _executing_rule:
+                # Signal to conversation handler: this is a planner/rule sub-step.
+                # Prevents stale conversation buffer from contaminating sub-step replies.
+                context["_planner_substep"] = True
 
             # Step 3: Route to talent
             talent = self._find_talent(command)
