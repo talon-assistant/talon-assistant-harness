@@ -1159,6 +1159,14 @@ class TalonAssistant:
             "inside of notepad", "inside notepad", "in notepad",
             "text inside", "what's in the",
             "inside of", "displayed on", "showing on",
+            # Generic "read me [result/answer/whatever]" follow-ups —
+            # user wants Talon to look at the current screen state.
+            "read me the", "read me what", "read it out", "read it to me",
+            "what does it say", "what does it show", "what does it read",
+            "what is the answer", "what's the answer",
+            "what is the result", "what's the result",
+            "what is the output", "what's the output",
+            "what number", "what value",
         ]
         needs_vision = any(phrase in cmd_lower for phrase in vision_phrases)
         rag_explicit = context.get("rag_explicit", False)

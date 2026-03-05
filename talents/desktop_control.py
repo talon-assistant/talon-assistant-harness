@@ -20,6 +20,10 @@ class DesktopControlTalent(BaseTalent):
         "what's in notepad",
         "read the text on screen",
         "describe what you see",
+        "read me the answer",
+        "what does it say",
+        "read it out to me",
+        "what is the result",
     ]
     priority = 40
 
@@ -38,6 +42,10 @@ class DesktopControlTalent(BaseTalent):
         r"\bcan you (?:see|read)\b",
         r"\btell me what\b",
         r"\bwhat.{0,6}(?:text|content|message)\b",
+        # Generic "read me [result/answer]" follow-ups after any desktop action
+        r"\bread me\b",
+        r"\bread it\b",
+        r"\bwhat.{0,10}(?:answer|result|output|number|value)\b",
     ]
 
     APP_COMMANDS = {
