@@ -4,7 +4,7 @@ Disabled by default. Enable via Settings → Talent Config → signal_remote,
 then configure your phone number, signal-cli path, and authorized numbers.
 
 Prerequisites (do once, manually):
-  1. Install JRE 21+:  winget install Microsoft.OpenJDK.21
+  1. Install JRE 25+:  https://www.oracle.com/java/technologies/downloads/
   2. Download signal-cli from https://github.com/AsamK/signal-cli/releases
   3. Register:  signal-cli -a +1YOURNUM --config data/signal-cli-config register
   4. Verify:    signal-cli -a +1YOURNUM --config data/signal-cli-config verify CODE
@@ -113,10 +113,40 @@ class SignalRemoteTalent(BaseTalent):
 
     @staticmethod
     def _build_cmd(cli: str, args: list) -> list:
-        """Wrap .bat paths with cmd /c so Windows can execute them."""
-        if cli.lower().endswith(".bat"):
+        """Build the command list to invoke signal-cli.
+
+        For .bat wrappers we invoke java directly (bypassing cmd.exe) so that
+        multiline message strings are not truncated at embedded newlines, which
+        cmd.exe treats as command separators even inside quoted arguments.
+        """
+        if not cli.lower().endswith(".bat"):
+            return [cli] + args
+
+        import glob as _glob
+
+        # Find java executable via JAVA_HOME (user or system env).
+        java_home = os.environ.get("JAVA_HOME", "")
+        java_exe = (os.path.join(java_home, "bin", "java.exe")
+                    if java_home else "java.exe")
+
+        # Derive app_home: .../bin/signal-cli.bat  →  .../
+        bat_dir = os.path.dirname(os.path.abspath(cli))
+        app_home = os.path.dirname(bat_dir)
+        lib_dir = os.path.join(app_home, "lib")
+
+        all_jars = _glob.glob(os.path.join(lib_dir, "*.jar"))
+        if not all_jars:
+            # Fallback if we can't find the jars (shouldn't happen).
             return ["cmd", "/c", cli] + args
-        return [cli] + args
+
+        classpath = ";".join(all_jars)
+
+        return [
+            java_exe,
+            "--enable-native-access=ALL-UNNAMED",
+            "-classpath", classpath,
+            "org.asamk.signal.Main",
+        ] + args
 
     # ── Thread management ──────────────────────────────────────────
 
