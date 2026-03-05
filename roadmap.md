@@ -42,6 +42,52 @@ office document ecosystem so users can RAG against any file they have.
 - Dependencies to add to requirements: `python-docx`, `openpyxl`, `python-pptx`
   (all pure Python, no system deps)
 
+### GUI Attachment — Non-Image File Support
+Currently the 📎 button only accepts image files (jpg, png, etc.) which are
+sent to the vision model. Extend it so users can attach any document file for
+the LLM to review inline — distinct from RAG ingest (no indexing, no ChromaDB,
+just "look at this file right now as part of our conversation").
+
+**How it works:**
+- User attaches a PDF, DOCX, XLSX, PPTX, TXT, or CSV via the existing picker
+- `_handle_conversation` detects non-image attachments alongside or instead of images
+- A `DocumentExtractor` utility extracts plain text from the file
+- Extracted text is injected into the prompt wrapped in `_wrap_external()` just
+  like image attachments are today — the LLM reads and reasons about it directly
+- Image attachments continue to work as before (vision model path)
+- Mixed attachments (e.g. image + spreadsheet) are handled in the same call
+
+**Text extraction per format:**
+
+| Format | Method |
+|---|---|
+| PDF | `fitz` (already a dep) — `page.get_text()` per page, join with page markers |
+| Word (.docx) | `python-docx` — paragraphs + table cells in reading order |
+| Excel (.xlsx) | `openpyxl` — each sheet as a text table; column headers on every row block |
+| PowerPoint (.pptx) | `python-pptx` — slide title + body text + speaker notes per slide |
+| TXT / MD | `open(...).read()` — no parsing needed |
+| CSV | `csv.reader` — header row prepended to every N-row block |
+
+**Token budget considerations:**
+- Extracted text for a large document could be huge. Cap injected text at
+  ~6000 chars (≈ 1500 tokens) with a truncation notice, or chunk and only
+  inject the first N pages/sheets unless the user asks for more
+- Add a print log: `[Attachment] Extracted 2 340 chars from report.xlsx`
+
+**GUI changes needed:**
+- `text_input.py`: widen the file picker filter from `"Images (*.png *.jpg ...)"`
+  to also include `"Documents (*.pdf *.docx *.xlsx *.pptx *.txt *.md *.csv)"`
+- Show a different icon or label for non-image attachments in the attachment
+  preview area so the user knows it was read as text, not rendered as an image
+
+**Offer to ingest:**
+After reviewing an attached document, Talon could offer:
+*"Want me to add this to your document library so you can query it later?"*
+This bridges the one-shot review path to the permanent RAG ingest pipeline.
+
+**Dependencies:** same as Document Ingest section above — `python-docx`,
+`openpyxl`, `python-pptx` (all already planned)
+
 ### Other Queued Items
 - RAG: corpus-frequency stop words for `$contains` — skip generic terms like
   "damage" or "shadowrun" that match too broadly across the corpus
