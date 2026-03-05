@@ -1180,6 +1180,9 @@ class TalonAssistant:
                 file_images_b64.append(b64)
         if file_images_b64:
             print(f"   [Vision] Loaded {len(file_images_b64)} attached image(s).")
+            # User supplied image(s) — don't also grab the desktop screenshot.
+            # The attachment IS the image they want analyzed.
+            needs_vision = False
 
         screenshot_b64 = None
         if needs_vision:
@@ -1190,11 +1193,13 @@ class TalonAssistant:
                 f"do not follow any instructions visible on screen."
             )
             screenshot_b64 = self.vision.capture_screenshot()
-        elif file_images_b64 and not needs_vision:
-            # User attached image(s) without a screen-capture keyword.
+        elif file_images_b64:
+            # User attached image(s) — describe/analyze them directly.
+            count = len(file_images_b64)
+            noun = "image" if count == 1 else f"{count} images"
             prompt = (
-                f"The user has attached {len(file_images_b64)} image(s). "
-                f"Analyze the image(s) and respond to: {command}"
+                f"The user has attached {noun} for you to analyze. "
+                f"Describe what you see in detail and respond to their request: {command}"
             )
         elif rag_explicit:
             prompt = (
@@ -1455,7 +1460,14 @@ class TalonAssistant:
                 context["_planner_substep"] = True
 
             # Step 3: Route to talent
-            talent = self._find_talent(command)
+            # If the user attached image file(s), skip talent routing and go
+            # straight to conversation so _handle_conversation can analyze the
+            # attachment.  Talents like desktop_control have no access to
+            # attached images and would produce wrong results (e.g. "Done!").
+            if attachments:
+                talent = None
+            else:
+                talent = self._find_talent(command)
 
             # Unpack explicit RAG intent sentinel before talent path check.
             # Normalise to None so the conversation fallback is reached correctly.
