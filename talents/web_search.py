@@ -41,21 +41,106 @@ class WebSearchTalent(BaseTalent):
         "tell me about", "tell me",
     ]
 
+    # Commands that refer to a *previous* query rather than stating one directly.
+    # e.g. "can you web search for it" / "look that up" / "search for what I asked"
+    _REFERENTIAL_TRIGGERS = [
+        "search for it", "search it", "look it up", "look that up",
+        "search that", "web search for it", "web search that",
+        "search for what i asked", "search for the above",
+        "search my question", "search for my question",
+        "find it", "find that",
+    ]
+
+    # Commands that are complaints/corrections about a prior answer — not searches.
+    # These should not be used as literal search queries.
+    _META_COMPLAINT_TRIGGERS = [
+        "this is not the answer", "not the answer i",
+        "not what i was looking for", "this should have gone to",
+        "this should have", "you should have", "that's not what",
+        "that was not", "this was wrong", "wrong answer",
+        "missed the point", "not correct", "that is incorrect",
+        "not what i wanted", "that's wrong",
+    ]
+
     def can_handle(self, command: str) -> bool:
         return self.keyword_match(command)
 
-    def execute(self, command: str, context: dict) -> dict:
-        # Build search query — only strip command prefixes, keep question words
-        search_query = command.lower()
-        for prefix in self._COMMAND_PREFIXES:
-            if search_query.startswith(prefix):
-                search_query = search_query[len(prefix):]
-                break  # only strip one prefix
-        search_query = search_query.strip()
+    # ── Query resolution ───────────────────────────────────────────
 
-        # If query is too short after stripping, use the original command
-        if len(search_query) < 5:
-            search_query = command
+    def _get_prior_query(self, context: dict) -> str | None:
+        """Walk the conversation buffer backwards to find the last real user query.
+
+        Skips referential commands ('search for it') and meta-complaints so we
+        don't recursively resolve to another non-query turn.
+        """
+        assistant = context.get("assistant")
+        if not assistant or not hasattr(assistant, "conversation_buffer"):
+            return None
+        for entry in reversed(list(assistant.conversation_buffer)):
+            if entry["role"] != "user":
+                continue
+            text = entry["text"].lower()
+            if any(t in text for t in self._REFERENTIAL_TRIGGERS):
+                continue
+            if any(t in text for t in self._META_COMPLAINT_TRIGGERS):
+                continue
+            return entry["text"]
+        return None
+
+    def _resolve_query(self, command: str, context: dict) -> str | None:
+        """Return the search query to use, or None to decline the command.
+
+        None → talent declines; assistant falls through to conversation path
+              (correct for pure meta-complaints with no recoverable prior query).
+        """
+        cmd_lower = command.lower()
+
+        # Case 1: Meta-complaint about a prior response (e.g. "that was wrong,
+        # you should have searched for…").  Try to recover the original topic;
+        # if we can't, decline so the conversation handler can explain.
+        if any(t in cmd_lower for t in self._META_COMPLAINT_TRIGGERS):
+            prior = self._get_prior_query(context)
+            if prior:
+                print(f"   [WebSearch] Meta-complaint detected; "
+                      f"recovering prior query: {prior!r}")
+                return prior
+            print("   [WebSearch] Meta-complaint with no recoverable prior query "
+                  "— declining to conversation.")
+            return None
+
+        # Case 2: Referential command ("search for it", "look that up", etc.).
+        # Strip any prefixes first; if what remains is very short or matches a
+        # referential trigger, pull the actual topic from the buffer.
+        stripped = cmd_lower
+        for prefix in self._COMMAND_PREFIXES:
+            if stripped.startswith(prefix):
+                stripped = stripped[len(prefix):].strip()
+                break
+
+        is_referential = (
+            len(stripped) < 5
+            or any(t in cmd_lower for t in self._REFERENTIAL_TRIGGERS)
+        )
+        if is_referential:
+            prior = self._get_prior_query(context)
+            if prior:
+                print(f"   [WebSearch] Referential query; "
+                      f"using prior query: {prior!r}")
+                return prior
+            # No prior query found — use the stripped text as best effort
+            return command
+
+        # Case 3: Normal query — use stripped form (or full command if too short)
+        return stripped if len(stripped) >= 5 else command
+
+    # ── Talent entry point ─────────────────────────────────────────
+
+    def execute(self, command: str, context: dict) -> dict:
+        search_query = self._resolve_query(command, context)
+
+        # Decline: meta-complaint with no recoverable prior query
+        if search_query is None:
+            return {"success": False, "response": "", "actions_taken": []}
 
         # Perform search (use configured max_results)
         max_results = self._config.get("max_results", 5)
