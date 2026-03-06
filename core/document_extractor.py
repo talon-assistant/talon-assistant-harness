@@ -17,7 +17,8 @@ ingest_documents.py for the batch RAG pipeline.
 
 import os
 
-MAX_CHARS = 6000   # ~1 500 tokens at 4 chars/token — keeps within context budget
+MAX_CHARS = 32_000  # ~8 000 tokens — leaves ~4 000 tokens for overhead + response
+                    # in a 12 288-token context. Raise if you have a larger context.
 
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".webp", ".gif", ".tiff"}
 _DOC_EXTS   = {".pdf", ".docx", ".xlsx", ".xls", ".pptx",
@@ -66,7 +67,7 @@ def extract(path: str) -> str | None:
 def _trim(text: str) -> str:
     text = text.strip()
     if len(text) > MAX_CHARS:
-        text = text[:MAX_CHARS] + f"\n\n[... document truncated at {MAX_CHARS} chars ...]"
+        text = text[:MAX_CHARS] + f"\n\n[... document truncated at {MAX_CHARS:,} chars — attach a smaller section or ingest via ingest_documents.py for full RAG access ...]"
     return text
 
 
