@@ -219,7 +219,7 @@ class SignalRemoteTalent(BaseTalent):
             text=True,
             encoding='utf-8',
             errors='replace',
-            timeout=20,
+            timeout=60,  # JVM cold-start with 35+ JARs can take 10-20 s alone
         )
 
         if result.returncode != 0:

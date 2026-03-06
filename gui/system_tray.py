@@ -1,3 +1,7 @@
+import ctypes
+import ctypes.wintypes
+import threading
+
 from PyQt6.QtWidgets import QSystemTrayIcon, QMenu
 from PyQt6.QtGui import QIcon, QPixmap, QPainter, QColor, QFont, QAction
 from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot, QMetaObject, Qt
@@ -76,31 +80,56 @@ class SystemTrayManager(QObject):
         self.hide_requested.emit()
 
     def _setup_hotkey(self):
-        """Register global hotkey using pynput (Ctrl+Shift+J)."""
-        self._listener = None
+        """Register global hotkey Ctrl+Shift+J via Win32 RegisterHotKey API.
+
+        Uses RegisterHotKey + GetMessage instead of pynput WH_KEYBOARD_LL hooks.
+        Hooks require a live Win32 message pump in their thread and crash with an
+        access violation when the process exits while the hook thread is still
+        running. RegisterHotKey posts WM_HOTKEY to a simple message loop and
+        tears down cleanly via PostThreadMessageW(WM_QUIT).
+        """
+        self._hotkey_thread: threading.Thread | None = None
+        self._hotkey_thread_id: int | None = None
         try:
-            from pynput import keyboard
+            user32   = ctypes.windll.user32
+            kernel32 = ctypes.windll.kernel32
 
-            COMBO = {keyboard.Key.ctrl_l, keyboard.Key.shift, keyboard.KeyCode.from_char('j')}
-            self._current_keys = set()
+            MOD_CONTROL = 0x0002
+            MOD_SHIFT   = 0x0004
+            VK_J        = 0x4A      # Virtual-key code for 'J'
+            WM_HOTKEY   = 0x0312
+            HOTKEY_ID   = 1
 
-            def on_press(key):
-                self._current_keys.add(key)
-                if all(k in self._current_keys for k in COMBO):
-                    # Cross to GUI thread safely
-                    QMetaObject.invokeMethod(
-                        self, "_toggle_window",
-                        Qt.ConnectionType.QueuedConnection)
+            _id_holder: list[int | None] = [None]
+            _ready = threading.Event()
 
-            def on_release(key):
-                self._current_keys.discard(key)
+            def _hotkey_loop() -> None:
+                _id_holder[0] = kernel32.GetCurrentThreadId()
+                _ready.set()
+                if not user32.RegisterHotKey(
+                        None, HOTKEY_ID, MOD_CONTROL | MOD_SHIFT, VK_J):
+                    print("[SystemTray] RegisterHotKey failed "
+                          "(Ctrl+Shift+J may already be in use).")
+                    return
+                msg = ctypes.wintypes.MSG()
+                try:
+                    while user32.GetMessageA(ctypes.byref(msg), None, 0, 0) != 0:
+                        if msg.message == WM_HOTKEY:
+                            QMetaObject.invokeMethod(
+                                self, "_toggle_window",
+                                Qt.ConnectionType.QueuedConnection)
+                finally:
+                    user32.UnregisterHotKey(None, HOTKEY_ID)
 
-            self._listener = keyboard.Listener(
-                on_press=on_press, on_release=on_release)
-            self._listener.daemon = True
-            self._listener.start()
-        except ImportError:
-            print("[SystemTray] pynput not installed; global hotkey disabled.")
+            t = threading.Thread(
+                target=_hotkey_loop, daemon=True, name="hotkey-listener")
+            t.start()
+            _ready.wait(timeout=2.0)
+
+            self._hotkey_thread    = t
+            self._hotkey_thread_id = _id_holder[0]
+            self._kernel32         = kernel32
+            print("[SystemTray] Global hotkey Ctrl+Shift+J registered.")
         except Exception as e:
             print(f"[SystemTray] Global hotkey setup failed: {e}")
 
@@ -121,9 +150,13 @@ class SystemTrayManager(QObject):
 
     def cleanup(self):
         """Stop hotkey listener, hide tray icon."""
-        if self._listener:
+        if self._hotkey_thread_id:
             try:
-                self._listener.stop()
+                # Post WM_QUIT to the GetMessage loop so it exits cleanly and
+                # calls UnregisterHotKey before the thread dies.
+                WM_QUIT = 0x0012
+                self._kernel32.PostThreadMessageW(
+                    self._hotkey_thread_id, WM_QUIT, 0, 0)
             except Exception:
                 pass
         self.tray_icon.hide()
