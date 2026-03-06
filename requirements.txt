@@ -20,13 +20,12 @@ pyautogui
 pyperclip
 Pillow
 
-# System Integration
-pynput
-
 # Document Ingestion
 pymupdf4llm
 pymupdf_layout
 python-docx
+python-pptx
+openpyxl
 pandas
 beautifulsoup4
 Markdown

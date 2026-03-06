@@ -1,8 +1,11 @@
+import os
 from datetime import datetime
 from PyQt6.QtWidgets import (QScrollArea, QWidget, QVBoxLayout, QHBoxLayout,
                              QLabel, QFrame, QTextBrowser, QSizePolicy)
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QFont, QPixmap, QTextDocument
+
+_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".webp", ".gif", ".tiff"}
 
 
 class ChatBubble(QFrame):
@@ -28,19 +31,39 @@ class ChatBubble(QFrame):
         role_label.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
         layout.addWidget(role_label)
 
-        # Image thumbnails (user bubbles with attachments)
+        # Attachment previews: image thumbnails + document chips
         if attachments:
             thumb_row = QHBoxLayout()
             thumb_row.setSpacing(6)
             for path in attachments:
-                pix = QPixmap(path)
-                if not pix.isNull():
-                    pix = pix.scaledToWidth(
-                        160, Qt.TransformationMode.SmoothTransformation)
-                    img_lbl = QLabel()
-                    img_lbl.setPixmap(pix)
-                    img_lbl.setFixedSize(pix.size())
-                    thumb_row.addWidget(img_lbl)
+                ext = os.path.splitext(path)[1].lower()
+                if ext in _IMAGE_EXTS:
+                    # Render as scaled thumbnail
+                    pix = QPixmap(path)
+                    if not pix.isNull():
+                        pix = pix.scaledToWidth(
+                            160, Qt.TransformationMode.SmoothTransformation)
+                        img_lbl = QLabel()
+                        img_lbl.setPixmap(pix)
+                        img_lbl.setFixedSize(pix.size())
+                        thumb_row.addWidget(img_lbl)
+                else:
+                    # Render as a document chip (icon + filename)
+                    fname = os.path.basename(path)
+                    chip = QLabel(f"📄 {fname}")
+                    chip.setStyleSheet(
+                        "QLabel {"
+                        "  background: #2a2a3a;"
+                        "  border: 1px solid #555;"
+                        "  border-radius: 4px;"
+                        "  padding: 3px 7px;"
+                        "  font-size: 11px;"
+                        "  color: #ccc;"
+                        "}"
+                    )
+                    chip.setMaximumWidth(220)
+                    chip.setToolTip(path)
+                    thumb_row.addWidget(chip)
             thumb_row.addStretch()
             layout.addLayout(thumb_row)
 

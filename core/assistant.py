@@ -14,6 +14,7 @@ from core.llm_client import LLMClient
 from core.vision import VisionSystem
 from core.voice import VoiceSystem
 from core.credential_store import CredentialStore
+from core import document_extractor as _docext
 from talents.base import BaseTalent
 
 # ── Prompt injection defence ──────────────────────────────────────────────────
@@ -1229,18 +1230,31 @@ class TalonAssistant:
         needs_vision = any(phrase in cmd_lower for phrase in vision_phrases)
         rag_explicit = context.get("rag_explicit", False)
 
-        # Load user-provided attachment images (from GUI file-picker / drag-drop).
+        # Load user-provided attachments (from GUI file-picker / drag-drop).
+        # Images → base64 for the vision pipeline.
+        # Documents → extract text for prompt injection.
         attachment_paths = context.get("attachments") or []
         file_images_b64 = []
+        doc_blocks: list[tuple[str, str]] = []   # (filename, extracted_text)
+
         for path in attachment_paths:
-            b64 = self.vision.load_image_file(path)
-            if b64:
-                file_images_b64.append(b64)
+            if _docext.is_image(path):
+                b64 = self.vision.load_image_file(path)
+                if b64:
+                    file_images_b64.append(b64)
+            else:
+                text = _docext.extract(path)
+                if text:
+                    doc_blocks.append((os.path.basename(path), text))
+                else:
+                    print(f"   [Attach] Could not extract '{os.path.basename(path)}'.")
+
         if file_images_b64:
             print(f"   [Vision] Loaded {len(file_images_b64)} attached image(s).")
             # User supplied image(s) — don't also grab the desktop screenshot.
-            # The attachment IS the image they want analyzed.
             needs_vision = False
+        if doc_blocks:
+            print(f"   [Attach] Loaded {len(doc_blocks)} document(s).")
 
         screenshot_b64 = None
         if needs_vision:
@@ -1258,6 +1272,14 @@ class TalonAssistant:
             prompt = (
                 f"The user has attached {noun} for you to analyze. "
                 f"Describe what you see in detail and respond to their request: {command}"
+            )
+        elif doc_blocks:
+            names = ", ".join(fname for fname, _ in doc_blocks)
+            noun  = "document" if len(doc_blocks) == 1 else f"{len(doc_blocks)} documents"
+            request = command.strip() if command.strip() else "Please summarise the content."
+            prompt = (
+                f"The user has attached {noun} ({names}) for you to review. "
+                f"Respond to their request based on the document content: {request}"
             )
         elif rag_explicit:
             prompt = (
@@ -1352,6 +1374,12 @@ class TalonAssistant:
                 else "document excerpts — may or may not be relevant"
             )
             prompt = f"{_wrap_external(doc_context, source_label)}\n\n{prompt}"
+
+        # Inject text extracted from user-attached documents (GUI attachment).
+        # Injected after RAG so the directly-attached file sits closest to the question.
+        if doc_blocks:
+            for fname, text in doc_blocks:
+                prompt = f"{_wrap_external(text, f'attached document: {fname}')}\n\n{prompt}"
 
         # Prepend last-session context for the first few turns of a new session.
         # Cleared after 3 conversation turns so it doesn't linger indefinitely.

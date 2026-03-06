@@ -8,6 +8,9 @@ from PyQt6.QtGui import QDragEnterEvent, QDropEvent
 
 
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".webp", ".gif", ".tiff"}
+_DOC_EXTS   = {".pdf", ".docx", ".xlsx", ".xls", ".pptx",
+               ".txt", ".md", ".rst", ".csv"}
+_ALL_EXTS   = _IMAGE_EXTS | _DOC_EXTS
 
 
 class TextInput(QWidget):
@@ -39,7 +42,7 @@ class TextInput(QWidget):
 
         self._attach_btn = QPushButton("📎")
         self._attach_btn.setFixedSize(32, 32)
-        self._attach_btn.setToolTip("Attach image(s)")
+        self._attach_btn.setToolTip("Attach image(s) or document(s)")
         self._attach_btn.setStyleSheet(
             "QPushButton {"
             "  font-size: 16px;"
@@ -96,9 +99,12 @@ class TextInput(QWidget):
     def _open_file_dialog(self):
         paths, _ = QFileDialog.getOpenFileNames(
             self,
-            "Attach image(s)",
+            "Attach file(s)",
             "",
-            "Images (*.png *.jpg *.jpeg *.bmp *.webp *.gif *.tiff)",
+            "All supported files (*.png *.jpg *.jpeg *.bmp *.webp *.gif *.tiff "
+            "*.pdf *.docx *.xlsx *.xls *.pptx *.txt *.md *.rst *.csv);;"
+            "Images (*.png *.jpg *.jpeg *.bmp *.webp *.gif *.tiff);;"
+            "Documents (*.pdf *.docx *.xlsx *.xls *.pptx *.txt *.md *.rst *.csv)",
         )
         if paths:
             self._add_attachments(paths)
@@ -146,7 +152,7 @@ class TextInput(QWidget):
         if event.mimeData().hasUrls():
             urls = event.mimeData().urls()
             if any(
-                os.path.splitext(u.toLocalFile())[1].lower() in _IMAGE_EXTS
+                os.path.splitext(u.toLocalFile())[1].lower() in _ALL_EXTS
                 for u in urls
             ):
                 event.acceptProposedAction()
@@ -157,7 +163,7 @@ class TextInput(QWidget):
         paths = [
             u.toLocalFile()
             for u in event.mimeData().urls()
-            if os.path.splitext(u.toLocalFile())[1].lower() in _IMAGE_EXTS
+            if os.path.splitext(u.toLocalFile())[1].lower() in _ALL_EXTS
         ]
         if paths:
             self._add_attachments(paths)
