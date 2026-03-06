@@ -96,6 +96,9 @@ This bridges the one-shot review path to the permanent RAG ingest pipeline.
 ---
 
 ## Option 5 — Agentic Tool Calling (Major Architectural Shift)
+> **On hold** — waiting for Qwen3.5-VL availability (expected via Unsloth shortly).
+> Model upgrade and this refactor will land together to avoid touching all talent
+> files twice.
 
 ### What it is
 Replace the current keyword/embedding talent router with Qwen3's native
