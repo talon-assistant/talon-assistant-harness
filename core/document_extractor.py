@@ -17,8 +17,8 @@ ingest_documents.py for the batch RAG pipeline.
 
 import os
 
-MAX_CHARS = 32_000  # ~8 000 tokens — leaves ~4 000 tokens for overhead + response
-                    # in a 12 288-token context. Raise if you have a larger context.
+MAX_CHARS = 32_000  # ~8 000 tokens — leaves ~8 000 tokens for overhead + response
+                    # in a 16 384-token context. Raise if you have a larger context.
 
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".webp", ".gif", ".tiff"}
 _DOC_EXTS   = {".pdf", ".docx", ".xlsx", ".xls", ".pptx",
