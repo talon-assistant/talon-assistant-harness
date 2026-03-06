@@ -84,7 +84,7 @@ class DocumentIngester:
         )
 
         self.supported_extensions = {
-            '.pdf', '.txt', '.docx', '.md', '.markdown',
+            '.pdf', '.txt', '.docx', '.pptx', '.md', '.markdown',
             '.py', '.js', '.java', '.cpp', '.cs', '.html', '.htm',
             '.csv', '.xlsx', '.xls'
         }
@@ -163,6 +163,24 @@ class DocumentIngester:
             print(f"  ✗ Error reading DOCX: {e}")
             return None
 
+    def extract_pptx(self, filepath):
+        """Extract text from PowerPoint (.pptx) — one block per slide."""
+        try:
+            from pptx import Presentation
+            prs = Presentation(filepath)
+            parts = []
+            for i, slide in enumerate(prs.slides):
+                texts = []
+                for shape in slide.shapes:
+                    if hasattr(shape, "text") and shape.text.strip():
+                        texts.append(shape.text.strip())
+                if texts:
+                    parts.append(f"[Slide {i + 1}]\n" + "\n".join(texts))
+            return "\n\n".join(parts) if parts else None
+        except Exception as e:
+            print(f"  ✗ Error reading PPTX: {e}")
+            return None
+
     def extract_txt(self, filepath):
         """Extract text from TXT/code files"""
         try:
@@ -220,6 +238,8 @@ class DocumentIngester:
             return self.extract_pdf(filepath)
         elif ext == '.docx':
             return self.extract_docx(filepath)
+        elif ext == '.pptx':
+            return self.extract_pptx(filepath)
         elif ext in ['.txt', '.py', '.js', '.java', '.cpp', '.cs']:
             return self.extract_txt(filepath)
         elif ext in ['.md', '.markdown']:
