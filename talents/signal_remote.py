@@ -144,6 +144,8 @@ class SignalRemoteTalent(BaseTalent):
         return [
             java_exe,
             "--enable-native-access=ALL-UNNAMED",
+            "-Xms32m",   # start small — signal-cli is a short-lived CLI tool
+            "-Xmx128m",  # cap heap; default is ~1 GB which exhausts the page file
             "-classpath", classpath,
             "org.asamk.signal.Main",
         ] + args
