@@ -5,6 +5,7 @@ import base64
 import time
 from pathlib import Path
 import chromadb
+from core import embeddings as _emb
 import pymupdf4llm
 import fitz  # PyMuPDF — bundled with pymupdf4llm
 from docx import Document
@@ -65,14 +66,18 @@ class DocumentIngester:
     def __init__(self, documents_dir=None, chroma_path=None):
         # Try to load paths from config
         config_path = Path("config/settings.json")
+        embed_model = "BAAI/bge-base-en-v1.5"
         if config_path.exists():
             with open(config_path) as f:
                 config = json.load(f)
             documents_dir = documents_dir or config.get("documents", {}).get("directory", "documents")
             chroma_path = chroma_path or config.get("memory", {}).get("chroma_path", "data/chroma_db")
+            embed_model = config.get("memory", {}).get("embedding_model", embed_model)
         else:
             documents_dir = documents_dir or "documents"
             chroma_path = chroma_path or "data/chroma_db"
+
+        self._embed_model = embed_model
 
         self.documents_dir = Path(documents_dir)
         self.chroma_path = chroma_path
@@ -450,6 +455,7 @@ class DocumentIngester:
                     doc_id = f"{doc_id_base}_p{page_idx}_s{sub_i}"
                     meta = {**base_meta, "sub_chunk": sub_i}
                     self.collection.add(
+                        embeddings=_emb.embed_documents([sub_text], self._embed_model),
                         documents=[sub_text],
                         metadatas=[meta],
                         ids=[doc_id],
@@ -459,6 +465,7 @@ class DocumentIngester:
                 doc_id = f"{doc_id_base}_p{page_idx}"
                 meta = {**base_meta, "sub_chunk": 0}
                 self.collection.add(
+                    embeddings=_emb.embed_documents([chunk_text], self._embed_model),
                     documents=[chunk_text],
                     metadatas=[meta],
                     ids=[doc_id],
@@ -545,6 +552,7 @@ class DocumentIngester:
                     )
 
             self.collection.add(
+                embeddings=_emb.embed_documents([chunk_text], self._embed_model),
                 documents=[chunk_text],
                 metadatas=[meta],
                 ids=[doc_id],

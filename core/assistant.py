@@ -220,7 +220,8 @@ class TalonAssistant:
         self.memory = MemorySystem(
             db_path=memory_config["db_path"],
             chroma_path=memory_config["chroma_path"],
-            embedding_model=memory_config["embedding_model"]
+            embedding_model=memory_config["embedding_model"],
+            reranker_model=memory_config.get("reranker_model", "BAAI/bge-reranker-base"),
         )
 
         print("[3/5] Initializing Vision...")

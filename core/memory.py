@@ -4,14 +4,16 @@ import json
 import time
 from datetime import datetime
 import chromadb
-from sentence_transformers import SentenceTransformer
+from core import embeddings as _emb
+from core import reranker as _reranker
 
 
 class MemorySystem:
     """Handles structured memory (SQLite), semantic memory (ChromaDB), and document RAG"""
 
     def __init__(self, db_path="data/talon_memory.db", chroma_path="data/chroma_db",
-                 embedding_model="all-MiniLM-L6-v2"):
+                 embedding_model="BAAI/bge-base-en-v1.5",
+                 reranker_model="BAAI/bge-reranker-base"):
         print("   [Memory] Initializing memory systems...")
 
         # SQLite for structured data
@@ -52,9 +54,13 @@ class MemorySystem:
                       "description": "Correction memory: maps bad commands to correct intent"}
         )
 
-        # Sentence transformer for embeddings
+        # Embedding + reranker model names (models load lazily on first use)
+        self._embed_model = embedding_model
+        self._reranker_model = reranker_model
+
+        # Pre-warm the embedding model so first-query latency is predictable
         print("   [Memory] Loading embedding model...")
-        self.embedder = SentenceTransformer(embedding_model)
+        _emb.embed_documents(["warmup"], embedding_model)
 
         # Cache: None = unknown, True/False = cached result
         # Invalidated whenever a rule is added, deleted, or toggled.
@@ -178,6 +184,7 @@ class MemorySystem:
         """Store a user preference in ChromaDB"""
         doc_id = f"pref_{int(time.time() * 1000)}"
         self.memory_collection.add(
+            embeddings=_emb.embed_documents([preference_text], self._embed_model),
             documents=[preference_text],
             metadatas=[{"type": "preference", "category": category, "timestamp": datetime.now().isoformat()}],
             ids=[doc_id]
@@ -214,6 +221,7 @@ class MemorySystem:
 
         doc_id = f"hint_{int(time.time() * 1000)}"
         self.memory_collection.add(
+            embeddings=_emb.embed_documents([hint_text], self._embed_model),
             documents=[hint_text],
             metadatas=[{"type": "soft_hint",
                         "timestamp": datetime.now().isoformat()}],
@@ -226,6 +234,7 @@ class MemorySystem:
         doc_text = f"Command: {command}\nActions: {json.dumps(actions)}\nContext: {context}"
         doc_id = f"pattern_{int(time.time() * 1000)}"
         self.memory_collection.add(
+            embeddings=_emb.embed_documents([doc_text], self._embed_model),
             documents=[doc_text],
             metadatas=[{"type": "pattern", "command": command, "timestamp": datetime.now().isoformat()}],
             ids=[doc_id]
@@ -250,6 +259,7 @@ class MemorySystem:
 
         doc_id = f"correction_{int(time.time() * 1000)}"
         self.corrections_collection.add(
+            embeddings=_emb.embed_documents([prev_command], self._embed_model),
             documents=[prev_command],   # embed the previous command for semantic retrieval
             metadatas=[{"correction": correction, "timestamp": ts}],
             ids=[doc_id]
@@ -268,7 +278,7 @@ class MemorySystem:
                 return []
             n = min(max_results, count)
             results = self.corrections_collection.query(
-                query_texts=[command],
+                query_embeddings=_emb.embed_queries([command], self._embed_model),
                 n_results=n
             )
             out = []
@@ -296,7 +306,7 @@ class MemorySystem:
                 return 0
             n = min(total, 20)
             results = self.corrections_collection.query(
-                query_texts=[command],
+                query_embeddings=_emb.embed_queries([command], self._embed_model),
                 n_results=n,
                 include=["distances"],
             )
@@ -406,6 +416,7 @@ class MemorySystem:
         doc_id = f"reflect_{int(time.time() * 1000)}"
         timestamp = datetime.now().isoformat()
         self.memory_collection.add(
+            embeddings=_emb.embed_documents([doc_text], self._embed_model),
             documents=[doc_text],
             metadatas=[{"type": "session_reflection", "timestamp": timestamp}],
             ids=[doc_id],
@@ -447,7 +458,7 @@ class MemorySystem:
         where_filter = {"type": memory_type} if memory_type else None
 
         results = self.memory_collection.query(
-            query_texts=[query],
+            query_embeddings=_emb.embed_queries([query], self._embed_model),
             n_results=n_results,
             where=where_filter,
             include=["documents", "distances"]
@@ -683,7 +694,7 @@ class MemorySystem:
             if not new_chunks:
                 try:
                     results = self.docs_collection.query(
-                        query_texts=[entity],
+                        query_embeddings=_emb.embed_queries([entity], self._embed_model),
                         n_results=n_results,
                         include=["documents", "metadatas", "distances"],
                     )
@@ -743,7 +754,7 @@ class MemorySystem:
             """Run one ChromaDB query; cache metadata; return (fn, text, dist, pg) tuples."""
             try:
                 results = self.docs_collection.query(
-                    query_texts=[q],
+                    query_embeddings=_emb.embed_queries([q], self._embed_model),
                     n_results=n_results,
                     include=["documents", "metadatas", "distances"],
                 )
@@ -843,6 +854,18 @@ class MemorySystem:
             MAX_INJECT = 12 if use_explicit else 8
             all_chunks = all_chunks[:MAX_INJECT]
 
+            # ── Phase 2.5: cross-encoder reranking (explicit mode) ────────
+            # Score each (query, chunk) pair jointly — much more accurate than
+            # cosine distance, especially when query and document vocabularies
+            # differ.  Only applied in explicit mode where latency tolerance is
+            # higher (user explicitly asked for document search).
+            if use_explicit and len(all_chunks) > 1:
+                n_before = len(all_chunks)
+                all_chunks = _reranker.rerank(
+                    query, all_chunks, self._reranker_model, top_k=MAX_INJECT
+                )
+                print(f"   [RAG] Cross-encoder reranked {n_before}→{len(all_chunks)} chunks")
+
             # ── Phase 3: multi-hop ────────────────────────────────────────
             if multi_hop and explicit and all_chunks:
                 seen_keys: set[str] = {c[1][:100] for c in all_chunks}
@@ -927,6 +950,7 @@ class MemorySystem:
         tag_str = ", ".join(tags) if tags else ""
         doc_text = f"{content}\nTags: {tag_str}" if tag_str else content
         self.notes_collection.add(
+            embeddings=_emb.embed_documents([doc_text], self._embed_model),
             documents=[doc_text],
             metadatas=[{
                 "note_id": note_id,
@@ -947,7 +971,7 @@ class MemorySystem:
         """
         try:
             results = self.notes_collection.query(
-                query_texts=[query],
+                query_embeddings=_emb.embed_queries([query], self._embed_model),
                 n_results=n_results,
                 include=["documents", "metadatas", "distances"],
             )
@@ -1085,6 +1109,7 @@ class MemorySystem:
         for rule_id, trigger, action, timestamp, chroma_id in rows:
             try:
                 self.rules_collection.add(
+                    embeddings=_emb.embed_documents([trigger], self._embed_model),
                     documents=[trigger],
                     metadatas=[{
                         "rule_id": rule_id,
@@ -1125,6 +1150,7 @@ class MemorySystem:
         # ChromaDB — document is the trigger phrase for semantic matching;
         # action_text stored in metadata for retrieval alongside the match.
         self.rules_collection.add(
+            embeddings=_emb.embed_documents([trigger], self._embed_model),
             documents=[trigger],
             metadatas=[{
                 "rule_id": rule_id,
@@ -1163,7 +1189,7 @@ class MemorySystem:
 
         try:
             results = self.rules_collection.query(
-                query_texts=[command],
+                query_embeddings=_emb.embed_queries([command], self._embed_model),
                 n_results=1,
                 include=["documents", "metadatas", "distances"],
             )
@@ -1209,7 +1235,7 @@ class MemorySystem:
                 self._rebuild_rules_collection()
                 try:
                     results = self.rules_collection.query(
-                        query_texts=[command],
+                        query_embeddings=_emb.embed_queries([command], self._embed_model),
                         n_results=1,
                         include=["documents", "metadatas", "distances"],
                     )

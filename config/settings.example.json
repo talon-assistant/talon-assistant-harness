@@ -51,7 +51,8 @@
   "memory": {
     "db_path": "data/talon_memory.db",
     "chroma_path": "data/chroma_db",
-    "embedding_model": "all-MiniLM-L6-v2"
+    "embedding_model": "BAAI/bge-base-en-v1.5",
+    "reranker_model": "BAAI/bge-reranker-base"
   },
   "documents": {
     "directory": "documents"
