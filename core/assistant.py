@@ -14,6 +14,7 @@ from core.llm_client import LLMClient
 from core.vision import VisionSystem
 from core.voice import VoiceSystem
 from core.credential_store import CredentialStore
+from core.scheduler import Scheduler
 from core import document_extractor as _docext
 from talents.base import BaseTalent
 
@@ -282,6 +283,12 @@ class TalonAssistant:
         self._last_session_context: str = ""
         self._session_context_turns: int = 0  # Cleared after 3 conversation turns
         self._inject_last_session_context()
+
+        # 9. Start background scheduler (fires timed commands from settings.json)
+        self.scheduler = Scheduler()
+        schedule = self.config.get("scheduler", [])
+        if schedule:
+            self.scheduler.start(schedule, self)
 
         print("\n" + "=" * 50)
         print("TALON READY")

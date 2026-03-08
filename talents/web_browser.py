@@ -26,11 +26,10 @@ _HEADERS = {
     "Accept-Language": "en-US,en;q=0.9",
 }
 
-# RSS feeds for popular news / tech sites.
-# Tried before direct-fetch so we get clean structured headlines.
-_RSS_FEEDS: dict[str, str] = {
-    # CNN's old rss.cnn.com feeds are abandoned/stale — fall through to trafilatura
-    # "cnn.com": "http://rss.cnn.com/rss/edition.rss",
+# Built-in fallback domain→RSS map.  Overridden/extended at runtime from
+# settings.json ("news_digest.feeds" and "web_browser.rss_feeds").
+_RSS_FEEDS_DEFAULT: dict[str, str] = {
+    # CNN's rss.cnn.com feeds are abandoned/stale — omitted intentionally
     "bbc.com":              "https://feeds.bbci.co.uk/news/rss.xml",
     "bbc.co.uk":            "https://feeds.bbci.co.uk/news/rss.xml",
     "reuters.com":          "https://feeds.reuters.com/reuters/topNews",
@@ -48,6 +47,11 @@ _RSS_FEEDS: dict[str, str] = {
     "hackernews":           "https://news.ycombinator.com/rss",
     "engadget.com":         "https://www.engadget.com/rss.xml",
     "zdnet.com":            "https://www.zdnet.com/news/rss.xml",
+    "krebsonsecurity.com":  "https://krebsonsecurity.com/feed/",
+    "schneier.com":         "https://www.schneier.com/feed/atom/",
+    "thehackernews.com":    "https://feeds.feedburner.com/TheHackersNews",
+    "bleepingcomputer.com": "https://www.bleepingcomputer.com/feed/",
+    "isc.sans.edu":         "https://isc.sans.edu/rssfeed.xml",
 }
 
 # How old (in hours) a feed's newest entry can be before we skip it and
@@ -97,6 +101,29 @@ class WebBrowserTalent(BaseTalent):
     ]
     priority = 47   # above most talents, below planner (85)
 
+    # ── lifecycle ─────────────────────────────────────────────────────────────
+
+    def initialize(self, config: dict) -> None:
+        """Build runtime RSS map from defaults + config feeds."""
+        # Start from built-in defaults
+        self._rss_feeds: dict[str, str] = dict(_RSS_FEEDS_DEFAULT)
+
+        # Auto-register feeds listed under news_digest (single source of truth)
+        for feed in config.get("news_digest", {}).get("feeds", []):
+            url = feed.get("url", "")
+            if url:
+                domain = _domain_from_url(url)
+                if domain:
+                    self._rss_feeds[domain] = url
+
+        # Allow explicit web_browser.rss_feeds overrides in settings.json
+        for domain, url in config.get("web_browser", {}).get("rss_feeds", {}).items():
+            if url:
+                self._rss_feeds[domain] = url
+            else:
+                # null/empty entry = explicitly disable this domain's RSS
+                self._rss_feeds.pop(domain, None)
+
     # ── URL / domain extraction ───────────────────────────────────────────────
 
     def _extract_url(self, command: str, llm) -> str | None:
@@ -138,7 +165,7 @@ class WebBrowserTalent(BaseTalent):
 
     def _fetch_rss(self, domain: str, url: str) -> str | None:
         """Try RSS feed for known news sites; return formatted headlines or None."""
-        feed_url = _RSS_FEEDS.get(domain) or _RSS_FEEDS.get(url)
+        feed_url = self._rss_feeds.get(domain) or self._rss_feeds.get(url)
         if not feed_url:
             return None
         try:
@@ -255,7 +282,7 @@ class WebBrowserTalent(BaseTalent):
                            for w in ("headline", "news", "top stor", "latest"))
 
         # Try RSS first when asking for headlines / news
-        if wants_news or domain in _RSS_FEEDS or url in _RSS_FEEDS:
+        if wants_news or domain in self._rss_feeds or url in self._rss_feeds:
             content = self._fetch_rss(domain, url)
             if content:
                 source_label = "RSS feed"

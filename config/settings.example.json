@@ -75,5 +75,55 @@
   "training": {
     "harvest_pairs": true,
     "_lora_note": "Configure LoRA training in Settings → Talent Config → lora_train"
-  }
+  },
+
+  "web_browser": {
+    "_note": "Optional: override or disable specific domain RSS lookups. Set a value to null to force trafilatura scrape instead.",
+    "rss_feeds": {
+      "_cnn_note": "CNN RSS is abandoned/stale — left disabled. Remove the leading _ to re-enable if it ever comes back.",
+      "_cnn.com": null
+    }
+  },
+
+  "news_digest": {
+    "output_dir":           "",
+    "_output_dir_note":     "Leave empty to use ~/talon_news/. Use forward slashes or double back-slashes.",
+    "max_stories_per_feed": 8,
+    "max_age_hours":        24,
+    "feeds": [
+
+      {"name": "Reuters Top News",      "url": "https://feeds.reuters.com/reuters/topNews",                       "category": "General"},
+      {"name": "AP News",               "url": "https://rsshub.app/apnews/topics/apf-topnews",                   "category": "General"},
+      {"name": "BBC World",             "url": "https://feeds.bbci.co.uk/news/world/rss.xml",                    "category": "General"},
+      {"name": "NPR News",              "url": "https://feeds.npr.org/1001/rss.xml",                             "category": "General"},
+      {"name": "The Guardian World",    "url": "https://www.theguardian.com/world/rss",                          "category": "General"},
+
+      {"name": "Ars Technica",          "url": "https://feeds.arstechnica.com/arstechnica/index",                "category": "Technology"},
+      {"name": "The Verge",             "url": "https://www.theverge.com/rss/index.xml",                         "category": "Technology"},
+      {"name": "Hacker News",           "url": "https://news.ycombinator.com/rss",                               "category": "Technology"},
+      {"name": "TechCrunch",            "url": "https://techcrunch.com/feed/",                                   "category": "Technology"},
+      {"name": "Wired",                 "url": "https://www.wired.com/feed/rss",                                  "category": "Technology"},
+
+      {"name": "Krebs on Security",     "url": "https://krebsonsecurity.com/feed/",                              "category": "Infosec"},
+      {"name": "Schneier on Security",  "url": "https://www.schneier.com/feed/atom/",                            "category": "Infosec"},
+      {"name": "The Hacker News",       "url": "https://feeds.feedburner.com/TheHackersNews",                    "category": "Infosec"},
+      {"name": "BleepingComputer",      "url": "https://www.bleepingcomputer.com/feed/",                         "category": "Infosec"},
+      {"name": "SANS Internet Storm",   "url": "https://isc.sans.edu/rssfeed.xml",                               "category": "Infosec"},
+      {"name": "CISA Advisories",       "url": "https://www.cisa.gov/uscert/ncas/current-activity.xml",          "category": "Infosec"},
+      {"name": "Naked Security",        "url": "https://nakedsecurity.sophos.com/feed/",                         "category": "Infosec"},
+      {"name": "SecurityWeek",          "url": "https://feeds.feedburner.com/securityweek",                      "category": "Infosec"},
+      {"name": "Dark Reading",          "url": "https://www.darkreading.com/rss/all.xml",                        "category": "Infosec"},
+      {"name": "Infosecurity Magazine", "url": "https://www.infosecurity-magazine.com/rss/news/",                "category": "Infosec"}
+    ]
+  },
+
+  "scheduler": [
+    {
+      "_note":   "Set enabled:true to activate. Time is 24-hour local time (HH:MM).",
+      "command": "generate morning news digest",
+      "time":    "07:00",
+      "days":    ["mon","tue","wed","thu","fri","sat","sun"],
+      "enabled": false
+    }
+  ]
 }
