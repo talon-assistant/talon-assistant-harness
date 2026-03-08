@@ -864,7 +864,11 @@ class MemorySystem:
                 all_chunks = _reranker.rerank(
                     query, all_chunks, self._reranker_model, top_k=MAX_INJECT
                 )
-                print(f"   [RAG] Cross-encoder reranked {n_before}→{len(all_chunks)} chunks")
+                print(f"   [RAG] Cross-encoder reranked {n_before}→{len(all_chunks)} chunks "
+                      f"(min_score=-2.0)")
+                if not all_chunks:
+                    print("   [RAG] All chunks below reranker threshold — skipping injection")
+                    return ""
 
             # ── Phase 3: multi-hop ────────────────────────────────────────
             if multi_hop and explicit and all_chunks:
