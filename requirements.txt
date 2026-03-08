@@ -19,6 +19,8 @@ ddgs
 pyautogui
 pyperclip
 Pillow
+feedparser
+trafilatura
 
 # Document Ingestion
 pymupdf4llm
