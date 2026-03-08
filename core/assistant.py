@@ -295,10 +295,18 @@ class TalonAssistant:
         print("=" * 50 + "\n")
 
     def _load_config(self, config_dir):
-        """Load settings.json"""
+        """Load settings.json, then merge supplementary config files."""
         config_path = os.path.join(config_dir, "settings.json")
         with open(config_path, 'r') as f:
-            return json.load(f)
+            config = json.load(f)
+
+        # news_digest.json — dedicated feed config; overrides any inline section
+        nd_path = os.path.join(config_dir, "news_digest.json")
+        if os.path.exists(nd_path):
+            with open(nd_path, 'r') as f:
+                config["news_digest"] = json.load(f)
+
+        return config
 
     def _load_talents_config(self, config_dir):
         """Load talents.json"""

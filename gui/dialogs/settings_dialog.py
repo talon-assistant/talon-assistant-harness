@@ -3,7 +3,8 @@ from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QTabWidget,
                              QWidget, QFormLayout, QLineEdit, QSpinBox,
                              QDoubleSpinBox, QCheckBox, QComboBox, QLabel,
                              QPushButton, QListWidget, QListWidgetItem,
-                             QInputDialog, QScrollArea)
+                             QInputDialog, QScrollArea, QTableWidget,
+                             QTableWidgetItem, QHeaderView, QAbstractItemView)
 from PyQt6.QtCore import pyqtSignal, Qt
 
 
@@ -72,6 +73,150 @@ class ListEditor(QWidget):
     def get_items(self):
         return [self.list_widget.item(i).text()
                 for i in range(self.list_widget.count())]
+
+
+class AddFeedDialog(QDialog):
+    """Small dialog to enter a new RSS feed entry."""
+
+    CATEGORIES = ["General", "Technology", "Infosec", "Finance", "Science", "Sports"]
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Add RSS Feed")
+        self.setMinimumWidth(400)
+
+        layout = QFormLayout(self)
+        layout.setSpacing(10)
+        layout.setContentsMargins(16, 16, 16, 12)
+
+        self._name = QLineEdit()
+        self._name.setPlaceholderText("e.g. Reuters Top News")
+        self._url = QLineEdit()
+        self._url.setPlaceholderText("https://feeds.example.com/rss.xml")
+        self._category = QComboBox()
+        self._category.addItems(self.CATEGORIES)
+
+        layout.addRow("Name", self._name)
+        layout.addRow("Feed URL", self._url)
+        layout.addRow("Category", self._category)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        ok_btn = QPushButton("Add")
+        ok_btn.setDefault(True)
+        ok_btn.clicked.connect(self._validate)
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(self.reject)
+        btn_row.addWidget(ok_btn)
+        btn_row.addWidget(cancel_btn)
+        layout.addRow(btn_row)
+
+    def _validate(self):
+        if self._url.text().strip():
+            self.accept()
+
+    def get_feed(self) -> dict:
+        url = self._url.text().strip()
+        return {
+            "name":     self._name.text().strip() or url,
+            "url":      url,
+            "category": self._category.currentText(),
+            "enabled":  True,
+        }
+
+
+class FeedTableEditor(QWidget):
+    """Table widget for managing RSS feed entries (enabled, name, category, URL)."""
+
+    def __init__(self, feeds=None, parent=None):
+        super().__init__(parent)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+
+        self.table = QTableWidget(0, 4)
+        self.table.setHorizontalHeaderLabels(["✓", "Name", "Category", "URL"])
+        hdr = self.table.horizontalHeader()
+        hdr.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
+        hdr.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        hdr.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        hdr.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        self.table.setColumnWidth(0, 32)
+        self.table.setMinimumHeight(220)
+        self.table.setMaximumHeight(340)
+        self.table.setAlternatingRowColors(True)
+        self.table.setSelectionBehavior(
+            QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setEditTriggers(
+            QAbstractItemView.EditTrigger.DoubleClicked |
+            QAbstractItemView.EditTrigger.SelectedClicked)
+        layout.addWidget(self.table)
+
+        btn_layout = QHBoxLayout()
+        btn_layout.setSpacing(6)
+        for label, slot in [("Add Feed", self._add_feed),
+                             ("Remove", self._remove_feed)]:
+            btn = QPushButton(label)
+            btn.setFixedHeight(28)
+            btn.clicked.connect(slot)
+            btn_layout.addWidget(btn)
+        btn_layout.addStretch()
+        layout.addLayout(btn_layout)
+
+        for feed in (feeds or []):
+            self._insert_row(feed)
+
+    def _insert_row(self, feed: dict):
+        row = self.table.rowCount()
+        self.table.insertRow(row)
+
+        # Col 0 — enabled checkbox (centred)
+        cb = QCheckBox()
+        cb.setChecked(feed.get("enabled", True))
+        cell = QWidget()
+        cell_layout = QHBoxLayout(cell)
+        cell_layout.addWidget(cb)
+        cell_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        cell_layout.setContentsMargins(0, 0, 0, 0)
+        self.table.setCellWidget(row, 0, cell)
+
+        # Cols 1-3
+        for col, key in enumerate(("name", "category", "url"), start=1):
+            item = QTableWidgetItem(feed.get(key, ""))
+            self.table.setItem(row, col, item)
+
+    def _add_feed(self):
+        dlg = AddFeedDialog(parent=self)
+        if dlg.exec():
+            self._insert_row(dlg.get_feed())
+
+    def _remove_feed(self):
+        row = self.table.currentRow()
+        if row >= 0:
+            self.table.removeRow(row)
+
+    def get_feeds(self) -> list[dict]:
+        feeds = []
+        for row in range(self.table.rowCount()):
+            cell = self.table.cellWidget(row, 0)
+            enabled = True
+            if cell:
+                cb = cell.findChild(QCheckBox)
+                enabled = cb.isChecked() if cb else True
+
+            def _text(col):
+                item = self.table.item(row, col)
+                return item.text().strip() if item else ""
+
+            url = _text(3)
+            if url:
+                feeds.append({
+                    "name":     _text(1) or url,
+                    "category": _text(2) or "General",
+                    "url":      url,
+                    "enabled":  enabled,
+                })
+        return feeds
 
 
 class SettingsDialog(QDialog):

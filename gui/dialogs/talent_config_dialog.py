@@ -149,6 +149,16 @@ class TalentConfigDialog(QDialog):
             self._fields[key] = ("list", widget)
             form.addRow(label, widget)
 
+        elif ftype == "feed_table":
+            from gui.dialogs.settings_dialog import FeedTableEditor
+            feeds = value if isinstance(value, list) else []
+            widget = FeedTableEditor(feeds)
+            # Feed table is wide — expand dialog to accommodate
+            self.setMinimumWidth(680)
+            self.resize(720, 0)
+            self._fields[key] = ("feed_table", widget)
+            form.addRow(label, widget)
+
     def _collect_values(self):
         """Read all widget values into a flat config dict.
 
@@ -179,6 +189,8 @@ class TalentConfigDialog(QDialog):
                 result[key] = widget.currentText()
             elif kind == "list":
                 result[key] = widget.get_items()
+            elif kind == "feed_table":
+                result[key] = widget.get_feeds()
         return result
 
     def _on_save(self):

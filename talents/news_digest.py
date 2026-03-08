@@ -16,6 +16,7 @@ Trigger phrases:  "generate morning news digest", "morning briefing",
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import time
@@ -23,6 +24,8 @@ import datetime
 import webbrowser
 
 from talents.base import BaseTalent
+
+_CONFIG_PATH = os.path.join("config", "news_digest.json")
 
 # ── HTML helpers ──────────────────────────────────────────────────────────────
 
@@ -136,19 +139,64 @@ class NewsDigestTalent(BaseTalent):
     ]
     priority = 55   # above web_browser (47), below planner (85)
 
-    # ── init ─────────────────────────────────────────────────────────────────
+    # ── lifecycle ─────────────────────────────────────────────────────────────
+
+    def get_config_schema(self) -> dict:
+        return {
+            "fields": [
+                {"key": "output_dir",           "label": "Output Directory",
+                 "type": "string",  "default": "",
+                 "description": "Leave empty to use ~/talon_news/"},
+                {"key": "max_stories_per_feed", "label": "Max Stories per Feed",
+                 "type": "int",     "default": 8,  "min": 1, "max": 50},
+                {"key": "max_age_hours",        "label": "Max Story Age (hours)",
+                 "type": "int",     "default": 24, "min": 1, "max": 168},
+                {"key": "feeds",                "label": "RSS Feeds",
+                 "type": "feed_table", "default": []},
+            ]
+        }
 
     def initialize(self, config: dict) -> None:
         nd = config.get("news_digest", {})
-        self._output_dir   = nd.get("output_dir", "")
-        self._max_stories  = int(nd.get("max_stories_per_feed", 8))
-        self._max_age_h    = float(nd.get("max_age_hours", 24))
-        self._feeds: list[dict] = nd.get("feeds", [])
-        count = len(self._feeds)
-        if count:
-            print(f"[NewsDigest] {count} feed(s) configured.")
+        self._apply_config(nd)
+
+    def update_config(self, config: dict) -> None:
+        """Called by the UI when the user saves changes in the talent config dialog."""
+        super().update_config(config)
+        self._apply_config(config)
+        self._save_config(config)
+
+    def _apply_config(self, nd: dict) -> None:
+        self._output_dir  = nd.get("output_dir", "")
+        self._max_stories = int(nd.get("max_stories_per_feed", 8))
+        self._max_age_h   = float(nd.get("max_age_hours", 24))
+        all_feeds         = nd.get("feeds", [])
+        # Only fetch feeds the user has enabled
+        self._feeds       = [f for f in all_feeds if f.get("enabled", True)]
+        if all_feeds:
+            print(f"[NewsDigest] {len(self._feeds)}/{len(all_feeds)} feed(s) enabled.")
         else:
-            print("[NewsDigest] Warning: no feeds in settings.json 'news_digest.feeds'")
+            print("[NewsDigest] Warning: no feeds in news_digest.json")
+
+    def _save_config(self, config: dict) -> None:
+        """Persist feed changes back to config/news_digest.json."""
+        try:
+            # Read existing file so we don't lose keys we don't manage
+            existing = {}
+            if os.path.exists(_CONFIG_PATH):
+                with open(_CONFIG_PATH, "r", encoding="utf-8") as f:
+                    existing = json.load(f)
+            existing.update({
+                "output_dir":           config.get("output_dir", ""),
+                "max_stories_per_feed": config.get("max_stories_per_feed", 8),
+                "max_age_hours":        config.get("max_age_hours", 24),
+                "feeds":                config.get("feeds", []),
+            })
+            with open(_CONFIG_PATH, "w", encoding="utf-8") as f:
+                json.dump(existing, f, indent=2, ensure_ascii=False)
+            print(f"[NewsDigest] Config saved to {_CONFIG_PATH}")
+        except Exception as e:
+            print(f"[NewsDigest] Failed to save config: {e}")
 
     def can_handle(self, command: str) -> bool:
         return self.keyword_match(command)
