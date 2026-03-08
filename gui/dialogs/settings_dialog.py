@@ -219,6 +219,204 @@ class FeedTableEditor(QWidget):
         return feeds
 
 
+class AddTaskDialog(QDialog):
+    """Dialog to create or edit a single scheduled task."""
+
+    DAYS_SHORT = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    DAYS_FULL  = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+
+    def __init__(self, task=None, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Add Scheduled Task" if task is None else "Edit Task")
+        self.setMinimumWidth(440)
+
+        layout = QFormLayout(self)
+        layout.setSpacing(10)
+        layout.setContentsMargins(16, 16, 16, 12)
+
+        self._command = QLineEdit(task.get("command", "") if task else "")
+        self._command.setPlaceholderText("e.g. generate morning news digest")
+
+        self._time = QLineEdit(task.get("time", "07:00") if task else "07:00")
+        self._time.setPlaceholderText("HH:MM  (24-hour)")
+        self._time.setMaximumWidth(80)
+
+        # Days — row of labelled checkboxes
+        days_widget = QWidget()
+        days_layout = QHBoxLayout(days_widget)
+        days_layout.setContentsMargins(0, 0, 0, 0)
+        days_layout.setSpacing(6)
+        current_days = {d.lower()[:3] for d in task.get("days", self.DAYS_FULL)} \
+            if task else set(self.DAYS_FULL)
+        self._day_checks: list[tuple[str, QCheckBox]] = []
+        for short, full in zip(self.DAYS_SHORT, self.DAYS_FULL):
+            cb = QCheckBox(short)
+            cb.setChecked(full in current_days)
+            self._day_checks.append((full, cb))
+            days_layout.addWidget(cb)
+        days_layout.addStretch()
+
+        self._enabled = QCheckBox()
+        self._enabled.setChecked(task.get("enabled", True) if task else True)
+
+        layout.addRow("Command", self._command)
+        layout.addRow("Time (HH:MM)", self._time)
+        layout.addRow("Days", days_widget)
+        layout.addRow("Enabled", self._enabled)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        ok_btn = QPushButton("Save" if task else "Add")
+        ok_btn.setDefault(True)
+        ok_btn.clicked.connect(self._validate)
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(self.reject)
+        btn_row.addWidget(ok_btn)
+        btn_row.addWidget(cancel_btn)
+        layout.addRow(btn_row)
+
+    def _validate(self):
+        if self._command.text().strip():
+            self.accept()
+
+    def get_task(self) -> dict:
+        days = [full for full, cb in self._day_checks if cb.isChecked()]
+        return {
+            "command": self._command.text().strip(),
+            "time":    self._time.text().strip(),
+            "days":    days or self.DAYS_FULL,
+            "enabled": self._enabled.isChecked(),
+        }
+
+
+class SchedulerTableEditor(QWidget):
+    """Table for managing scheduled Talon tasks."""
+
+    DAYS_FULL = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+
+    def __init__(self, schedule=None, parent=None):
+        super().__init__(parent)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+
+        self.table = QTableWidget(0, 4)
+        self.table.setHorizontalHeaderLabels(["✓", "Command", "Time", "Days"])
+        hdr = self.table.horizontalHeader()
+        hdr.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
+        hdr.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        hdr.setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
+        hdr.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.setColumnWidth(0, 32)
+        self.table.setColumnWidth(2, 64)
+        self.table.setMinimumHeight(100)
+        self.table.setMaximumHeight(220)
+        self.table.setAlternatingRowColors(True)
+        self.table.setSelectionBehavior(
+            QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setEditTriggers(
+            QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.doubleClicked.connect(self._edit_task)
+        layout.addWidget(self.table)
+
+        lbl = QLabel("Double-click a row to edit.  Time uses 24-hour format (HH:MM).")
+        lbl.setObjectName("settings_hint")
+        layout.addWidget(lbl)
+
+        btn_layout = QHBoxLayout()
+        btn_layout.setSpacing(6)
+        for label, slot in [("Add Task", self._add_task),
+                             ("Edit",     self._edit_task),
+                             ("Remove",   self._remove_task)]:
+            btn = QPushButton(label)
+            btn.setFixedHeight(28)
+            btn.clicked.connect(slot)
+            btn_layout.addWidget(btn)
+        btn_layout.addStretch()
+        layout.addLayout(btn_layout)
+
+        for task in (schedule or []):
+            self._insert_row(task)
+
+    # ── helpers ───────────────────────────────────────────────────
+
+    def _days_label(self, days: list) -> str:
+        ds = {d.lower()[:3] for d in days}
+        if ds == set(self.DAYS_FULL):
+            return "Every day"
+        if ds == {"mon", "tue", "wed", "thu", "fri"}:
+            return "Weekdays"
+        if ds == {"sat", "sun"}:
+            return "Weekend"
+        order = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+        return " ".join(d.capitalize() for d in order if d in ds)
+
+    def _insert_row(self, task: dict, at: int = None):
+        row = self.table.rowCount() if at is None else at
+        self.table.insertRow(row)
+
+        # Col 0 — enabled checkbox (centred)
+        cb = QCheckBox()
+        cb.setChecked(task.get("enabled", True))
+        cell = QWidget()
+        cl = QHBoxLayout(cell)
+        cl.addWidget(cb)
+        cl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        cl.setContentsMargins(0, 0, 0, 0)
+        self.table.setCellWidget(row, 0, cell)
+
+        cmd_item = QTableWidgetItem(task.get("command", ""))
+        cmd_item.setData(Qt.ItemDataRole.UserRole, task)   # stash full task
+        self.table.setItem(row, 1, cmd_item)
+        self.table.setItem(row, 2, QTableWidgetItem(task.get("time", "")))
+        self.table.setItem(row, 3, QTableWidgetItem(
+            self._days_label(task.get("days", self.DAYS_FULL))))
+
+    def _current_task_at(self, row: int) -> dict:
+        """Reconstruct the task dict from the current row state."""
+        cmd_item = self.table.item(row, 1)
+        stored   = dict(cmd_item.data(Qt.ItemDataRole.UserRole) or {}) if cmd_item else {}
+        cell     = self.table.cellWidget(row, 0)
+        cb       = cell.findChild(QCheckBox) if cell else None
+        stored["enabled"] = cb.isChecked() if cb else stored.get("enabled", True)
+        if cmd_item:
+            stored["command"] = cmd_item.text()
+        t_item = self.table.item(row, 2)
+        if t_item:
+            stored["time"] = t_item.text()
+        return stored
+
+    # ── slots ─────────────────────────────────────────────────────
+
+    def _add_task(self):
+        dlg = AddTaskDialog(parent=self)
+        if dlg.exec():
+            self._insert_row(dlg.get_task())
+
+    def _edit_task(self):
+        row = self.table.currentRow()
+        if row < 0:
+            return
+        dlg = AddTaskDialog(task=self._current_task_at(row), parent=self)
+        if dlg.exec():
+            self.table.removeRow(row)
+            self._insert_row(dlg.get_task(), at=row)
+            self.table.setCurrentCell(row, 1)
+
+    def _remove_task(self):
+        row = self.table.currentRow()
+        if row >= 0:
+            self.table.removeRow(row)
+
+    def get_schedule(self) -> list[dict]:
+        schedule = []
+        for row in range(self.table.rowCount()):
+            task = self._current_task_at(row)
+            if task.get("command"):
+                schedule.append(task)
+        return schedule
+
+
 class SettingsDialog(QDialog):
     """Tabbed settings editor for config/settings.json."""
 
@@ -251,6 +449,7 @@ class SettingsDialog(QDialog):
         self.tabs.addTab(self._build_whisper_tab(), "Whisper")
         self.tabs.addTab(self._build_memory_tab(), "Memory")
         self.tabs.addTab(self._build_desktop_tab(), "Desktop")
+        self.tabs.addTab(self._build_scheduler_tab(), "Scheduler")
         layout.addWidget(self.tabs)
 
         # Warning label
@@ -404,6 +603,29 @@ class SettingsDialog(QDialog):
 
         return w
 
+    def _build_scheduler_tab(self):
+        w = QWidget()
+        layout = QVBoxLayout(w)
+        layout.setContentsMargins(12, 12, 12, 8)
+        layout.setSpacing(8)
+
+        lbl = QLabel(
+            "Scheduled tasks run automatically at the configured time.\n"
+            "The scheduler checks every 20 seconds; each task fires at most once per day."
+        )
+        lbl.setWordWrap(True)
+        lbl.setObjectName("settings_hint")
+        layout.addWidget(lbl)
+
+        schedule = self._original.get("scheduler", [])
+        # Filter out internal _note keys left from example JSON
+        clean = [t for t in schedule if isinstance(t, dict) and "command" in t]
+        editor = SchedulerTableEditor(clean)
+        self._fields["scheduler"] = ("schedule", editor)
+        layout.addWidget(editor)
+        layout.addStretch()
+        return w
+
     def _build_desktop_tab(self):
         w = QWidget()
         form = QFormLayout(w)
@@ -486,6 +708,9 @@ class SettingsDialog(QDialog):
                 d[parts[-1]] = widget.currentText()
             elif kind == "list":
                 d[parts[-1]] = widget.get_items()
+            elif kind == "schedule":
+                # Scheduler is a top-level list, not a nested key
+                result["scheduler"] = widget.get_schedule()
 
         return result
 
