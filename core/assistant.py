@@ -660,9 +660,16 @@ class TalonAssistant:
         self._routing_prompt_cache = None
 
     def _detect_repeat_request(self, command):
-        """Detect if user wants to repeat last action"""
+        """Detect if user wants to repeat last action.
+
+        Uses word-boundary matching to avoid false positives like
+        'again' matching inside 'against'.
+        """
+        import re
         repeat_keywords = ['again', 'repeat', 'do that', 'same thing', 'one more time']
-        return any(kw in command for kw in repeat_keywords)
+        cmd_lower = command.lower()
+        return any(re.search(r'\b' + re.escape(kw) + r'\b', cmd_lower)
+                   for kw in repeat_keywords)
 
     def _handle_repeat(self, speak_response):
         """Handle a repeat-last-action request"""
@@ -673,6 +680,15 @@ class TalonAssistant:
 
             try:
                 actions = json.loads(action_json)
+
+                # Guard: action_json must be a dict to be re-executable.
+                # Some talents (e.g. weather) log a plain string — those
+                # can't be mechanically repeated, so fall through gracefully.
+                if not isinstance(actions, dict):
+                    raise ValueError(
+                        f"Stored action is not a dict ({type(actions).__name__}), "
+                        "cannot re-execute."
+                    )
 
                 # Find the right talent to re-execute
                 for talent in self.talents:
