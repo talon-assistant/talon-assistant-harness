@@ -29,9 +29,10 @@ _HEADERS = {
 # RSS feeds for popular news / tech sites.
 # Tried before direct-fetch so we get clean structured headlines.
 _RSS_FEEDS: dict[str, str] = {
-    "cnn.com":              "http://rss.cnn.com/rss/edition.rss",
-    "bbc.com":              "http://feeds.bbci.co.uk/news/rss.xml",
-    "bbc.co.uk":            "http://feeds.bbci.co.uk/news/rss.xml",
+    # CNN's old rss.cnn.com feeds are abandoned/stale — fall through to trafilatura
+    # "cnn.com": "http://rss.cnn.com/rss/edition.rss",
+    "bbc.com":              "https://feeds.bbci.co.uk/news/rss.xml",
+    "bbc.co.uk":            "https://feeds.bbci.co.uk/news/rss.xml",
     "reuters.com":          "https://feeds.reuters.com/reuters/topNews",
     "apnews.com":           "https://rsshub.app/apnews/topics/apf-topnews",
     "npr.org":              "https://feeds.npr.org/1001/rss.xml",
@@ -48,6 +49,11 @@ _RSS_FEEDS: dict[str, str] = {
     "engadget.com":         "https://www.engadget.com/rss.xml",
     "zdnet.com":            "https://www.zdnet.com/news/rss.xml",
 }
+
+# How old (in hours) a feed's newest entry can be before we skip it and
+# fall back to a direct page fetch.  Prevents abandoned feeds from surfacing
+# year-old content as if it were current news.
+_RSS_MAX_AGE_HOURS = 48
 
 
 def _normalise_url(raw: str) -> str:
@@ -137,10 +143,27 @@ class WebBrowserTalent(BaseTalent):
             return None
         try:
             import feedparser
+            import time as _time
             feed = feedparser.parse(feed_url)
             entries = feed.entries
             if not entries:
                 return None
+
+            # Staleness check — skip feeds whose newest entry is too old
+            newest_ts = None
+            for e in entries[:5]:
+                t = e.get("published_parsed") or e.get("updated_parsed")
+                if t:
+                    ts = _time.mktime(t)
+                    if newest_ts is None or ts > newest_ts:
+                        newest_ts = ts
+            if newest_ts is not None:
+                age_h = (_time.time() - newest_ts) / 3600
+                if age_h > _RSS_MAX_AGE_HOURS:
+                    print(f"   [WebBrowser] RSS stale ({age_h:.0f}h old) — skipping, "
+                          f"falling back to direct fetch")
+                    return None
+
             feed_title = feed.feed.get("title", domain)
             lines = [f"Headlines from {feed_title}:\n"]
             for entry in entries[:20]:
@@ -258,12 +281,22 @@ class WebBrowserTalent(BaseTalent):
         print(f"   [WebBrowser] Got {len(content):,} chars via {source_label}")
 
         # ── Step 3: summarise / answer ────────────────────────────────────────
+        # If command is "open [browser] and go to X", reframe as a content request
+        # so the LLM doesn't respond with "I cannot open a browser"
+        display_command = command.strip()
+        if re.search(
+            r'\b(?:open|launch|start)\b.*\b(?:browser|chrome|firefox|edge|safari)\b',
+            display_command, re.IGNORECASE
+        ):
+            display_command = f"Show me what is on {url} — summarise the main content or headlines."
+
         prompt = (
-            f"The following content was fetched from {url} ({source_label}).\n"
-            f"Use ONLY this content to answer the user's request. "
-            f"Do not add information from training data.\n\n"
+            f"The following content was already fetched from {url} ({source_label}).\n"
+            f"Present this content helpfully to the user. "
+            f"Do NOT say you cannot open browsers or navigate — the content is already here.\n"
+            f"Use ONLY the fetched content below. Do not add information from training data.\n\n"
             f"--- FETCHED CONTENT ---\n{content}\n--- END CONTENT ---\n\n"
-            f"User request: {command.strip()}"
+            f"User request: {display_command}"
         )
         response = llm.generate(prompt, max_length=600)
 

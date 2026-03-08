@@ -10,7 +10,7 @@ class DesktopControlTalent(BaseTalent):
     name = "desktop_control"
     description = "Control desktop applications via keyboard and mouse, or describe what is on screen using vision"
     keywords = ["open", "click", "type", "press", "close", "start", "launch", "run",
-                "change", "make", "set"]
+                "change", "make", "set", "navigate to", "browse to"]
     examples = [
         "open Chrome",
         "launch the calculator",
@@ -24,6 +24,14 @@ class DesktopControlTalent(BaseTalent):
         "what does it say",
         "read it out to me",
         "what is the result",
+        # URL / browser navigation
+        "open a browser and go to cnn.com",
+        "open chrome and navigate to youtube.com",
+        "navigate to https://google.com",
+        "browse to reddit.com",
+        "go to github.com in the browser",
+        "open firefox and go to wikipedia.org",
+        "open a browser and go to https://example.com",
     ]
     priority = 40
 
@@ -475,6 +483,7 @@ Respond ONLY with valid JSON, no additional text."""
             "type", "write", "press", "click", "drag", "scroll",
             "copy", "paste", "cut", "undo", "redo", "save",
             "switch", "minimize", "maximize", "resize", "move",
+            "navigate", "browse", "go",
         )
         # "read" is intentionally NOT here — "read the text on screen"
         # is a vision query, not a desktop action.
