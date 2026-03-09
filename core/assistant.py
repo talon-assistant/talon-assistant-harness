@@ -121,7 +121,11 @@ class TalonAssistant:
         "You are helpful, concise, and friendly. "
         "You have access to smart home controls, weather, email, reminders, "
         "web search, notes, and other tools through your skills. "
-        "Keep responses brief — 1 to 3 sentences unless the user asks for detail."
+        "Keep responses brief — 1 to 3 sentences unless the user asks for detail.\n\n"
+        "Action rules: If you are going to perform an action (search, open, navigate, "
+        "play, etc.), state it directly as 'I'll do X' — the system will execute it. "
+        "Never ask 'Would you like me to...' or 'Shall I...' — either do it or say "
+        "you cannot. Do not promise actions you are uncertain about."
         + _INJECTION_DEFENSE_CLAUSE
     )
 
@@ -163,6 +167,34 @@ class TalonAssistant:
         "yes exactly", "yes perfect", "nailed it",
         "that's exactly", "thats exactly",
         "correct", "spot on",
+    ]
+
+    # ── Promise interception ───────────────────────────────────────
+    # When the conversation LLM promises an action it cannot deliver, these
+    # patterns extract the implied command and re-route it to the right talent.
+    # Each tuple: (regex, command_template)  — {0} is the first capture group.
+    # template=None means the promise is too vague to extract a reliable command.
+    _PROMISE_PATTERNS = [
+        (r"(?i)\bi(?:'ll| will) search (?:the web |online |the internet )?for (.+?)(?:\.|!|\?|$)",
+         "search the web for {0}"),
+        (r"(?i)\blet me (?:search|look up|find) (.+?)(?:\.|!|\?|$)",
+         "search the web for {0}"),
+        (r"(?i)\bi(?:'ll| will) (?:look that up|check that online|find that online)(?:\.|!|\?|$)?",
+         None),  # too vague — skip
+        (r"(?i)\bi(?:'ll| will) open (.+?)(?:\.|!|\?|$)",
+         "open {0}"),
+        (r"(?i)\blet me (?:open|launch|start) (.+?)(?:\.|!|\?|$)",
+         "open {0}"),
+        (r"(?i)\bi(?:'ll| will) (?:navigate|go) to (.+?)(?:\.|!|\?|$)",
+         "go to {0}"),
+        (r"(?i)\bi(?:'ll| will) (?:pull up|bring up) (.+?)(?:\.|!|\?|$)",
+         "open {0}"),
+        (r"(?i)\bi(?:'ll| will) (?:play|put on) (.+?)(?:\.|!|\?|$)",
+         "play {0}"),
+        (r"(?i)\bi(?:'ll| will) check (?:on |the )?(.+?) for you(?:\.|!|\?|$)",
+         "search the web for {0}"),
+        (r"(?i)\bi(?:'ll| will) (?:retrieve|fetch|get) (?:the |that )?(.+?)(?:\.|!|\?|$)",
+         "search the web for {0}"),
     ]
 
     # ── Intent classification patterns ────────────────────────────
@@ -277,6 +309,11 @@ class TalonAssistant:
         # context to ~summary + last 4 verbatim turns instead of all 16.
         self._session_summary: str = ""
         self._session_turn_count: int = 0  # Total turns ever added this session
+
+        # Cached flag: True once at least one document has been ingested.
+        # Prevents RAG calls and "not in your documents" messages on a fresh
+        # install.  Invalidated by ingest_documents.py via invalidate_docs_cache().
+        self._documents_exist: bool | None = None
 
         # 8. Session reflection — track start time and last-session context
         self._session_start: str = datetime.now().isoformat()
@@ -673,6 +710,42 @@ class TalonAssistant:
     def invalidate_routing_cache(self):
         """Clear the cached LLM routing prompt."""
         self._routing_prompt_cache = None
+
+    def invalidate_docs_cache(self):
+        """Signal that the document collection has changed (call after ingestion)."""
+        self._documents_exist = None
+
+    def _check_documents_exist(self) -> bool:
+        """Return True if at least one document chunk has been indexed.
+
+        Result is cached for the lifetime of the session; call
+        invalidate_docs_cache() after ingest_documents.py runs to refresh it.
+        """
+        if self._documents_exist is None:
+            try:
+                self._documents_exist = self.memory.docs_collection.count() > 0
+            except Exception:
+                self._documents_exist = False
+        return self._documents_exist
+
+    def _detect_promise(self, response: str) -> str | None:
+        """Detect an undelivered action promise in a conversation response.
+
+        Scans the LLM's reply for phrases like "I'll search the web for X" or
+        "let me open Chrome" and extracts an actionable command string.
+
+        Returns the implied command to execute, or None if nothing actionable
+        was found.
+        """
+        for pattern, template in self._PROMISE_PATTERNS:
+            m = re.search(pattern, response)
+            if m and template is not None:
+                groups = m.groups()
+                action = template.format(*[g.strip() if g else "" for g in groups])
+                action = action.strip().rstrip(".,!")
+                if action:
+                    return action
+        return None
 
     def _detect_repeat_request(self, command):
         """Detect if user wants to repeat last action.
@@ -1367,7 +1440,9 @@ class TalonAssistant:
             except Exception:
                 pass  # Fall back to raw command silently
 
-        if intent == "skip":
+        docs_available = self._check_documents_exist()
+
+        if intent == "skip" or not docs_available:
             doc_context = ""
         elif use_explicit_rag:
             doc_context = self.memory.get_document_context(
@@ -1380,8 +1455,9 @@ class TalonAssistant:
         else:
             doc_context = self.memory.get_document_context(command, explicit=False)
 
-        # If explicit/factual/synthesis RAG returned nothing, offer a web search.
-        if use_explicit_rag and not doc_context:
+        # If explicit/factual/synthesis RAG returned nothing AND documents exist,
+        # fall through to the LLM — don't offer web search on a fresh install.
+        if use_explicit_rag and not doc_context and docs_available:
             response = (
                 "I couldn't find that in your documents. "
                 "Would you like me to search the web instead?"
@@ -1676,7 +1752,32 @@ class TalonAssistant:
                 # No talent matched -- conversational fallback
                 response = self._handle_conversation(command, context, speak_response)
 
-                # Buffer this turn (conversation path)
+                # Promise interception: if the model promised an action but
+                # nothing executed, extract the implied command and run it now.
+                # _executing_rule guard prevents infinite interception loops.
+                if not _executing_rule and response:
+                    implied = self._detect_promise(response)
+                    if implied:
+                        print(f"   [RoutingGap] '{command}' → conversation promised "
+                              f"'{implied}' — intercepting and routing")
+                        intercept_result = self.process_command(
+                            implied,
+                            speak_response=speak_response,
+                            _executing_rule=True,
+                        )
+                        if intercept_result and intercept_result.get("success"):
+                            # Buffer original command paired with actual result
+                            if intercept_result.get("response"):
+                                self._buffer_turn(
+                                    command, intercept_result["response"].strip())
+                            print(f"\n{'=' * 50}\n")
+                            return {
+                                "response": intercept_result.get("response", ""),
+                                "talent": intercept_result.get("talent", ""),
+                                "success": True,
+                            }
+
+                # Buffer this turn (conversation path, no interception)
                 if not _executing_rule and response:
                     self._buffer_turn(command, response.strip())
 
