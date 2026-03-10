@@ -141,6 +141,20 @@ def main():
             if assistant is not None:
                 assistant.server_manager = server_manager
 
+                # Critical fix: _setup_builtin_server() patched the in-memory
+                # settings dict but TalonAssistant re-reads settings.json from
+                # disk, so LLMClient never received the endpoint override.
+                # Apply it directly to the already-initialised LLMClient now.
+                if settings.get("llm_server", {}).get("mode") == "builtin":
+                    port = settings.get("llm_server", {}).get("port", 8080)
+                    new_endpoint = f"http://localhost:{port}/completion"
+                    assistant.llm.endpoint = new_endpoint
+                    assistant.llm.api_format = "llamacpp"
+                    # Wire ready-check so LLMClient can warn before the model loads
+                    assistant.llm.server_manager = server_manager
+                    print(f"   [LLMServer] LLM client endpoint updated → "
+                          f"{new_endpoint} (api_format: llamacpp)")
+
         window = MainWindow(bridge, theme_manager=theme_manager,
                             config_dir="config")
 

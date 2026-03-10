@@ -11,6 +11,7 @@ The active format is set via ``config["llm"]["api_format"]`` (default:
 
 import requests
 import json
+from urllib.parse import urlparse
 
 
 class LLMClient:
@@ -27,6 +28,9 @@ class LLMClient:
         self.stop_sequences = llm_config["stop_sequences"]
         self.prompt_template = llm_config["prompt_template"]
         self.api_format = llm_config.get("api_format", "koboldcpp")
+        # Optional reference to LLMServerManager (set by main.py in builtin mode).
+        # Used to return a friendly "still loading" message instead of a 503/timeout.
+        self.server_manager = None
 
     # ── Connection Test ───────────────────────────────────────
 
@@ -71,24 +75,43 @@ class LLMClient:
             print(f"   Warning: Status {test_response.status_code}")
             return False
 
+    def _base_url(self) -> str:
+        """Return the scheme+host+port of self.endpoint (no path).
+
+        Used by health-check and model-list probes so they always hit the
+        right host regardless of what path the endpoint is configured with.
+        """
+        parsed = urlparse(self.endpoint)
+        return f"{parsed.scheme}://{parsed.netloc}"
+
     def _test_llamacpp(self):
         """Test llama.cpp server via /health endpoint."""
-        base = self.endpoint.rsplit("/completion", 1)[0]
-        health_url = f"{base}/health"
-        resp = requests.get(health_url, timeout=10)
+        health_url = f"{self._base_url()}/health"
+        try:
+            resp = requests.get(health_url, timeout=10)
+        except requests.ConnectionError:
+            print(f"   Warning: llama.cpp server not reachable at {health_url}")
+            return False
         if resp.status_code == 200:
             data = resp.json()
-            if data.get("status") == "ok":
+            status = data.get("status", "")
+            if status == "ok":
                 print("   llama.cpp server connected!")
                 return True
+            if status == "loading":
+                print("   llama.cpp server is loading model — will retry at request time")
+                return True  # Not an error; server will be ready soon
         print(f"   Warning: llama.cpp health check returned {resp.status_code}")
         return False
 
     def _test_openai(self):
         """Test OpenAI-compatible server via /v1/models endpoint."""
-        base = self.endpoint.rsplit("/v1/", 1)[0]
-        models_url = f"{base}/v1/models"
-        resp = requests.get(models_url, timeout=10)
+        models_url = f"{self._base_url()}/v1/models"
+        try:
+            resp = requests.get(models_url, timeout=10)
+        except requests.ConnectionError:
+            print(f"   Warning: OpenAI server not reachable at {models_url}")
+            return False
         if resp.status_code == 200:
             print("   OpenAI-compatible server connected!")
             return True
@@ -176,6 +199,17 @@ class LLMClient:
     def _generate_llamacpp(self, prompt, use_vision=False, images_b64=None,
                            max_length=None, system_prompt=None, temperature=None):
         """llama.cpp server API: POST /completion."""
+        # If we have a server manager reference, check readiness before sending.
+        # Returns a friendly message instead of hanging/503 while model loads.
+        if self.server_manager is not None:
+            status = self.server_manager.status
+            if status == "starting":
+                return "I'm still loading the language model. Please try again in a moment."
+            if status == "error":
+                return "Error: LLM server failed to start. Check the LLM Server settings."
+            if status == "stopped":
+                return "Error: LLM server is not running."
+
         effective_max_length = max_length or self.max_length
         effective_temperature = (temperature if temperature is not None
                                  else self.temperature)
