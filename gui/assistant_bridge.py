@@ -320,6 +320,10 @@ class AssistantBridge(QObject):
         if "desktop" in new_settings:
             self.assistant.config["desktop"] = new_settings["desktop"]
 
+        # Hot-reload security filter (no restart needed)
+        if "security" in new_settings:
+            self.assistant.security.reload(new_settings["security"])
+
         # Update full config reference
         self.assistant.config.update(new_settings)
         self.settings_changed.emit(new_settings)

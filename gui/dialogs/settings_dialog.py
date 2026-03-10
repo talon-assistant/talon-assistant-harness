@@ -4,7 +4,8 @@ from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QTabWidget,
                              QDoubleSpinBox, QCheckBox, QComboBox, QLabel,
                              QPushButton, QListWidget, QListWidgetItem,
                              QInputDialog, QScrollArea, QTableWidget,
-                             QTableWidgetItem, QHeaderView, QAbstractItemView)
+                             QTableWidgetItem, QHeaderView, QAbstractItemView,
+                             QGroupBox)
 from PyQt6.QtCore import pyqtSignal, Qt
 
 
@@ -417,6 +418,218 @@ class SchedulerTableEditor(QWidget):
         return schedule
 
 
+class AddPatternDialog(QDialog):
+    """Small dialog for adding a custom input-filter pattern."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Add Pattern")
+        self.setMinimumWidth(420)
+        layout = QFormLayout(self)
+        layout.setSpacing(10)
+        layout.setContentsMargins(16, 16, 16, 12)
+
+        self._label = QLineEdit()
+        self._label.setPlaceholderText("e.g. Custom jailbreak phrase")
+        self._pattern = QLineEdit()
+        self._pattern.setPlaceholderText(r"(?i)\bexample\b")
+        layout.addRow("Label", self._label)
+        layout.addRow("Regex Pattern", self._pattern)
+
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+        ok = QPushButton("Add")
+        ok.setDefault(True)
+        ok.clicked.connect(self.accept)
+        cancel = QPushButton("Cancel")
+        cancel.clicked.connect(self.reject)
+        btn_layout.addWidget(ok)
+        btn_layout.addWidget(cancel)
+        layout.addRow(btn_layout)
+
+    def get_pattern(self) -> dict:
+        import time
+        return {
+            "id": f"custom_{int(time.time())}",
+            "enabled": True,
+            "builtin": False,
+            "label": self._label.text().strip() or "Custom pattern",
+            "pattern": self._pattern.text().strip(),
+        }
+
+
+class SecurityPatternTable(QWidget):
+    """Editable table for input_filter patterns.
+
+    Built-in patterns show in italics and cannot be removed (only disabled).
+    Custom patterns can be fully added and removed.
+    """
+
+    def __init__(self, patterns=None, parent=None):
+        super().__init__(parent)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+
+        self.table = QTableWidget(0, 3)
+        self.table.setHorizontalHeaderLabels(["On", "Label", "Pattern"])
+        self.table.horizontalHeader().setSectionResizeMode(
+            0, QHeaderView.ResizeMode.Fixed)
+        self.table.horizontalHeader().setSectionResizeMode(
+            1, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(
+            2, QHeaderView.ResizeMode.Stretch)
+        self.table.setColumnWidth(0, 36)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setMinimumHeight(140)
+        self.table.setMaximumHeight(240)
+        layout.addWidget(self.table)
+
+        btn_layout = QHBoxLayout()
+        btn_layout.setSpacing(6)
+        add_btn = QPushButton("Add")
+        add_btn.setFixedHeight(26)
+        add_btn.clicked.connect(self._add_pattern)
+        self._remove_btn = QPushButton("Remove")
+        self._remove_btn.setFixedHeight(26)
+        self._remove_btn.clicked.connect(self._remove_pattern)
+        btn_layout.addWidget(add_btn)
+        btn_layout.addWidget(self._remove_btn)
+        btn_layout.addStretch()
+        layout.addLayout(btn_layout)
+
+        for p in (patterns or []):
+            self._insert_row(p)
+
+    def _insert_row(self, pattern: dict) -> None:
+        row = self.table.rowCount()
+        self.table.insertRow(row)
+        builtin = pattern.get("builtin", False)
+
+        # Col 0: enabled checkbox
+        chk = QTableWidgetItem()
+        chk.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsUserCheckable)
+        chk.setCheckState(
+            Qt.CheckState.Checked if pattern.get("enabled", True)
+            else Qt.CheckState.Unchecked
+        )
+        chk.setData(Qt.ItemDataRole.UserRole, pattern.get("id", f"row_{row}"))
+        chk.setData(Qt.ItemDataRole.UserRole + 1, builtin)
+        self.table.setItem(row, 0, chk)
+
+        # Col 1: label (read-only for builtins)
+        lbl = QTableWidgetItem(pattern.get("label", ""))
+        if builtin:
+            lbl.setFlags(lbl.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            font = lbl.font()
+            font.setItalic(True)
+            lbl.setFont(font)
+        self.table.setItem(row, 1, lbl)
+
+        # Col 2: pattern (read-only for builtins)
+        pat = QTableWidgetItem(pattern.get("pattern", ""))
+        if builtin:
+            pat.setFlags(pat.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            font = pat.font()
+            font.setItalic(True)
+            pat.setFont(font)
+        self.table.setItem(row, 2, pat)
+
+    def _add_pattern(self) -> None:
+        dlg = AddPatternDialog(parent=self)
+        if dlg.exec():
+            self._insert_row(dlg.get_pattern())
+
+    def _remove_pattern(self) -> None:
+        row = self.table.currentRow()
+        if row < 0:
+            return
+        chk_item = self.table.item(row, 0)
+        if chk_item and chk_item.data(Qt.ItemDataRole.UserRole + 1):
+            # Built-in: disable instead of remove
+            chk_item.setCheckState(Qt.CheckState.Unchecked)
+        else:
+            self.table.removeRow(row)
+
+    def get_items(self) -> list[dict]:
+        result = []
+        for row in range(self.table.rowCount()):
+            chk = self.table.item(row, 0)
+            lbl = self.table.item(row, 1)
+            pat = self.table.item(row, 2)
+            if chk is None:
+                continue
+            result.append({
+                "id": chk.data(Qt.ItemDataRole.UserRole) or f"row_{row}",
+                "builtin": bool(chk.data(Qt.ItemDataRole.UserRole + 1)),
+                "enabled": chk.checkState() == Qt.CheckState.Checked,
+                "label": lbl.text() if lbl else "",
+                "pattern": pat.text() if pat else "",
+            })
+        return result
+
+
+class SecurityCheckTable(QWidget):
+    """Simple enable/disable table for output_scan checks and confirmation gates.
+
+    Items are builtin-only; no add/remove, only toggling enabled state.
+    """
+
+    def __init__(self, checks=None, parent=None):
+        super().__init__(parent)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        self.table = QTableWidget(0, 2)
+        self.table.setHorizontalHeaderLabels(["On", "Label"])
+        self.table.horizontalHeader().setSectionResizeMode(
+            0, QHeaderView.ResizeMode.Fixed)
+        self.table.horizontalHeader().setSectionResizeMode(
+            1, QHeaderView.ResizeMode.Stretch)
+        self.table.setColumnWidth(0, 36)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.verticalHeader().setVisible(False)
+        row_height = 28
+        self.table.setMaximumHeight(row_height * (len(checks or []) + 1) + 8)
+        layout.addWidget(self.table)
+
+        for c in (checks or []):
+            self._insert_row(c)
+
+    def _insert_row(self, check: dict) -> None:
+        row = self.table.rowCount()
+        self.table.insertRow(row)
+
+        chk = QTableWidgetItem()
+        chk.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsUserCheckable)
+        chk.setCheckState(
+            Qt.CheckState.Checked if check.get("enabled", True)
+            else Qt.CheckState.Unchecked
+        )
+        chk.setData(Qt.ItemDataRole.UserRole, check.get("id", f"row_{row}"))
+        chk.setData(Qt.ItemDataRole.UserRole + 1, check.get("builtin", True))
+        self.table.setItem(row, 0, chk)
+
+        lbl = QTableWidgetItem(check.get("label", ""))
+        lbl.setFlags(lbl.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        self.table.setItem(row, 1, lbl)
+
+    def get_items(self) -> list[dict]:
+        result = []
+        for row in range(self.table.rowCount()):
+            chk = self.table.item(row, 0)
+            lbl = self.table.item(row, 1)
+            if chk is None:
+                continue
+            result.append({
+                "id": chk.data(Qt.ItemDataRole.UserRole) or f"row_{row}",
+                "builtin": bool(chk.data(Qt.ItemDataRole.UserRole + 1)),
+                "enabled": chk.checkState() == Qt.CheckState.Checked,
+                "label": lbl.text() if lbl else "",
+            })
+        return result
+
+
 class SettingsDialog(QDialog):
     """Tabbed settings editor for config/settings.json."""
 
@@ -450,6 +663,7 @@ class SettingsDialog(QDialog):
         self.tabs.addTab(self._build_memory_tab(), "Memory")
         self.tabs.addTab(self._build_desktop_tab(), "Desktop")
         self.tabs.addTab(self._build_scheduler_tab(), "Scheduler")
+        self.tabs.addTab(self._build_security_tab(), "Security")
         layout.addWidget(self.tabs)
 
         # Warning label
@@ -626,6 +840,100 @@ class SettingsDialog(QDialog):
         layout.addStretch()
         return w
 
+    def _build_security_tab(self):
+        from core.security import DEFAULT_INPUT_PATTERNS, DEFAULT_OUTPUT_CHECKS, DEFAULT_CONFIRMATION_GATES
+        sec = self._original.get("security", {})
+
+        outer = QWidget()
+        outer_layout = QVBoxLayout(outer)
+        outer_layout.setContentsMargins(12, 12, 12, 8)
+        outer_layout.setSpacing(10)
+
+        note = QLabel(
+            "Controls are independent — disabling one does not affect others.\n"
+            "All controls fail open (processing continues) when disabled.\n"
+            "Builtin patterns (italic) can be disabled but not deleted."
+        )
+        note.setWordWrap(True)
+        note.setObjectName("settings_hint")
+        outer_layout.addWidget(note)
+
+        # ── Input Filter ──────────────────────────────────────────
+        inf_box = QGroupBox("Input Filter")
+        inf_layout = QVBoxLayout(inf_box)
+        inf_form = QFormLayout()
+        inf_form.setContentsMargins(0, 0, 0, 4)
+        inf_cfg = sec.get("input_filter", {})
+        self._add_check("security.input_filter.enabled", inf_form,
+                        "Enabled", inf_cfg.get("enabled", True))
+        self._add_combo("security.input_filter.action", inf_form, "Action",
+                        ["log", "block"], inf_cfg.get("action", "log"))
+        inf_layout.addLayout(inf_form)
+        patterns = inf_cfg.get("patterns", DEFAULT_INPUT_PATTERNS)
+        pat_table = SecurityPatternTable(patterns)
+        self._fields["security.input_filter.patterns"] = ("item_table", pat_table)
+        inf_layout.addWidget(pat_table)
+        outer_layout.addWidget(inf_box)
+
+        # ── Output Scan ───────────────────────────────────────────
+        out_box = QGroupBox("Output Scan")
+        out_layout = QVBoxLayout(out_box)
+        out_form = QFormLayout()
+        out_form.setContentsMargins(0, 0, 0, 4)
+        out_cfg = sec.get("output_scan", {})
+        self._add_check("security.output_scan.enabled", out_form,
+                        "Enabled", out_cfg.get("enabled", True))
+        self._add_combo("security.output_scan.action", out_form, "Action",
+                        ["log", "suppress"], out_cfg.get("action", "log"))
+        out_layout.addLayout(out_form)
+        checks = out_cfg.get("checks", DEFAULT_OUTPUT_CHECKS)
+        chk_table = SecurityCheckTable(checks)
+        self._fields["security.output_scan.checks"] = ("item_table", chk_table)
+        out_layout.addWidget(chk_table)
+        outer_layout.addWidget(out_box)
+
+        # ── Rate Limit ────────────────────────────────────────────
+        rl_box = QGroupBox("Rate Limit")
+        rl_form = QFormLayout(rl_box)
+        rl_cfg = sec.get("rate_limit", {})
+        self._add_check("security.rate_limit.enabled", rl_form,
+                        "Enabled", rl_cfg.get("enabled", True))
+        self._add_combo("security.rate_limit.action", rl_form, "Action",
+                        ["log", "block"], rl_cfg.get("action", "log"))
+        self._add_spin("security.rate_limit.requests_per_minute", rl_form,
+                       "Requests / minute",
+                       rl_cfg.get("requests_per_minute", 30), 1, 300)
+        outer_layout.addWidget(rl_box)
+
+        # ── Confirmation Gates ────────────────────────────────────
+        cg_box = QGroupBox("Confirmation Gates")
+        cg_layout = QVBoxLayout(cg_box)
+        cg_form = QFormLayout()
+        cg_form.setContentsMargins(0, 0, 0, 4)
+        cg_cfg = sec.get("confirmation_gates", {})
+        self._add_check("security.confirmation_gates.enabled", cg_form,
+                        "Enabled", cg_cfg.get("enabled", True))
+        cg_layout.addLayout(cg_form)
+        gates = cg_cfg.get("gates", DEFAULT_CONFIRMATION_GATES)
+        gate_table = SecurityCheckTable(gates)
+        self._fields["security.confirmation_gates.gates"] = ("item_table", gate_table)
+        cg_layout.addWidget(gate_table)
+        outer_layout.addWidget(cg_box)
+
+        # ── Audit Log ─────────────────────────────────────────────
+        al_box = QGroupBox("Audit Log")
+        al_form = QFormLayout(al_box)
+        al_cfg = sec.get("audit_log", {})
+        self._add_check("security.audit_log.enabled", al_form,
+                        "Enabled", al_cfg.get("enabled", True))
+        self._add_combo("security.audit_log.level", al_form, "Level",
+                        ["standard", "minimal", "verbose"],
+                        al_cfg.get("level", "standard"))
+        outer_layout.addWidget(al_box)
+
+        outer_layout.addStretch()
+        return self._scrollable(outer)
+
     def _build_desktop_tab(self):
         w = QWidget()
         form = QFormLayout(w)
@@ -707,6 +1015,9 @@ class SettingsDialog(QDialog):
             elif kind == "combo":
                 d[parts[-1]] = widget.currentText()
             elif kind == "list":
+                d[parts[-1]] = widget.get_items()
+            elif kind == "item_table":
+                # SecurityPatternTable / SecurityCheckTable — returns list[dict]
                 d[parts[-1]] = widget.get_items()
             elif kind == "schedule":
                 # Scheduler is a top-level list, not a nested key

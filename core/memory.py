@@ -136,6 +136,20 @@ class MemorySystem:
                        )
                        """)
 
+        # Security audit log
+        cursor.execute("""
+                       CREATE TABLE IF NOT EXISTS security_alerts
+                       (
+                           id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                           timestamp    REAL,
+                           control      TEXT,
+                           pattern_id   TEXT,
+                           label        TEXT,
+                           content      TEXT,
+                           action_taken TEXT
+                       )
+                       """)
+
         conn.commit()
         conn.close()
 

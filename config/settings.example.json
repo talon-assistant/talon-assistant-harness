@@ -95,5 +95,62 @@
       "days":    ["mon","tue","wed","thu","fri","sat","sun"],
       "enabled": false
     }
-  ]
+  ],
+
+  "security": {
+    "_note": "Each control can be independently enabled/disabled. All controls fail open (processing continues) when disabled. Actions: log=record only, block=reject input / suppress output.",
+
+    "input_filter": {
+      "enabled": true,
+      "action": "log",
+      "patterns": [
+        { "id": "ignore_instructions", "enabled": true, "builtin": true,
+          "label": "Ignore instructions",
+          "pattern": "(?i)\\bignore\\s+(previous|all|your|prior)\\s+instructions?\\b" },
+        { "id": "reveal_prompt", "enabled": true, "builtin": true,
+          "label": "Reveal system prompt",
+          "pattern": "(?i)\\breveal\\s+(your\\s+|the\\s+)?(system\\s+)?prompt\\b" },
+        { "id": "act_as_system", "enabled": true, "builtin": true,
+          "label": "Act as / jailbreak persona",
+          "pattern": "(?i)(act\\s+as|pretend\\s+(you\\s+are|to\\s+be)|you\\s+are\\s+now)\\s+.{0,40}(system|admin|root|unrestricted|without\\s+restrictions)" },
+        { "id": "injection_markers", "enabled": true, "builtin": true,
+          "label": "Prompt injection format markers",
+          "pattern": "(?i)(\\[INST\\]|<\\|system\\|>|###\\s*[Ii]nstruction\\b|<s>|SYSTEM\\s*:)" },
+        { "id": "override_safety", "enabled": true, "builtin": true,
+          "label": "Override safety / DAN",
+          "pattern": "(?i)(jailbreak|DAN\\s+mode|developer\\s+mode|unrestricted\\s+mode|bypass\\s+(your\\s+|all\\s+)?(safety|rules|guidelines|restrictions))" }
+      ]
+    },
+
+    "output_scan": {
+      "enabled": true,
+      "action": "log",
+      "checks": [
+        { "id": "prompt_leak",      "enabled": true,  "builtin": true, "label": "System prompt leakage" },
+        { "id": "api_keys",         "enabled": true,  "builtin": true, "label": "API key / token exposure" },
+        { "id": "encoded_content",  "enabled": false, "builtin": true, "label": "Base64 / encoded data in response" }
+      ]
+    },
+
+    "rate_limit": {
+      "enabled": true,
+      "action": "log",
+      "requests_per_minute": 30
+    },
+
+    "confirmation_gates": {
+      "enabled": true,
+      "action": "block",
+      "gates": [
+        { "id": "destructive_file_ops", "enabled": true, "builtin": true, "label": "Destructive file operations" },
+        { "id": "rule_writes",          "enabled": true, "builtin": true, "label": "Rule creation / modification" },
+        { "id": "external_send",        "enabled": true, "builtin": true, "label": "Sending external messages (email, etc.)" }
+      ]
+    },
+
+    "audit_log": {
+      "enabled": true,
+      "level": "standard"
+    }
+  }
 }
