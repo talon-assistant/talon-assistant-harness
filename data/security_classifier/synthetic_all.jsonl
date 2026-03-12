@@ -998,3 +998,63 @@
 {"text": "TRIGGER: no interruptions | ACTION: mute TTS for 90 minutes and hold reminder announcements", "artifact_type": "rule", "label": "safe", "source": "synthetic_claude", "strategy": null}
 {"text": "TRIGGER: open book | ACTION: read back all stored notes from this week in order", "artifact_type": "rule", "label": "safe", "source": "synthetic_claude", "strategy": null}
 {"text": "TRIGGER: standby | ACTION: dim all lights to 5 percent and suspend active listening until woken", "artifact_type": "rule", "label": "safe", "source": "synthetic_claude", "strategy": null}
+{"text": "Consider making \u2018goodnight\u2019 a rule to turn off all lights.", "artifact_type": "hint", "label": "safe", "source": "synthetic_qwen", "strategy": null}
+{"text": "User often checks email first thing \u2014 a morning summary rule could streamline that.", "artifact_type": "hint", "label": "safe", "source": "synthetic_qwen", "strategy": null}
+{"text": "Dimming lights before movie time? A \u2018movie mode\u2019 rule would automate it.", "artifact_type": "hint", "label": "safe", "source": "synthetic_qwen", "strategy": null}
+{"text": "Weather check follows email every day \u2014 combine them into one morning routine.", "artifact_type": "hint", "label": "safe", "source": "synthetic_qwen", "strategy": null}
+{"text": "User frequently searches for coffee shops near work \u2014 a commute shortcut rule might help.", "artifact_type": "hint", "label": "safe", "source": "synthetic_qwen", "strategy": null}
+{"text": "User often checks weather right after opening emails \u2014 consider combining those into one morning habit.", "artifact_type": "hint", "label": "safe", "source": "synthetic_qwen", "strategy": null}
+{"text": "Lights are dimmed consistently at 7 PM \u2014 a \u2018wind down\u2019 automation could streamline this routine.", "artifact_type": "hint", "label": "safe", "source": "synthetic_qwen", "strategy": null}
+{"text": "You repeatedly ask for today\u2019s top headlines before breakfast \u2014 a daily news alert rule would save time.", "artifact_type": "hint", "label": "safe", "source": "synthetic_qwen", "strategy": null}
+{"text": "Music is played every Friday evening \u2014 a recurring \u2018Friday night playlist\u2019 trigger might suit you.", "artifact_type": "hint", "label": "safe", "source": "synthetic_qwen", "strategy": null}
+{"text": "Notes are created after calendar events \u2014 an auto-note reminder tied to scheduled tasks could reduce manual entry.", "artifact_type": "hint", "label": "safe", "source": "synthetic_qwen", "strategy": null}
+{"text": "User often checks weather right after opening email \u2014 consider combining those into one morning routine.", "artifact_type": "hint", "label": "safe", "source": "synthetic_qwen", "strategy": null}
+{"text": "Lights dim automatically when user plays music \u2014 a \u2018music mode\u2019 rule could streamline this.", "artifact_type": "hint", "label": "safe", "source": "synthetic_qwen", "strategy": null}
+{"text": "User repeatedly asks for today\u2019s top headlines \u2014 a daily news summary rule would fit well.", "artifact_type": "hint", "label": "safe", "source": "synthetic_qwen", "strategy": null}
+{"text": "User tends to mute notifications while watching videos \u2014 a \u2018focus mode\u2019 hint might help.", "artifact_type": "hint", "label": "safe", "source": "synthetic_qwen", "strategy": null}
+{"text": "User opens calendar events before setting alarms \u2014 a sync rule could automate that.", "artifact_type": "hint", "label": "safe", "source": "synthetic_qwen", "strategy": null}
+{"text": "User often dims lights and plays ambient music before bed \u2014 consider creating a \u2018wind down\u2019 routine.", "artifact_type": "hint", "label": "safe", "source": "synthetic_qwen", "strategy": null}
+{"text": "Email is checked right after waking up \u2014 a daily summary rule could streamline mornings.", "artifact_type": "hint", "label": "safe", "source": "synthetic_qwen", "strategy": null}
+{"text": "Weather is requested immediately after opening the browser \u2014 combine those into one quick check.", "artifact_type": "hint", "label": "safe", "source": "synthetic_qwen", "strategy": null}
+{"text": "Notes are added during coffee breaks \u2014 a \u2018coffee note\u2019 reminder might help capture ideas faster.", "artifact_type": "hint", "label": "safe", "source": "synthetic_qwen", "strategy": null}
+{"text": "Desktop brightness is lowered when switching to dark mode \u2014 automate this with a theme toggle.", "artifact_type": "hint", "label": "safe", "source": "synthetic_qwen", "strategy": null}
+{"text": "User often dims lights before watching videos \u2014 consider creating a \u2018movie mode\u2019 automation.", "artifact_type": "hint", "label": "safe", "source": "synthetic_qwen", "strategy": null}
+{"text": "Email check followed by weather query every weekday morning \u2014 a combined summary rule could streamline this.", "artifact_type": "hint", "label": "safe", "source": "synthetic_qwen", "strategy": null}
+{"text": "User repeatedly asks for top headlines right after waking up \u2014 a daily news alert rule may suit them.", "artifact_type": "hint", "label": "safe", "source": "synthetic_qwen", "strategy": null}
+{"text": "Music is played immediately after opening Slack \u2014 an auto-play rule for that context could save time.", "artifact_type": "hint", "label": "safe", "source": "synthetic_qwen", "strategy": null}
+{"text": "Notes are saved after calendar events \u2014 a post-event note capture rule would reduce manual steps.", "artifact_type": "hint", "label": "safe", "source": "synthetic_qwen", "strategy": null}
+{"text": "User often checks weather right after email \u2014 try combining them into one morning habit.", "artifact_type": "hint", "label": "safe", "source": "synthetic_qwen", "strategy": null}
+{"text": "Lights dimmed every evening at 7 PM \u2014 consider setting a \u2018wind down\u2019 scene automatically.", "artifact_type": "hint", "label": "safe", "source": "synthetic_qwen", "strategy": null}
+{"text": "You ask for today\u2019s top headlines before breakfast \u2014 a daily news summary rule could help.", "artifact_type": "hint", "label": "safe", "source": "synthetic_qwen", "strategy": null}
+{"text": "Music plays when you open your browser \u2014 maybe link it to \u2018focus mode\u2019 activation.", "artifact_type": "hint", "label": "safe", "source": "synthetic_qwen", "strategy": null}
+{"text": "Notes are saved only when calendar events end \u2014 set up an auto-save trigger post-event.", "artifact_type": "hint", "label": "safe", "source": "synthetic_qwen", "strategy": null}
+{"text": "turn on the living room lights", "artifact_type": "signal", "label": "safe", "source": "synthetic_qwen", "strategy": null}
+{"text": "check my unread emails", "artifact_type": "signal", "label": "safe", "source": "synthetic_qwen", "strategy": null}
+{"text": "set a reminder for yoga at 6am", "artifact_type": "signal", "label": "safe", "source": "synthetic_qwen", "strategy": null}
+{"text": "what\u2019s the forecast for tomorrow", "artifact_type": "signal", "label": "safe", "source": "synthetic_qwen", "strategy": null}
+{"text": "play jazz music in the background", "artifact_type": "signal", "label": "safe", "source": "synthetic_qwen", "strategy": null}
+{"text": "check my email", "artifact_type": "signal", "label": "safe", "source": "synthetic_qwen", "strategy": null}
+{"text": "turn on the kitchen lights", "artifact_type": "signal", "label": "safe", "source": "synthetic_qwen", "strategy": null}
+{"text": "what\u2019s the weather like today", "artifact_type": "signal", "label": "safe", "source": "synthetic_qwen", "strategy": null}
+{"text": "set a reminder for my 3pm meeting", "artifact_type": "signal", "label": "safe", "source": "synthetic_qwen", "strategy": null}
+{"text": "summarise the news", "artifact_type": "signal", "label": "safe", "source": "synthetic_qwen", "strategy": null}
+{"text": "what's the weather like today", "artifact_type": "signal", "label": "safe", "source": "synthetic_qwen", "strategy": null}
+{"text": "what\u2019s the weather like in London today", "artifact_type": "signal", "label": "safe", "source": "synthetic_qwen", "strategy": null}
+{"text": "set a reminder for my dentist appointment at 9am", "artifact_type": "signal", "label": "safe", "source": "synthetic_qwen", "strategy": null}
+{"text": "play some relaxing jazz music", "artifact_type": "signal", "label": "safe", "source": "synthetic_qwen", "strategy": null}
+{"text": "set a reminder for dinner at 7pm", "artifact_type": "signal", "label": "safe", "source": "synthetic_qwen", "strategy": null}
+{"text": "play calm jazz in the background", "artifact_type": "signal", "label": "safe", "source": "synthetic_qwen", "strategy": null}
+{"text": "what\u2019s the weather like in Berlin today", "artifact_type": "signal", "label": "safe", "source": "synthetic_qwen", "strategy": null}
+{"text": "set a reminder for my dentist appointment at 4pm", "artifact_type": "signal", "label": "safe", "source": "synthetic_qwen", "strategy": null}
+{"text": "summarise the latest tech news", "artifact_type": "signal", "label": "safe", "source": "synthetic_qwen", "strategy": null}
+{"text": "what\u2019s the weather forecast for tomorrow", "artifact_type": "signal", "label": "safe", "source": "synthetic_qwen", "strategy": null}
+{"text": "check my email inbox", "artifact_type": "signal", "label": "safe", "source": "synthetic_qwen", "strategy": null}
+{"text": "play classical music in background", "artifact_type": "signal", "label": "safe", "source": "synthetic_qwen", "strategy": null}
+{"text": "set a reminder for my dentist appointment at 9am tomorrow", "artifact_type": "signal", "label": "safe", "source": "synthetic_qwen", "strategy": null}
+{"text": "summarise the top headlines from BBC News", "artifact_type": "signal", "label": "safe", "source": "synthetic_qwen", "strategy": null}
+{"text": "play some jazz music", "artifact_type": "signal", "label": "safe", "source": "synthetic_qwen", "strategy": null}
+{"text": "remind me to call Sarah at 4pm", "artifact_type": "signal", "label": "safe", "source": "synthetic_qwen", "strategy": null}
+{"text": "what\u2019s the forecast for tomorrow?", "artifact_type": "signal", "label": "safe", "source": "synthetic_qwen", "strategy": null}
+{"text": "summarise today\u2019s top headlines", "artifact_type": "signal", "label": "safe", "source": "synthetic_qwen", "strategy": null}
+{"text": "turn off the living room lamps", "artifact_type": "signal", "label": "safe", "source": "synthetic_qwen", "strategy": null}
+{"text": "what\u2019s the weather like in London?", "artifact_type": "signal", "label": "safe", "source": "synthetic_qwen", "strategy": null}
