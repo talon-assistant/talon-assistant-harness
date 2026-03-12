@@ -289,6 +289,14 @@ class EmailTalent(BaseTalent):
                     f"Date: {email_data['date']}\n"
                     f"Body:\n{email_data['body'][:2000]}"
                 )
+                # Semantic injection check before passing email body to LLM
+                from core.security import get_security_filter as _gsf
+                _sf = _gsf()
+                if _sf:
+                    _blocked, _alert = _sf.check_semantic_input(email_block, "email")
+                    if _blocked:
+                        return {"response": "[Email content blocked by security filter]",
+                                "actions_taken": [], "success": False}
                 user_msg = (
                     f"{_wrap_external(email_block, 'email content')}\n\n"
                     f"User asked: {command}\n\n"

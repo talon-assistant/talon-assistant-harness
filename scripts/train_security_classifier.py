@@ -42,7 +42,7 @@ import core.embeddings as _emb
 
 # ── Constants ─────────────────────────────────────────────────────────────
 
-ARTIFACT_TYPES = ["hint", "insight", "rule", "signal", "summary"]
+ARTIFACT_TYPES = ["email", "hint", "insight", "rule", "signal", "signal_in", "summary", "web"]
 ARTIFACT_TO_IDX = {t: i for i, t in enumerate(ARTIFACT_TYPES)}
 EMBED_DIM = 768
 ARTIFACT_DIM = len(ARTIFACT_TYPES)

@@ -200,7 +200,7 @@ class SecurityClassifier:
             return
 
         # --- reconstruct model
-        self._artifact_types = ckpt.get("artifact_types", ["hint", "insight", "rule", "signal", "summary"])
+        self._artifact_types = ckpt.get("artifact_types", ["email", "hint", "insight", "rule", "signal", "signal_in", "summary", "web"])
         self._embed_model_name = ckpt.get("embed_model", "BAAI/bge-base-en-v1.5")
         self._input_dim = ckpt.get("input_dim", 773)
 

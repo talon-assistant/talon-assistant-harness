@@ -467,6 +467,29 @@ class SecurityFilter:
         except Exception as e:
             print(f"   [Security] Audit log write failed: {e}")
 
+    # ── Pre-LLM input semantic check ───────────────────────────────────────────
+
+    def check_semantic_input(
+        self, text: str, source: str
+    ) -> tuple[bool, Optional[SecurityAlert]]:
+        """Semantic check on external content BEFORE it reaches the LLM.
+
+        Called by talents that ingest untrusted external text (email bodies,
+        web/news results, incoming Signal commands) to catch injection attempts
+        before they can influence the model.
+
+        Args:
+            text:   The external content text.
+            source: Origin label — "email" | "web" | "signal_in".
+                    Passed directly as artifact_type to the classifier.
+
+        Returns:
+            (should_block, alert_or_None)
+            Fails open when the classifier is unavailable.
+        """
+        # Delegate to check_semantic — same model, different artifact_type namespace
+        return self.check_semantic(text, source)
+
     # ── Reporting ─────────────────────────────────────────────────────────────
 
     @property
@@ -527,3 +550,25 @@ class SecurityFilter:
                 "threshold": 0.5,   # suspicious_score ≥ threshold → flag
             },
         }
+
+
+# ── Module-level singleton ─────────────────────────────────────────────────────
+# Allows talents to call get_security_filter().check_semantic_input() without
+# needing SecurityFilter threaded through every execute() signature.
+
+_security_filter_instance: Optional[SecurityFilter] = None
+
+
+def register_security_filter(instance: SecurityFilter) -> None:
+    """Register the process-wide SecurityFilter instance.
+
+    Called once by the Assistant after creating its SecurityFilter so that
+    talents can access it via get_security_filter().
+    """
+    global _security_filter_instance
+    _security_filter_instance = instance
+
+
+def get_security_filter() -> Optional[SecurityFilter]:
+    """Return the registered SecurityFilter, or None if not yet registered."""
+    return _security_filter_instance

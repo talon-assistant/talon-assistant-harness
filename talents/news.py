@@ -94,6 +94,15 @@ class NewsTalent(BaseTalent):
         print(f"   -> News topic: '{topic}' via {provider}")
         print(f"   -> Results preview: {news_results[:300]}...")
 
+        # Semantic injection check before passing news content to LLM
+        from core.security import get_security_filter as _gsf
+        _sf = _gsf()
+        if _sf:
+            _blocked, _alert = _sf.check_semantic_input(news_results, "web")
+            if _blocked:
+                return {"response": "[News content blocked by security filter]",
+                        "actions_taken": [], "success": False}
+
         # Build user message — wrap results in structural injection-defence markers
         user_message = (
             f"{_wrap_external(news_results, 'news articles')}\n\n"

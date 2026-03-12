@@ -280,6 +280,15 @@ class SignalRemoteTalent(BaseTalent):
 
         print(f"   [Signal] Command from {sender}: {command!r}")
 
+        # Semantic injection check on the raw Signal command before processing
+        from core.security import get_security_filter as _gsf
+        _sf = _gsf()
+        if _sf:
+            _blocked, _alert = _sf.check_semantic_input(command, "signal_in")
+            if _blocked:
+                print(f"   [Signal] Command blocked by semantic classifier: {command!r}")
+                return
+
         if self._assistant is None:
             print("   [Signal] Assistant not available, cannot process command.")
             return

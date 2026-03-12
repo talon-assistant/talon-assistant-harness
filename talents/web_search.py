@@ -152,6 +152,15 @@ class WebSearchTalent(BaseTalent):
         print(f"   -> Search query sent: '{search_query}' via {provider}")
         print(f"   -> Results preview: {web_results[:300]}...")
 
+        # Semantic injection check before passing web content to LLM
+        from core.security import get_security_filter as _gsf
+        _sf = _gsf()
+        if _sf:
+            _blocked, _alert = _sf.check_semantic_input(web_results, "web")
+            if _blocked:
+                return {"response": "[Search results blocked by security filter]",
+                        "actions_taken": [], "success": False}
+
         # Build the user message — wrap results in structural injection-defence markers
         user_message = (
             f"{_wrap_external(web_results, 'web search results')}\n\n"

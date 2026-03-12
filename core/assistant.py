@@ -264,6 +264,9 @@ class TalonAssistant:
             config=security_cfg,
             db_path=memory_config["db_path"],
         )
+        # Register as process-wide singleton so talents can call check_semantic_input()
+        from core.security import register_security_filter
+        register_security_filter(self.security)
         # Seed prompt-leak detection with key phrases from the conversation system prompt
         self.security.set_system_prompt_phrases([
             "You are Talon, a personal AI desktop assistant",
