@@ -23,6 +23,7 @@ env/
 
 # User data & databases
 data/
+!data/security_classifier/synthetic_all.jsonl
 chroma_db/
 documents/
 
