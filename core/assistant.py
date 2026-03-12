@@ -839,6 +839,10 @@ class TalonAssistant:
         """Detect if command contains a preference to remember"""
         preference_keywords = ['prefer', 'like', 'favorite', 'always', 'usually', 'remember']
         if any(kw in command for kw in preference_keywords):
+            _sem_blocked, _sem_alert = self.security.check_semantic(command, "hint")
+            if _sem_blocked:
+                print(f"   [Pref] Preference blocked by semantic classifier: {command[:80]}")
+                return False
             self.memory.store_preference(command, category="general")
             return True
         return False
@@ -1163,6 +1167,10 @@ class TalonAssistant:
                 if suppressed:
                     print(f"   [Buffer] Eviction insight suppressed by security filter")
                     return
+                _sem_blocked, _sem_alert = self.security.check_semantic(insight, "insight")
+                if _sem_blocked:
+                    print(f"   [Buffer] Eviction insight blocked by semantic classifier")
+                    return
                 self.memory.store_preference(insight, category="insight")
                 print(f"   [Buffer] Eviction insight: {insight[:80]}")
         except Exception as e:
@@ -1218,6 +1226,10 @@ class TalonAssistant:
                 suppressed, _alert = self.security.check_output(summary, context="summarizer")
                 if suppressed:
                     print(f"   [Buffer] Session summary suppressed by security filter")
+                    return
+                _sem_blocked, _sem_alert = self.security.check_semantic(summary, "summary")
+                if _sem_blocked:
+                    print(f"   [Buffer] Session summary blocked by semantic classifier")
                     return
                 self._session_summary = summary
                 print(f"   [Buffer] Session summary: {summary[:100]}")
@@ -1281,6 +1293,13 @@ class TalonAssistant:
                 action_lower = action.lower()
                 if any(p in action_lower for p in _RULE_ACTION_INJECTION_PATTERNS):
                     print(f"   [Rules] Rejected suspicious action: {action[:80]}")
+                    return None
+
+                # Semantic security check on the full rule text before storage
+                rule_text = f"TRIGGER: {trigger} | ACTION: {action}"
+                _sem_blocked, _sem_alert = self.security.check_semantic(rule_text, "rule")
+                if _sem_blocked:
+                    print(f"   [Rules] Rule blocked by semantic classifier: {rule_text[:80]}")
                     return None
 
                 rule_id = self.memory.add_rule(trigger, action, command)
