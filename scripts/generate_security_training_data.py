@@ -364,7 +364,7 @@ def main() -> None:
     with open(config_path, encoding="utf-8") as f:
         settings = json.load(f)
 
-    llm = LLMClient(settings.get("llm", {}))
+    llm = LLMClient(settings)
 
     output_path = Path(args.out)
     output_path.parent.mkdir(parents=True, exist_ok=True)
