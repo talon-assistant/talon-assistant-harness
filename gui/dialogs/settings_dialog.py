@@ -931,6 +931,26 @@ class SettingsDialog(QDialog):
                         al_cfg.get("level", "standard"))
         outer_layout.addWidget(al_box)
 
+        # ── Semantic Classifier ───────────────────────────────────
+        sc_box = QGroupBox("Semantic Classifier")
+        sc_form = QFormLayout(sc_box)
+        sc_cfg = sec.get("semantic_classifier", {})
+        self._add_check("security.semantic_classifier.enabled", sc_form,
+                        "Enabled", sc_cfg.get("enabled", True))
+        self._add_combo("security.semantic_classifier.action", sc_form, "Action",
+                        ["log", "block"], sc_cfg.get("action", "log"))
+        self._add_dspin("security.semantic_classifier.threshold", sc_form,
+                        "Threshold",
+                        sc_cfg.get("threshold", 0.5), 0.1, 1.0, 0.05)
+        sc_hint = QLabel(
+            "Scans summaries, rules, insights and hints for embedded injection "
+            "attempts before they are stored. Threshold: lower = more sensitive."
+        )
+        sc_hint.setWordWrap(True)
+        sc_hint.setObjectName("settings_hint")
+        sc_form.addRow("", sc_hint)
+        outer_layout.addWidget(sc_box)
+
         outer_layout.addStretch()
         return self._scrollable(outer)
 
