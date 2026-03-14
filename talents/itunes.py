@@ -232,11 +232,31 @@ class ITunesTalent(BaseTalent):
         if not name:
             return self._fail("I couldn't find a playlist name in that command.")
 
-        sources = it.LibrarySources
         name_lower = name.lower()
 
-        for src_idx in range(1, sources.Count + 1):
-            playlists = sources.Item(src_idx).Playlists
+        # Walk all sources (Library, devices, etc.)
+        try:
+            sources = it.Sources
+            for src_idx in range(1, sources.Count + 1):
+                try:
+                    playlists = sources.Item(src_idx).Playlists
+                    for pl_idx in range(1, playlists.Count + 1):
+                        pl = playlists.Item(pl_idx)
+                        if name_lower in pl.Name.lower():
+                            pl.PlayFirstTrack()
+                            return self._ok(
+                                f"Playing playlist \"{pl.Name}\".",
+                                "play_playlist",
+                                extra={"playlist": pl.Name},
+                            )
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+        # Fallback: main library source only
+        try:
+            playlists = it.LibrarySource.Playlists
             for pl_idx in range(1, playlists.Count + 1):
                 pl = playlists.Item(pl_idx)
                 if name_lower in pl.Name.lower():
@@ -246,6 +266,8 @@ class ITunesTalent(BaseTalent):
                         "play_playlist",
                         extra={"playlist": pl.Name},
                     )
+        except Exception:
+            pass
 
         return self._fail(f"No playlist matching \"{name}\" found.")
 
