@@ -191,22 +191,34 @@ class ITunesTalent(BaseTalent):
         leftover = [w for w in words if w not in self._PLAY_NOISE]
 
         if leftover:
-            # Let the LLM normalise the name (fixes misspellings like "zepplin" → "Led Zeppelin")
-            term = self._extract_arg(llm, command, "artist or song name", max_length=40) \
-                   or " ".join(leftover)
-            for kind in (_SEARCH_ARTISTS, _SEARCH_ALL):
-                try:
-                    results = it.LibraryPlaylist.Search(term, kind)
-                    if results and results.Count > 0:
-                        track = results.Item(1)
-                        track.Play()
-                        return self._ok(
-                            f"Playing \"{track.Name}\" by {track.Artist}.",
-                            "play_track",
-                            extra={"track": track.Name, "artist": track.Artist},
-                        )
-                except Exception:
-                    continue
+            # Ask LLM to correct spelling ("lead zepplin" → "Led Zeppelin")
+            term = self._extract_arg(
+                llm, command,
+                "artist or band name with correct standard spelling — fix any typos or misspellings",
+                max_length=40,
+            ) or " ".join(leftover)
+
+            # Build a search order: full corrected term, raw leftover, then each word individually
+            raw = " ".join(leftover)
+            candidates = [term]
+            if raw.lower() != term.lower():
+                candidates.append(raw)
+            candidates += [w for w in term.split() if len(w) > 2]
+
+            for candidate in candidates:
+                for kind in (_SEARCH_ARTISTS, _SEARCH_ALL):
+                    try:
+                        results = it.LibraryPlaylist.Search(candidate, kind)
+                        if results and results.Count > 0:
+                            track = results.Item(1)
+                            track.Play()
+                            return self._ok(
+                                f"Playing \"{track.Name}\" by {track.Artist}.",
+                                "play_track",
+                                extra={"track": track.Name, "artist": track.Artist},
+                            )
+                    except Exception:
+                        continue
             return self._fail(f"No results found for \"{term}\" in your iTunes library.")
 
         # No search term — just resume/play
