@@ -191,8 +191,9 @@ class ITunesTalent(BaseTalent):
         leftover = [w for w in words if w not in self._PLAY_NOISE]
 
         if leftover:
-            # There's a name in the command — try artist search first, then all
-            term = " ".join(leftover)
+            # Let the LLM normalise the name (fixes misspellings like "zepplin" → "Led Zeppelin")
+            term = self._extract_arg(llm, command, "artist or song name", max_length=40) \
+                   or " ".join(leftover)
             for kind in (_SEARCH_ARTISTS, _SEARCH_ALL):
                 try:
                     results = it.LibraryPlaylist.Search(term, kind)
