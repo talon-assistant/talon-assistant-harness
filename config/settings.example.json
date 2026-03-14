@@ -37,6 +37,7 @@
   },
   "voice": {
     "tts_voice": "en-US-AriaNeural",
+    "tts_enabled_default": true,
     "wake_words": ["okay talon", "ok talon", "talon", "hey talon",
                    "okay talent", "ok talent", "talent", "hey talent"]
   },

@@ -158,6 +158,10 @@ def main():
         window = MainWindow(bridge, theme_manager=theme_manager,
                             config_dir="config")
 
+        # Apply TTS default from settings
+        tts_default = settings.get("voice", {}).get("tts_enabled_default", True)
+        window.voice_panel.tts_button.setChecked(tts_default)
+
         # System tray
         from gui.system_tray import SystemTrayManager
         tray_manager = SystemTrayManager(window)
