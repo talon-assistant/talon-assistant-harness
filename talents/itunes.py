@@ -180,8 +180,35 @@ class ITunesTalent(BaseTalent):
     # Actions
     # ------------------------------------------------------------------
 
+    # Words that on their own mean "just play" — not a search term
+    _PLAY_NOISE = {"play", "music", "some", "a", "the", "me", "something", "anything",
+                   "itunes", "please", "now", "on", "resume", "start"}
+
     def _play(self, it, command: str, llm) -> dict:
-        """Generic play — resume if already loaded, otherwise just play."""
+        """Generic play — if a search term is present, search first; otherwise resume."""
+        # Strip noise words and see if anything meaningful remains
+        words = re.sub(r"[^\w\s]", "", command.lower()).split()
+        leftover = [w for w in words if w not in self._PLAY_NOISE]
+
+        if leftover:
+            # There's a name in the command — try artist search first, then all
+            term = " ".join(leftover)
+            for kind in (_SEARCH_ARTISTS, _SEARCH_ALL):
+                try:
+                    results = it.LibraryPlaylist.Search(term, kind)
+                    if results and results.Count > 0:
+                        track = results.Item(1)
+                        track.Play()
+                        return self._ok(
+                            f"Playing \"{track.Name}\" by {track.Artist}.",
+                            "play_track",
+                            extra={"track": track.Name, "artist": track.Artist},
+                        )
+                except Exception:
+                    continue
+            return self._fail(f"No results found for \"{term}\" in your iTunes library.")
+
+        # No search term — just resume/play
         state = it.PlayerState
         if state == _STATE_PAUSED:
             it.Play()
