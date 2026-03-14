@@ -756,6 +756,9 @@ class SettingsDialog(QDialog):
         form = QFormLayout(w)
         voice = self._original.get("voice", {})
 
+        self._add_check("voice.tts_enabled_default", form, "TTS On by Default",
+                        voice.get("tts_enabled_default", True))
+
         self._add_line("voice.tts_voice", form, "TTS Voice",
                        voice.get("tts_voice", "en-US-AriaNeural"))
 
