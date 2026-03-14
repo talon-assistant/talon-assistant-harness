@@ -52,6 +52,7 @@ class ITunesTalent(BaseTalent):
     _INTENTS = [
         "play", "pause", "stop", "resume", "next", "previous",
         "search_song", "search_artist", "search_album",
+        "list_songs",
         "playlist", "volume_up", "volume_down", "volume_set",
         "shuffle_on", "shuffle_off", "shuffle_toggle",
         "now_playing", "unknown",
@@ -133,6 +134,9 @@ class ITunesTalent(BaseTalent):
 
             elif intent in ("search_song", "search_artist", "search_album"):
                 return self._search_and_play(it, command, intent, llm)
+
+            elif intent == "list_songs":
+                return self._list_songs(it, command, llm)
 
             elif intent == "playlist":
                 return self._activate_playlist(it, command, llm)
@@ -321,6 +325,34 @@ class ITunesTalent(BaseTalent):
                 it.SoundVolume = vol
                 return self._ok(f"Volume set to {vol}.", "volume_set")
         return self._fail("I couldn't find a volume level in that command.")
+
+    def _list_songs(self, it, command: str, llm) -> dict:
+        """Search library and return a list of matching tracks without playing."""
+        term = self._extract_arg(
+            llm, command,
+            "artist, album, or song name to search for — correct spelling",
+            max_length=40,
+        )
+        if not term:
+            return self._fail("What artist or song would you like me to look up?")
+
+        tracks = []
+        for kind in (_SEARCH_ARTISTS, _SEARCH_ALL):
+            try:
+                results = it.LibraryPlaylist.Search(term, kind)
+                if results and results.Count > 0:
+                    for i in range(1, min(results.Count + 1, 21)):
+                        t = results.Item(i)
+                        tracks.append(f"\"{t.Name}\" — {t.Artist}")
+                    break
+            except Exception:
+                continue
+
+        if not tracks:
+            return self._fail(f"No results found for \"{term}\" in your iTunes library.")
+
+        header = f"Found {len(tracks)} track(s) for \"{term}\":"
+        return self._ok(header + "\n" + "\n".join(tracks), "list_songs")
 
     def _now_playing(self, it) -> dict:
         """Return info about the current track."""
