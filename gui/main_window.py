@@ -51,6 +51,10 @@ class MainWindow(QMainWindow):
         self._setup_status_bar()
         self._connect_signals()
 
+        # Global hotkey listener for Task Assist
+        self._hotkey_listener = None
+        self._start_task_assist_hotkey()
+
         # Sync theme radio buttons with saved preference
         if self.theme_manager:
             current = self.theme_manager.current_theme
@@ -162,6 +166,16 @@ class MainWindow(QMainWindow):
         reset_font_action.setShortcut("Ctrl+0")
         reset_font_action.triggered.connect(self._reset_font)
         appearance_menu.addAction(reset_font_action)
+
+        # ── Tools menu ────────────────────────────────────────
+        tools_menu = menubar.addMenu("Tools")
+
+        task_assist_action = QAction("Task Assist...", self)
+        task_assist_action.setShortcut("Ctrl+Shift+T")
+        task_assist_action.setToolTip(
+            "Capture screen context and open a collaborative draft review dialog")
+        task_assist_action.triggered.connect(self._trigger_task_assist)
+        tools_menu.addAction(task_assist_action)
 
         # ── Help menu ─────────────────────────────────────────
         help_menu = menubar.addMenu("Help")
@@ -314,6 +328,9 @@ class MainWindow(QMainWindow):
 
         # Email compose dialog (draft + confirm flow)
         self.bridge.compose_requested.connect(self._on_compose_requested)
+
+        # Task Assist dialog (draft + review flow)
+        self.bridge.task_assist_requested.connect(self._on_task_assist_requested)
 
     def _on_init_complete(self):
         """Called when TalonAssistant is fully initialized."""
@@ -642,9 +659,59 @@ class MainWindow(QMainWindow):
     def _on_compose_cancelled(self):
         """User cancelled the compose dialog."""
         self.chat_view.add_system_message("Email cancelled.")
-        minutes = snooze_seconds // 60
-        self.chat_view.add_system_message(
-            f"Reminder snoozed for {minutes} minute(s).")
+
+    # ── Task Assist dialog ────────────────────────────────────
+
+    def _trigger_task_assist(self):
+        """Trigger Task Assist from menu/hotkey — submit through normal pipeline."""
+        if self.bridge.assistant is None:
+            return
+        if not self.isVisible():
+            self.show()
+            self.raise_()
+            self.activateWindow()
+        self.bridge.submit_command("task assist")
+
+    def _on_task_assist_requested(self, payload: dict):
+        """Show the Task Assist review dialog."""
+        from gui.dialogs.task_assist_dialog import TaskAssistDialog
+
+        if not self.isVisible():
+            self.show()
+            self.raise_()
+            self.activateWindow()
+
+        dlg = TaskAssistDialog(
+            task=payload.get("task", ""),
+            draft=payload.get("draft", ""),
+            screenshot_b64=payload.get("screenshot_b64"),
+            llm_client=self.bridge.assistant.llm,
+            parent=self,
+        )
+        dlg.accepted_text.connect(self._on_task_assist_accepted)
+        dlg.declined.connect(lambda: self.chat_view.add_system_message("Task Assist declined."))
+        dlg.exec()
+
+    def _on_task_assist_accepted(self, text: str):
+        self.chat_view.add_system_message("Task Assist result copied to clipboard.")
+
+    def _start_task_assist_hotkey(self):
+        """Start the global hotkey listener for Task Assist."""
+        try:
+            config_path = os.path.join(self.config_dir, "settings.json")
+            with open(config_path, 'r') as f:
+                settings = json.load(f)
+        except Exception:
+            settings = {}
+
+        hotkey = (settings
+                  .get("task_assist", {})
+                  .get("hotkey", "ctrl+shift+t"))
+
+        from gui.hotkey_listener import HotkeyListener
+        self._hotkey_listener = HotkeyListener(hotkey, parent=self)
+        self._hotkey_listener.triggered.connect(self._trigger_task_assist)
+        self._hotkey_listener.start()
 
     # ── Exit / Close ─────────────────────────────────────────
 
@@ -663,6 +730,8 @@ class MainWindow(QMainWindow):
             self.system_tray.show_notification(
                 "Talon", "Minimized to system tray. Double-click to restore.")
         else:
+            if self._hotkey_listener:
+                self._hotkey_listener.stop()
             if self.system_tray:
                 self.system_tray.cleanup()
             self.bridge.cleanup()

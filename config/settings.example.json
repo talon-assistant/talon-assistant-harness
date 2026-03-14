@@ -72,6 +72,11 @@
     "show_notifications": true,
     "global_hotkey": "ctrl+shift+j"
   },
+  "task_assist": {
+    "hotkey": "ctrl+shift+t",
+    "screenshot_max_px": 1280
+  },
+
   "training": {
     "harvest_pairs": true,
     "_lora_note": "Configure LoRA training in Settings → Talent Config → lora_train"

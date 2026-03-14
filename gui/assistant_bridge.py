@@ -57,6 +57,9 @@ class AssistantBridge(QObject):
     # Email compose dialog — emitted when talent returns a pending_email draft
     compose_requested = pyqtSignal(dict)  # {to, subject, body, reply_to_uid}
 
+    # Task Assist dialog — emitted when talent returns a pending_task_assist payload
+    task_assist_requested = pyqtSignal(dict)  # {task, draft, screenshot_b64}
+
     # LLM server status
     server_status = pyqtSignal(str)  # stopped/starting/running/error
 
@@ -155,10 +158,17 @@ class AssistantBridge(QObject):
         if pending:
             self.compose_requested.emit(pending)
             # Don't TTS the draft preview — user is looking at compose dialog
-        else:
-            self.notification_requested.emit("Talon", response or "Done!")
-            if self._tts_enabled and response and not response.startswith("Error"):
-                self._speak(response)
+            return
+
+        # Task Assist draft — show review dialog
+        task_assist = result.get("pending_task_assist") if result else None
+        if task_assist:
+            self.task_assist_requested.emit(task_assist)
+            return
+
+        self.notification_requested.emit("Talon", response or "Done!")
+        if self._tts_enabled and response and not response.startswith("Error"):
+            self._speak(response)
 
     def _on_command_error(self, command, error_msg):
         """Called if process_command() raises an exception."""

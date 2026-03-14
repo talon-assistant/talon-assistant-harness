@@ -18,6 +18,7 @@ phue
 ddgs
 pyautogui
 pyperclip
+pynput
 Pillow
 feedparser
 trafilatura

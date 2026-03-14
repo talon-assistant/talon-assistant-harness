@@ -287,6 +287,45 @@ class ServerStartWorker(QThread):
             self.server_manager.on_error = original_error
 
 
+class TaskAssistReviseWorker(QThread):
+    """Calls LLM to produce a revised draft based on user feedback.
+
+    Runs in a background thread so the TaskAssistDialog stays responsive
+    during model inference.
+    """
+
+    revised = pyqtSignal(str)
+    error   = pyqtSignal(str)
+
+    def __init__(self, llm_client, task: str, current_draft: str,
+                 instruction: str, screenshot_b64: str | None):
+        super().__init__()
+        self._llm = llm_client
+        self._task = task
+        self._draft = current_draft
+        self._instruction = instruction
+        self._screenshot_b64 = screenshot_b64
+
+    def run(self):
+        try:
+            prompt = (
+                f"Original task: {self._task}\n\n"
+                f"Current draft:\n{self._draft}\n\n"
+                f"User's revision instruction: {self._instruction}\n\n"
+                "Produce an updated version. Return ONLY the updated text, no explanation."
+            )
+            result = self._llm.generate(
+                prompt,
+                use_vision=bool(self._screenshot_b64),
+                screenshot_b64=self._screenshot_b64,
+                max_length=900,
+                temperature=0.7,
+            )
+            self.revised.emit((result or "").strip())
+        except Exception as e:
+            self.error.emit(str(e))
+
+
 class EmailSendWorker(QThread):
     """Sends a composed/edited email draft via SMTP off the GUI thread.
 
