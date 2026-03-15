@@ -662,14 +662,26 @@ class MainWindow(QMainWindow):
 
     # ── Task Assist dialog ────────────────────────────────────
 
-    def _trigger_task_assist(self):
-        """Trigger Task Assist from menu/hotkey — submit through normal pipeline."""
+    def _trigger_task_assist(self, screenshot_b64: str = ""):
+        """Trigger Task Assist from menu button (no pre-captured screenshot)."""
         if self.bridge.assistant is None:
             return
         if not self.isVisible():
             self.show()
             self.raise_()
             self.activateWindow()
+        self.bridge.submit_command("task assist")
+
+    def _trigger_task_assist_from_hotkey(self, screenshot_b64: str):
+        """Trigger Task Assist from global hotkey — screenshot already captured."""
+        if self.bridge.assistant is None:
+            return
+        # Bring Talon to front for the review dialog
+        self.show()
+        self.raise_()
+        self.activateWindow()
+        # Store pre-captured screenshot so the talent skips its own capture
+        self.bridge.assistant._pending_task_assist_screenshot = screenshot_b64 or None
         self.bridge.submit_command("task assist")
 
     def _on_task_assist_requested(self, payload: dict):
@@ -710,7 +722,7 @@ class MainWindow(QMainWindow):
 
         from gui.hotkey_listener import HotkeyListener
         self._hotkey_listener = HotkeyListener(hotkey, parent=self)
-        self._hotkey_listener.triggered.connect(self._trigger_task_assist)
+        self._hotkey_listener.triggered.connect(self._trigger_task_assist_from_hotkey)
         self._hotkey_listener.start()
 
     # ── Exit / Close ─────────────────────────────────────────

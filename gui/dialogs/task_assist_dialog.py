@@ -86,6 +86,12 @@ class TaskAssistDialog(QDialog):
         self._decline_btn.clicked.connect(self._on_decline)
         btn_row.addWidget(self._decline_btn)
 
+        self._attach_btn = QPushButton("Attach file...")
+        self._attach_btn.setObjectName("task_assist_attach")
+        self._attach_btn.setToolTip("Load a file and regenerate the draft with its content")
+        self._attach_btn.clicked.connect(self._on_attach_file)
+        btn_row.addWidget(self._attach_btn)
+
         btn_row.addStretch()
 
         self._revise_btn = QPushButton("Revise")
@@ -145,9 +151,58 @@ class TaskAssistDialog(QDialog):
         self._status_label.setText(f"Revision failed: {error_msg}")
         self._set_busy(False)
 
+    def _on_attach_file(self):
+        """Open a file browser and regenerate the draft with the selected file's content."""
+        from PyQt6.QtWidgets import QFileDialog
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Attach file for Task Assist",
+            "",
+            "Documents (*.txt *.md *.py *.js *.ts *.html *.css *.json *.yaml *.yml "
+            "*.xml *.csv *.docx);;All files (*)"
+        )
+        if not path:
+            return
+
+        file_text = self._read_file(path)
+        if not file_text:
+            self._status_label.setText("Could not read that file.")
+            return
+
+        import os
+        filename = os.path.basename(path)
+        instruction = f"Use the attached file '{filename}' as context:\n\n{file_text[:4000]}"
+        self._set_busy(True)
+        from gui.workers import TaskAssistReviseWorker
+        self._worker = TaskAssistReviseWorker(
+            llm_client=self._llm,
+            task=self._task,
+            current_draft=self._draft_edit.toPlainText(),
+            instruction=instruction,
+            screenshot_b64=self._screenshot_b64,
+        )
+        self._worker.revised.connect(self._on_revised)
+        self._worker.error.connect(self._on_revise_error)
+        self._worker.start()
+
+    def _read_file(self, path: str) -> str:
+        """Read a file and return its text content."""
+        try:
+            if path.lower().endswith(".docx"):
+                try:
+                    from docx import Document
+                    doc = Document(path)
+                    return "\n".join(p.text for p in doc.paragraphs if p.text.strip())
+                except ImportError:
+                    return ""
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                return f.read()
+        except Exception:
+            return ""
+
     def _set_busy(self, busy: bool):
         self._accept_btn.setEnabled(not busy)
         self._revise_btn.setEnabled(not busy)
         self._decline_btn.setEnabled(not busy)
+        self._attach_btn.setEnabled(not busy)
         self._revision_input.setEnabled(not busy)
         self._status_label.setText("Generating revised draft..." if busy else "")

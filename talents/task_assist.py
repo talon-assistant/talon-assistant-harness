@@ -100,8 +100,14 @@ class TaskAssistTalent(BaseTalent):
                     }
 
         # ── Screenshot ────────────────────────────────────────────────────────
+        # Use pre-captured screenshot from hotkey listener if available
+        # (captured before any window switch, so shows the user's active app)
+        assistant = context.get("assistant")
         screenshot_b64 = None
-        if vision:
+        if assistant and getattr(assistant, "_pending_task_assist_screenshot", None):
+            screenshot_b64 = assistant._pending_task_assist_screenshot
+            assistant._pending_task_assist_screenshot = None
+        elif vision:
             try:
                 raw_b64 = vision.capture_screenshot()
                 screenshot_b64 = self._resize_screenshot(raw_b64)
