@@ -313,6 +313,11 @@ class TalonAssistant:
         # 5. LLM routing prompt cache (rebuilt when talents change)
         self._routing_prompt_cache = None
 
+        # 5b. Skill router — BGE-based pre-filter for on-demand talent roster
+        from core.skill_router import SkillRouter
+        self._skill_router = SkillRouter()
+        self._skill_router.build(self.talents)
+
         # 6. Thread safety  (RLock so rule-triggered recursive calls don't deadlock)
         self.command_lock = threading.RLock()
 
@@ -631,7 +636,7 @@ class TalonAssistant:
           3. No talent has any signal → trust LLM (NLP-level match, e.g. "good morning")
         """
         try:
-            prompt = self._build_routing_prompt()
+            prompt = self._build_routing_prompt(query=command)
             response = self.llm.generate(
                 f"Route this command: {command}",
                 system_prompt=prompt,
@@ -673,30 +678,45 @@ class TalonAssistant:
             print(f"   [LLM Router] Error: {e}")
             return None
 
-    def _build_routing_prompt(self):
-        """Build (and cache) the system prompt listing all enabled talents."""
-        if self._routing_prompt_cache:
-            return self._routing_prompt_cache
-        lines = []
+    def _talent_roster_line(self, talent) -> str:
+        """Format one talent as a roster line."""
+        if talent.examples:
+            examples_str = "; ".join(talent.examples[:5])
+            return f"{talent.name} — {talent.description} (examples: {examples_str})"
+        kws = ", ".join(talent.keywords[:5])
+        return f"{talent.name} — {talent.description} (e.g. {kws})"
+
+    def _build_routing_prompt(self, query: str = ""):
+        """Build the routing system prompt for *query*.
+
+        Core talents (planner, conversation, conversation_rag) are always
+        included.  On-demand talents are filtered to the top-K most relevant
+        to the query via the SkillRouter.  Falls back to the full roster if
+        the router is not ready (startup, model unavailable).
+        """
+        from core.skill_router import CORE_TALENT_NAMES
+
+        # Separate core from on-demand
+        core_lines = []
         for talent in self.talents:
-            if not talent.enabled:
+            if not talent.enabled or not talent.routing_available:
                 continue
-            if not talent.routing_available:
-                continue
-            if talent.examples:
-                examples_str = "; ".join(talent.examples[:5])
-                lines.append(
-                    f"{talent.name} — {talent.description} "
-                    f"(examples: {examples_str})")
-            else:
-                kws = ", ".join(talent.keywords[:5])
-                lines.append(
-                    f"{talent.name} — {talent.description} "
-                    f"(e.g. {kws})")
-        roster = "\n".join(lines)
-        self._routing_prompt_cache = self._ROUTING_SYSTEM_PROMPT.format(
-            talent_roster=roster)
-        return self._routing_prompt_cache
+            if talent.name in CORE_TALENT_NAMES:
+                core_lines.append(self._talent_roster_line(talent))
+
+        # On-demand: use router when available, else full fallback
+        if query and self._skill_router and self._skill_router._ready:
+            on_demand_talents = self._skill_router.top_talents(query)
+        else:
+            on_demand_talents = [
+                t for t in self.talents
+                if t.enabled and t.routing_available and t.name not in CORE_TALENT_NAMES
+            ]
+
+        on_demand_lines = [self._talent_roster_line(t) for t in on_demand_talents]
+
+        roster = "\n".join(core_lines + on_demand_lines)
+        return self._ROUTING_SYSTEM_PROMPT.format(talent_roster=roster)
 
     def _get_talent_by_name(self, name):
         """Look up an enabled talent by name."""
@@ -726,8 +746,10 @@ class TalonAssistant:
         return False
 
     def invalidate_routing_cache(self):
-        """Clear the cached LLM routing prompt."""
+        """Clear the cached LLM routing prompt and rebuild skill router embeddings."""
         self._routing_prompt_cache = None
+        if hasattr(self, "_skill_router"):
+            self._skill_router.rebuild(self.talents)
 
     def invalidate_docs_cache(self):
         """Signal that the document collection has changed (call after ingestion)."""
