@@ -684,7 +684,8 @@ class MainWindow(QMainWindow):
     def _show_task_assist_pre_dialog(self, screenshot_b64: str = ""):
         """Show the pre-task dialog; on confirm, stash task+screenshot and submit."""
         from gui.dialogs.task_assist_dialog import TaskAssistPreDialog
-        dlg = TaskAssistPreDialog(screenshot_b64=screenshot_b64, parent=self)
+        llm = self.bridge.assistant.llm if self.bridge.assistant else None
+        dlg = TaskAssistPreDialog(screenshot_b64=screenshot_b64, llm_client=llm, parent=self)
         dlg.confirmed.connect(self._on_task_assist_pre_confirmed)
         dlg.exec()
 

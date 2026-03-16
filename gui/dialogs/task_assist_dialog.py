@@ -19,14 +19,19 @@ class TaskAssistPreDialog(QDialog):
 
     confirmed = pyqtSignal(str, str)   # task_text, screenshot_b64 (may be "")
 
-    def __init__(self, screenshot_b64: str = "", parent=None):
+    def __init__(self, screenshot_b64: str = "", llm_client=None, parent=None):
         super().__init__(parent)
         self._screenshot_b64 = screenshot_b64
+        self._llm = llm_client
+        self._hint_worker = None
         self.setWindowTitle("Talon Task Assist")
         self.setObjectName("task_assist_pre_dialog")
         self.setMinimumWidth(480)
         self.setModal(True)
         self._setup_ui()
+        # Kick off contextual hint generation in background
+        if llm_client and screenshot_b64:
+            self._start_hint_worker()
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
@@ -86,6 +91,17 @@ class TaskAssistPreDialog(QDialog):
         layout.addLayout(btn_row)
 
         self._task_input.setFocus()
+
+    def _start_hint_worker(self):
+        from gui.workers import ContextHintWorker
+        self._hint_worker = ContextHintWorker(self._llm, self._screenshot_b64)
+        self._hint_worker.hint.connect(self._on_hint)
+        self._hint_worker.start()
+
+    def _on_hint(self, hint: str):
+        # Only update if the user hasn't started typing yet
+        if not self._task_input.text():
+            self._task_input.setPlaceholderText(hint)
 
     def _on_ok(self):
         task = self._task_input.text().strip()

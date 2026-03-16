@@ -326,6 +326,51 @@ class TaskAssistReviseWorker(QThread):
             self.error.emit(str(e))
 
 
+class ContextHintWorker(QThread):
+    """Generates a contextual placeholder hint for the TaskAssistPreDialog.
+
+    Sends the screenshot to the vision LLM with a short prompt asking what
+    the user might want help with.  Emits hint(str) when done; the dialog
+    updates its placeholder text without blocking the UI.
+    """
+
+    hint  = pyqtSignal(str)
+    error = pyqtSignal(str)
+
+    _PROMPT = (
+        "Look at this screenshot and complete the following example placeholder "
+        "text for an AI assistant input box.\n"
+        "Return ONLY a short example task the user might want help with, "
+        "written as a lowercase phrase without quotes.\n"
+        "Examples of good output:\n"
+        "  improve the summary section of my resume\n"
+        "  refactor this function to use async/await\n"
+        "  write a reply to this email\n"
+        "  suggest edits for the introduction paragraph\n"
+        "Return only the example phrase, nothing else."
+    )
+
+    def __init__(self, llm_client, screenshot_b64: str):
+        super().__init__()
+        self._llm = llm_client
+        self._screenshot_b64 = screenshot_b64
+
+    def run(self):
+        try:
+            result = self._llm.generate(
+                self._PROMPT,
+                use_vision=True,
+                screenshot_b64=self._screenshot_b64,
+                max_length=40,
+                temperature=0.3,
+            )
+            hint = (result or "").strip().strip('"').strip("'")
+            if hint:
+                self.hint.emit(f"e.g. {hint}")
+        except Exception as e:
+            self.error.emit(str(e))
+
+
 class EmailSendWorker(QThread):
     """Sends a composed/edited email draft via SMTP off the GUI thread.
 
