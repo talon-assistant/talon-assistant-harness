@@ -23,13 +23,24 @@ from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 
 
 def _to_pynput(hotkey: str) -> str:
-    """Convert 'ctrl+shift+t' → '<ctrl>+<shift>+t' for pynput."""
-    modifiers = {"ctrl", "shift", "alt", "cmd", "meta", "super"}
+    """Convert 'ctrl+alt+space' → '<ctrl>+<alt>+<space>' for pynput.
+
+    Modifiers and special keys need angle brackets; regular letter/number
+    keys do not.
+    """
+    needs_brackets = {
+        "ctrl", "shift", "alt", "cmd", "meta", "super",
+        "space", "enter", "return", "tab", "backspace", "delete",
+        "esc", "escape", "up", "down", "left", "right",
+        "home", "end", "page_up", "page_down", "insert",
+        "f1", "f2", "f3", "f4", "f5", "f6",
+        "f7", "f8", "f9", "f10", "f11", "f12",
+    }
     parts = hotkey.lower().split("+")
     result = []
     for part in parts:
         part = part.strip()
-        result.append(f"<{part}>" if part in modifiers else part)
+        result.append(f"<{part}>" if part in needs_brackets else part)
     return "+".join(result)
 
 
