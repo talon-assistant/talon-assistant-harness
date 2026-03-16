@@ -313,8 +313,9 @@ class TalonAssistant:
         # 5. LLM routing prompt cache (rebuilt when talents change)
         self._routing_prompt_cache = None
 
-        # 5b. Pre-captured screenshot stash for hotkey-triggered Task Assist
+        # 5b. Pre-captured screenshot + task stash for hotkey-triggered Task Assist
         self._pending_task_assist_screenshot = None
+        self._pending_task_assist_task = None
 
         # 5c. Skill router — BGE-based pre-filter for on-demand talent roster
         from core.skill_router import SkillRouter

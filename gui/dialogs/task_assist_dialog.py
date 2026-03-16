@@ -3,7 +3,97 @@ from PyQt6.QtWidgets import (
     QLineEdit, QTextEdit, QPushButton, QSizePolicy,
 )
 from PyQt6.QtCore import pyqtSignal, Qt
-from PyQt6.QtGui import QFont
+from PyQt6.QtGui import QFont, QPixmap
+
+
+class TaskAssistPreDialog(QDialog):
+    """Small 'what do you need help with?' dialog shown before generating a draft.
+
+    Displayed immediately after hotkey/menu trigger so the user can describe
+    their task before the LLM runs.  Shows a thumbnail of the captured
+    screenshot (if any) so the user can confirm the right window was grabbed.
+
+    Signals:
+        confirmed(task, screenshot_b64) — user clicked OK with a task description
+    """
+
+    confirmed = pyqtSignal(str, str)   # task_text, screenshot_b64 (may be "")
+
+    def __init__(self, screenshot_b64: str = "", parent=None):
+        super().__init__(parent)
+        self._screenshot_b64 = screenshot_b64
+        self.setWindowTitle("Talon Task Assist")
+        self.setObjectName("task_assist_pre_dialog")
+        self.setMinimumWidth(480)
+        self.setModal(True)
+        self._setup_ui()
+
+    def _setup_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setSpacing(10)
+        layout.setContentsMargins(16, 16, 16, 16)
+
+        # Screenshot thumbnail
+        if self._screenshot_b64:
+            try:
+                import base64
+                from PyQt6.QtCore import QByteArray
+                raw = base64.b64decode(self._screenshot_b64)
+                pixmap = QPixmap()
+                pixmap.loadFromData(QByteArray(raw))
+                if not pixmap.isNull():
+                    thumb = pixmap.scaledToWidth(
+                        440, Qt.TransformationMode.SmoothTransformation)
+                    img_label = QLabel()
+                    img_label.setPixmap(thumb)
+                    img_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                    img_label.setObjectName("task_assist_thumb")
+                    ctx_label = QLabel("Captured screen context:")
+                    ctx_label.setObjectName("task_assist_ctx_label")
+                    layout.addWidget(ctx_label)
+                    layout.addWidget(img_label)
+            except Exception:
+                pass
+        else:
+            no_ctx = QLabel("No screen context captured — you can attach a file after the draft is generated.")
+            no_ctx.setWordWrap(True)
+            no_ctx.setObjectName("task_assist_no_ctx")
+            layout.addWidget(no_ctx)
+
+        # Task input
+        task_label = QLabel("What do you need help with?")
+        task_label.setObjectName("task_assist_pre_label")
+        layout.addWidget(task_label)
+
+        self._task_input = QLineEdit()
+        self._task_input.setObjectName("task_assist_pre_input")
+        self._task_input.setPlaceholderText(
+            "e.g. improve the summary section of my resume")
+        self._task_input.returnPressed.connect(self._on_ok)
+        layout.addWidget(self._task_input)
+
+        # Buttons
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(self.reject)
+        btn_row.addWidget(cancel_btn)
+        ok_btn = QPushButton("Generate draft")
+        ok_btn.setDefault(True)
+        ok_btn.setObjectName("task_assist_pre_ok")
+        ok_btn.clicked.connect(self._on_ok)
+        btn_row.addWidget(ok_btn)
+        layout.addLayout(btn_row)
+
+        self._task_input.setFocus()
+
+    def _on_ok(self):
+        task = self._task_input.text().strip()
+        if not task:
+            self._task_input.setFocus()
+            return
+        self.confirmed.emit(task, self._screenshot_b64)
+        self.accept()
 
 
 class TaskAssistDialog(QDialog):

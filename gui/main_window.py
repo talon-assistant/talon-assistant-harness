@@ -663,25 +663,38 @@ class MainWindow(QMainWindow):
     # ── Task Assist dialog ────────────────────────────────────
 
     def _trigger_task_assist(self, screenshot_b64: str = ""):
-        """Trigger Task Assist from menu button (no pre-captured screenshot)."""
+        """Trigger Task Assist from menu button — show pre-dialog first."""
         if self.bridge.assistant is None:
             return
         if not self.isVisible():
             self.show()
             self.raise_()
             self.activateWindow()
-        self.bridge.submit_command("task assist")
+        self._show_task_assist_pre_dialog(screenshot_b64)
 
     def _trigger_task_assist_from_hotkey(self, screenshot_b64: str):
         """Trigger Task Assist from global hotkey — screenshot already captured."""
         if self.bridge.assistant is None:
             return
-        # Bring Talon to front for the review dialog
         self.show()
         self.raise_()
         self.activateWindow()
-        # Store pre-captured screenshot so the talent skips its own capture
-        self.bridge.assistant._pending_task_assist_screenshot = screenshot_b64 or None
+        self._show_task_assist_pre_dialog(screenshot_b64)
+
+    def _show_task_assist_pre_dialog(self, screenshot_b64: str = ""):
+        """Show the pre-task dialog; on confirm, stash task+screenshot and submit."""
+        from gui.dialogs.task_assist_dialog import TaskAssistPreDialog
+        dlg = TaskAssistPreDialog(screenshot_b64=screenshot_b64, parent=self)
+        dlg.confirmed.connect(self._on_task_assist_pre_confirmed)
+        dlg.exec()
+
+    def _on_task_assist_pre_confirmed(self, task: str, screenshot_b64: str):
+        """User confirmed task description — stash both and submit command."""
+        assistant = self.bridge.assistant
+        if assistant is None:
+            return
+        assistant._pending_task_assist_screenshot = screenshot_b64 or None
+        assistant._pending_task_assist_task = task
         self.bridge.submit_command("task assist")
 
     def _on_task_assist_requested(self, payload: dict):

@@ -71,11 +71,18 @@ class TaskAssistTalent(BaseTalent):
         vision = context.get("vision")
 
         # ── Extract task description ───────────────────────────────────────────
-        task = self._extract_arg(
-            llm, command,
-            "the task or goal the user wants help with — one short sentence",
-            max_length=80,
-        ) or command.strip()
+        # Use pre-confirmed task from pre-dialog if available (stashed by MainWindow)
+        assistant = context.get("assistant")
+        task = None
+        if assistant and getattr(assistant, "_pending_task_assist_task", None):
+            task = assistant._pending_task_assist_task
+            assistant._pending_task_assist_task = None
+        if not task:
+            task = self._extract_arg(
+                llm, command,
+                "the task or goal the user wants help with — one short sentence",
+                max_length=80,
+            ) or command.strip()
 
         # ── Clipboard ─────────────────────────────────────────────────────────
         clip_text = ""
