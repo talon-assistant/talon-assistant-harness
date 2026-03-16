@@ -171,7 +171,7 @@ class MainWindow(QMainWindow):
         tools_menu = menubar.addMenu("Tools")
 
         task_assist_action = QAction("Task Assist...", self)
-        task_assist_action.setShortcut("Ctrl+Shift+T")
+        task_assist_action.setShortcut("Ctrl+Alt+Space")
         task_assist_action.setToolTip(
             "Capture screen context and open a collaborative draft review dialog")
         task_assist_action.triggered.connect(self._trigger_task_assist)
@@ -731,7 +731,7 @@ class MainWindow(QMainWindow):
 
         hotkey = (settings
                   .get("task_assist", {})
-                  .get("hotkey", "ctrl+shift+t"))
+                  .get("hotkey", "ctrl+alt+space"))
 
         from gui.hotkey_listener import HotkeyListener
         self._hotkey_listener = HotkeyListener(hotkey, parent=self)

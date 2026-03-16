@@ -34,11 +34,28 @@ def _to_pynput(hotkey: str) -> str:
 
 
 def _capture_screenshot_sync() -> str:
-    """Capture a screenshot right now and return base64 PNG (or empty string)."""
+    """Capture the active window right now and return base64 PNG (or empty string).
+
+    Uses win32gui to get the foreground window's bounding rect, then grabs
+    just that region with all_screens=True so secondary monitors are included.
+    Falls back to full primary-monitor grab if win32gui is unavailable.
+    """
     try:
         from PIL import ImageGrab
         import base64, io
-        img = ImageGrab.grab()
+        try:
+            import win32gui
+            hwnd = win32gui.GetForegroundWindow()
+            rect = win32gui.GetWindowRect(hwnd)   # (left, top, right, bottom)
+            # Clamp to sane dimensions in case rect is degenerate
+            left, top, right, bot = rect
+            if right - left > 50 and bot - top > 50:
+                img = ImageGrab.grab(bbox=rect, all_screens=True)
+            else:
+                img = ImageGrab.grab(all_screens=True)
+        except Exception:
+            # win32gui unavailable — fall back to primary monitor
+            img = ImageGrab.grab()
         # Cap at 1280px longest side
         img.thumbnail((1280, 1280))
         buf = io.BytesIO()
