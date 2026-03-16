@@ -28,14 +28,56 @@ def _install_exception_hook():
     sys.excepthook = _hook
 
 
+def _deep_merge(base: dict, override: dict) -> dict:
+    """Recursively merge override into base, returning a new dict.
+    Keys present in base but missing from override keep their base value."""
+    result = base.copy()
+    for key, value in override.items():
+        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+            result[key] = _deep_merge(result[key], value)
+        else:
+            result[key] = value
+    return result
+
+
 def _load_settings(config_dir="config"):
-    """Load settings.json and return the full dict."""
+    """Load settings.json merged on top of settings.example.json defaults.
+
+    settings.example.json is treated as the canonical defaults template.
+    Any key present in the example but absent from the user's settings.json
+    is filled in automatically — so config additions never require manual
+    user edits on existing installs.
+    """
+    # Load defaults from settings.example.json
+    defaults = {}
+    example_path = os.path.join(config_dir, "settings.example.json")
+    try:
+        with open(example_path, 'r') as f:
+            defaults = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        pass
+
+    # Load user overrides from settings.json and back it up before merging
+    user_settings = {}
     config_path = os.path.join(config_dir, "settings.json")
     try:
         with open(config_path, 'r') as f:
-            return json.load(f)
+            raw = f.read()
+        user_settings = json.loads(raw)
+        # Write a dated backup so the pre-merge original is always recoverable
+        import shutil
+        from datetime import datetime
+        backup_dir = os.path.join(config_dir, "backups")
+        os.makedirs(backup_dir, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d")
+        backup_path = os.path.join(backup_dir, f"settings_{stamp}.json")
+        if not os.path.exists(backup_path):
+            # Only write once per day so we don't thrash on every restart
+            shutil.copy2(config_path, backup_path)
     except (FileNotFoundError, json.JSONDecodeError):
-        return {}
+        pass
+
+    return _deep_merge(defaults, user_settings)
 
 
 def _setup_builtin_server(settings, config_dir="config"):

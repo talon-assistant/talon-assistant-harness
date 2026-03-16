@@ -359,10 +359,28 @@ class TalonAssistant:
         print("=" * 50 + "\n")
 
     def _load_config(self, config_dir):
-        """Load settings.json, then merge supplementary config files."""
+        """Load settings.json merged on top of settings.example.json defaults."""
+        from main import _deep_merge
+
+        # Defaults from settings.example.json
+        defaults = {}
+        example_path = os.path.join(config_dir, "settings.example.json")
+        try:
+            with open(example_path, 'r') as f:
+                defaults = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            pass
+
+        # User overrides from settings.json
+        user_settings = {}
         config_path = os.path.join(config_dir, "settings.json")
-        with open(config_path, 'r') as f:
-            config = json.load(f)
+        try:
+            with open(config_path, 'r') as f:
+                user_settings = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            pass
+
+        config = _deep_merge(defaults, user_settings)
 
         # news_digest.json — dedicated feed config; overrides any inline section
         nd_path = os.path.join(config_dir, "news_digest.json")

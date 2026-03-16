@@ -31,6 +31,7 @@ documents/
 config/settings.json
 config/hue_config.json
 config/talents.json
+config/backups/
 
 # User-installed talents
 talents/user/*.py
