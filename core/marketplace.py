@@ -97,7 +97,8 @@ class MarketplaceClient:
         """Fetch catalog JSON from the configured URL."""
         try:
             print(f"   [Marketplace] Fetching catalog from {self.catalog_url}")
-            resp = requests.get(self.catalog_url, timeout=15)
+            bust = f"?t={int(time.time())}"
+            resp = requests.get(self.catalog_url + bust, timeout=15)
             if resp.status_code == 200:
                 data = resp.json()
                 talents = data if isinstance(data, list) else data.get("talents", [])
@@ -173,7 +174,8 @@ class MarketplaceClient:
         # Download the file
         try:
             print(f"   [Marketplace] Downloading {filename} from {download_url}")
-            resp = requests.get(download_url, timeout=30)
+            bust = f"{'&' if '?' in download_url else '?'}t={int(time.time())}"
+            resp = requests.get(download_url + bust, timeout=30)
             if resp.status_code != 200:
                 return {"success": False, "filepath": "",
                         "error": f"Download failed (HTTP {resp.status_code})"}
