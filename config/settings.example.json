@@ -74,7 +74,7 @@
     "global_hotkey": "ctrl+shift+j"
   },
   "task_assist": {
-    "hotkey": "ctrl+alt+space",
+    "hotkey": "ctrl+alt+j",
     "screenshot_max_px": 1280
   },
 
