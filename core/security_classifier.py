@@ -206,7 +206,16 @@ class SecurityClassifier:
 
         model = _build_mlp(self._input_dim)
         try:
-            model.load_state_dict(ckpt["state_dict"])
+            state_dict = ckpt["state_dict"]
+            # Training script wraps Sequential in self.net → keys like 'net.0.weight'.
+            # Inference uses a bare Sequential → keys like '0.weight'.
+            # Remap transparently so both formats load correctly.
+            if any(k.startswith("net.") for k in state_dict):
+                state_dict = {
+                    (k[4:] if k.startswith("net.") else k): v
+                    for k, v in state_dict.items()
+                }
+            model.load_state_dict(state_dict)
         except Exception as exc:
             self._load_error = f"State dict mismatch: {exc}"
             if self._verbose:
