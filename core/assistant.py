@@ -1857,6 +1857,8 @@ class TalonAssistant:
                 }
                 if "pending_email" in result:
                     ret["pending_email"] = result["pending_email"]
+                if "pending_task_assist" in result:
+                    ret["pending_task_assist"] = result["pending_task_assist"]
                 return ret
 
             else:
