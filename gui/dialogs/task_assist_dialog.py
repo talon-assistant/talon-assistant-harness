@@ -189,6 +189,13 @@ class TaskAssistDialog(QDialog):
         self._revise_btn.clicked.connect(self._on_revise)
         btn_row.addWidget(self._revise_btn)
 
+        self._apply_btn = QPushButton("Apply")
+        self._apply_btn.setObjectName("task_assist_apply")
+        self._apply_btn.setToolTip(
+            "Treat this as a critique and generate a revised version from it")
+        self._apply_btn.clicked.connect(self._on_apply)
+        btn_row.addWidget(self._apply_btn)
+
         self._accept_btn = QPushButton("Accept")
         self._accept_btn.setObjectName("task_assist_accept")
         self._accept_btn.setDefault(True)
@@ -225,6 +232,30 @@ class TaskAssistDialog(QDialog):
             llm_client=self._llm,
             task=self._task,
             current_draft=self._draft_edit.toPlainText(),
+            instruction=instruction,
+            screenshot_b64=self._screenshot_b64,
+        )
+        self._worker.revised.connect(self._on_revised)
+        self._worker.error.connect(self._on_revise_error)
+        self._worker.start()
+
+    def _on_apply(self):
+        """Treat current draft as a critique and generate a revised version from it."""
+        critique = self._draft_edit.toPlainText().strip()
+        if not critique:
+            return
+        instruction = (
+            "The text above is a critique of the original content. "
+            "Using this critique as guidance, generate a revised and improved version "
+            "of the original content. Return ONLY the revised content — no preamble, "
+            "no meta-commentary, no repetition of the critique."
+        )
+        from gui.workers import TaskAssistReviseWorker
+        self._set_busy(True, "Applying critique...")
+        self._worker = TaskAssistReviseWorker(
+            llm_client=self._llm,
+            task=self._task,
+            current_draft=critique,
             instruction=instruction,
             screenshot_b64=self._screenshot_b64,
         )
@@ -289,10 +320,11 @@ class TaskAssistDialog(QDialog):
         except Exception:
             return ""
 
-    def _set_busy(self, busy: bool):
+    def _set_busy(self, busy: bool, message: str = "Generating revised draft..."):
         self._accept_btn.setEnabled(not busy)
+        self._apply_btn.setEnabled(not busy)
         self._revise_btn.setEnabled(not busy)
         self._decline_btn.setEnabled(not busy)
         self._attach_btn.setEnabled(not busy)
         self._revision_input.setEnabled(not busy)
-        self._status_label.setText("Generating revised draft..." if busy else "")
+        self._status_label.setText(message if busy else "")
