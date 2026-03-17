@@ -364,6 +364,32 @@ class EmailTalent(BaseTalent):
         subject = composed.get("subject", "No Subject")
         body    = composed.get("body", "")
 
+        # Confirmation gate: external_send
+        # When the gate is enabled (default), always show the compose/review dialog
+        # so the user can inspect and confirm before anything is sent.
+        # Only bypass the dialog and send directly when the gate is explicitly disabled.
+        from core.security import get_security_filter as _gsf
+        _sf = _gsf()
+        send_requires_confirmation = (not _sf) or _sf.gate_required("external_send")
+        if not send_requires_confirmation:
+            # Gate disabled — skip compose dialog and send immediately
+            try:
+                self._send_smtp(to, subject, body)
+                return {
+                    "success": True,
+                    "response": f"Email sent to {to}.",
+                    "actions_taken": [{"action": "email_sent", "to": to}],
+                    "spoken": False,
+                }
+            except Exception as exc:
+                return {
+                    "success": False,
+                    "response": f"Failed to send email: {exc}",
+                    "actions_taken": [],
+                    "spoken": False,
+                }
+
+        # Gate enabled — present draft for user review before sending
         return {
             "success": True,
             "response": (
@@ -433,6 +459,14 @@ class EmailTalent(BaseTalent):
                     f"Subject: {original['subject']}\n"
                     f"Body:\n{original['body'][:1500]}"
                 )
+                # Semantic injection check before passing email body to LLM
+                from core.security import get_security_filter as _gsf
+                _sf = _gsf()
+                if _sf:
+                    _blocked, _alert = _sf.check_semantic_input(original_block, "email")
+                    if _blocked:
+                        return {"response": "[Email content blocked by security filter]",
+                                "actions_taken": [], "success": False}
                 prompt = (
                     f"{_wrap_external(original_block, 'original email to reply to')}\n\n"
                     f"User instruction: {command}\n\n"
@@ -444,6 +478,33 @@ class EmailTalent(BaseTalent):
                     temperature=0.4,
                 )
 
+            # Confirmation gate: external_send
+            # Same logic as compose: show review dialog unless the gate is
+            # explicitly disabled in config.
+            from core.security import get_security_filter as _gsf
+            _sf = _gsf()
+            reply_requires_confirmation = (not _sf) or _sf.gate_required("external_send")
+            if not reply_requires_confirmation:
+                # Gate disabled — skip compose dialog and send immediately
+                try:
+                    self._send_smtp_reply(reply_to_addr, reply_subject,
+                                          reply_body, original_msg_id)
+                    return {
+                        "success": True,
+                        "response": f"Reply sent to {reply_to_addr}.",
+                        "actions_taken": [{"action": "email_reply_sent",
+                                           "to": reply_to_addr}],
+                        "spoken": False,
+                    }
+                except Exception as exc:
+                    return {
+                        "success": False,
+                        "response": f"Failed to send reply: {exc}",
+                        "actions_taken": [],
+                        "spoken": False,
+                    }
+
+            # Gate enabled — present draft for user review before sending
             return {
                 "success": True,
                 "response": (

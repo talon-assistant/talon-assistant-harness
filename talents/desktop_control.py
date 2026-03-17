@@ -75,6 +75,48 @@ class DesktopControlTalent(BaseTalent):
         "outlook": "outlook.exe"
     }
 
+    _CONFIRM_WORDS = {"yes", "confirm", "do it", "go ahead", "proceed", "execute", "run it"}
+    _CANCEL_WORDS  = {"no", "cancel", "stop", "abort", "never mind", "nevermind"}
+
+    # Syntactic blocklist: (compiled_pattern, human_label)
+    # Checked against the text of every type/open_application action before execution.
+    # Blocks destructive shell commands and system-critical path references regardless
+    # of how the user phrased the original request.
+    _ACTION_BLOCKLIST: list[tuple[re.Pattern, str]] = [
+        # System directories
+        (re.compile(r'(?i)c:\\windows\b'),                        "Windows directory"),
+        (re.compile(r'(?i)\\system32\b'),                         "System32"),
+        (re.compile(r'(?i)\\syswow64\b'),                         "SysWOW64"),
+        (re.compile(r'(?i)%systemroot%|%windir%'),                "SystemRoot env var"),
+        (re.compile(r'(?i)c:\\program files\b'),                  "Program Files"),
+        # Destructive shell commands
+        (re.compile(r'(?i)\bdel\b.+/[sqSQ]'),                    "del /s or /q"),
+        (re.compile(r'(?i)\b(?:rmdir|rd)\b.+/[sqSQ]'),           "rmdir /s or /q"),
+        (re.compile(r'(?i)\bformat\s+[a-z]:'),                    "format drive"),
+        (re.compile(r'(?i)\bdiskpart\b'),                         "diskpart"),
+        (re.compile(r'(?i)\bbcdedit\b'),                          "bcdedit"),
+        (re.compile(r'(?i)\bcipher\s+/w\b'),                      "cipher /w wipe"),
+        (re.compile(r'(?i)\brm\s+-[rf]{1,3}\b'),                  "rm -rf"),
+        # Registry manipulation
+        (re.compile(r'(?i)\breg\s+(delete|add|import|load)\b'),   "reg edit"),
+        (re.compile(r'(?i)HKEY_LOCAL_MACHINE|HKLM\\'),            "HKLM registry"),
+        (re.compile(r'(?i)HKEY_USERS|HKU\\'),                     "HKU registry"),
+        # PowerShell destructive cmdlets
+        (re.compile(r'(?i)\bRemove-Item\b.+-Recurse\b'),          "Remove-Item -Recurse"),
+        (re.compile(r'(?i)\b(?:Format-Volume|Clear-Disk)\b'),     "disk format cmdlet"),
+        (re.compile(r'(?i)\bSet-ExecutionPolicy\b'),              "Set-ExecutionPolicy"),
+        # Account / privilege escalation
+        (re.compile(r'(?i)\bnet\s+(?:user|localgroup)\b'),        "net user/localgroup"),
+        (re.compile(r'(?i)\bnet\s+accounts\b'),                   "net accounts"),
+        # Forced shutdown / restart
+        (re.compile(r'(?i)\bshutdown\s+/[srft]'),                 "shutdown command"),
+        (re.compile(r'(?i)\btaskkill\s+/f\b'),                    "taskkill /f"),
+    ]
+
+    def __init__(self):
+        super().__init__()
+        self._pending_action_plan: dict | None = None
+
     def get_config_schema(self) -> dict:
         return {
             "fields": [
@@ -94,6 +136,13 @@ class DesktopControlTalent(BaseTalent):
             self.app_launch_delay = config["app_launch_delay"]
 
     def can_handle(self, command: str) -> bool:
+        # Intercept confirmation / cancellation when a gated action is pending
+        if self._pending_action_plan is not None:
+            low = command.lower().strip()
+            if any(low == w or low.startswith(w) for w in self._CONFIRM_WORDS):
+                return True
+            if any(low == w or low.startswith(w) for w in self._CANCEL_WORDS):
+                return True
         return self.keyword_match(command)
 
     def initialize(self, config: dict) -> None:
@@ -110,6 +159,23 @@ class DesktopControlTalent(BaseTalent):
         memory_context = context.get("memory_context", "")
         speak_response = context.get("speak_response", True)
         voice = context.get("voice")
+
+        # ── Pending gate confirmation ─────────────────────────────
+        if self._pending_action_plan is not None:
+            low = command.lower().strip()
+            if any(low == w or low.startswith(w) for w in self._CANCEL_WORDS):
+                self._pending_action_plan = None
+                return {
+                    "success": True,
+                    "response": "Action cancelled.",
+                    "actions_taken": [],
+                    "spoken": False,
+                }
+            if any(low == w or low.startswith(w) for w in self._CONFIRM_WORDS):
+                plan = self._pending_action_plan
+                self._pending_action_plan = None
+                return self._execute_action_plan(
+                    plan, speak_response=speak_response, voice=voice)
 
         # ── Branch: vision query vs. desktop action ──────────────
         if self._is_vision_query(command):
@@ -207,6 +273,52 @@ class DesktopControlTalent(BaseTalent):
             }
 
         explanation = action_plan.get("explanation", "Executing...")
+        actions = action_plan.get("actions", [])
+
+        # Syntactic blocklist: scan action text before any execution
+        blocked_label = self._scan_action_plan(actions)
+        if blocked_label:
+            from core.security import get_security_filter as _gsf
+            _sf = _gsf()
+            if _sf:
+                _sf.check_input(f"[desktop_control blocked: {blocked_label}]")
+            return {
+                "success": False,
+                "response": f"I can't do that — the action involves a protected resource: {blocked_label}.",
+                "actions_taken": [],
+                "spoken": False,
+            }
+
+        # Confirmation gate: destructive_file_ops fires for any subprocess action
+        has_subprocess = any(a.get("action") == "open_application" for a in actions)
+        if has_subprocess:
+            from core.security import get_security_filter as _gsf
+            _sf = _gsf()
+            if _sf and _sf.gate_required("destructive_file_ops"):
+                action_summary = ", ".join(
+                    a.get("application", a.get("action", "?"))
+                    for a in actions
+                )
+                self._pending_action_plan = action_plan
+                return {
+                    "success": True,
+                    "response": (
+                        f"I need to launch an application to do this. "
+                        f"Planned actions: {action_summary}. "
+                        f"Say 'confirm' to proceed or 'cancel' to abort."
+                    ),
+                    "actions_taken": [],
+                    "spoken": False,
+                }
+
+        return self._execute_action_plan(
+            action_plan, speak_response=speak_response, voice=voice)
+
+    def _execute_action_plan(self, action_plan: dict,
+                             speak_response: bool = True, voice=None) -> dict:
+        """Run a parsed action plan dict, returning the standard result dict."""
+        explanation = action_plan.get("explanation", "Executing...")
+        actions = action_plan.get("actions", [])
 
         # Speak explanation before executing
         if speak_response and voice:
@@ -214,8 +326,6 @@ class DesktopControlTalent(BaseTalent):
         else:
             print(f"\n{explanation}")
 
-        # Execute actions
-        actions = action_plan.get("actions", [])
         results = []
         all_successful = True
         clipboard_text = None
@@ -244,6 +354,28 @@ class DesktopControlTalent(BaseTalent):
             "actions_taken": results,
             "spoken": True if not clipboard_text else False,
         }
+
+    def _scan_action_plan(self, actions: list[dict]) -> str | None:
+        """Scan every action's text content against _ACTION_BLOCKLIST.
+
+        Returns the human label of the first match, or None if clean.
+        Checked fields: type.text, open_application.application.
+        open_url is intentionally excluded (browser handles its own security).
+        """
+        for action in actions:
+            atype = action.get("action")
+            candidates: list[str] = []
+            if atype == "type":
+                candidates.append(action.get("text", ""))
+            elif atype == "open_application":
+                candidates.append(action.get("application", ""))
+
+            for text in candidates:
+                for pattern, label in self._ACTION_BLOCKLIST:
+                    if pattern.search(text):
+                        print(f"   [desktop_control] Blocked — matched '{label}' in: {text!r}")
+                        return label
+        return None
 
     def _append_action_schema(self, prompt):
         """Append the action JSON schema instructions"""

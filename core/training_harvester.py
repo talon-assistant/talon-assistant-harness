@@ -56,6 +56,19 @@ def append_training_pair(instruction: str, output: str, source: str) -> bool:
         except OSError:
             pass
 
+    # Semantic gate: reject pairs where the output looks like an injection attempt.
+    # Uses the same MLP classifier used for stored artifacts (artifact_type "insight").
+    try:
+        from core.security import get_security_filter
+        _sf = get_security_filter()
+        if _sf:
+            _blocked, _alert = _sf.check_semantic(output, "insight")
+            if _blocked:
+                print(f"   [Harvest] Skipped — semantic classifier flagged output ({source})")
+                return False
+    except Exception:
+        pass  # fail open
+
     record = {
         "instruction": instruction,
         "input": "",        # Alpaca format — leave empty for single-turn Q&A
