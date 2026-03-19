@@ -147,15 +147,36 @@ def _extract_epub(path: str) -> str:
     except ImportError as e:
         raise ImportError(f"EPUB support requires ebooklib and beautifulsoup4: {e}")
 
+    def _chapter_to_text(html_bytes: bytes) -> str:
+        soup = BeautifulSoup(html_bytes, "html.parser")
+        for tag in soup(["script", "style"]):
+            tag.decompose()
+        lines = []
+        root = soup.body if soup.body else soup
+        for element in root.descendants:
+            if not hasattr(element, "name"):
+                continue
+            if element.name == "table":
+                rows = []
+                for tr in element.find_all("tr"):
+                    cells = [td.get_text(" ", strip=True)
+                             for td in tr.find_all(["td", "th"])]
+                    rows.append("| " + " | ".join(cells) + " |")
+                if rows:
+                    sep = "| " + " | ".join(["---"] * (rows[0].count("|") - 1)) + " |"
+                    rows.insert(1, sep)
+                    lines.append("\n".join(rows))
+                element.decompose()
+            elif element.name in ("p", "li", "h1", "h2", "h3", "h4", "h5", "h6"):
+                text = element.get_text(" ", strip=True)
+                if text:
+                    lines.append(text)
+        return "\n".join(line for line in lines if line.strip())
+
     book = _epub.read_epub(path, options={"ignore_ncx": True})
     parts = []
     for item in book.get_items_of_type(ebooklib.ITEM_DOCUMENT):
-        soup = BeautifulSoup(item.get_content(), "html.parser")
-        for tag in soup(["script", "style"]):
-            tag.decompose()
-        text = "\n".join(
-            line for line in soup.get_text(separator="\n").splitlines() if line.strip()
-        )
+        text = _chapter_to_text(item.get_content())
         if text:
             parts.append(text)
     return _trim("\n\n".join(parts))

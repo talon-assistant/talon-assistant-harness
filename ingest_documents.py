@@ -235,11 +235,47 @@ class DocumentIngester:
             print(f"  ✗ Error reading HTML: {e}")
             return None
 
+    @staticmethod
+    def _html_chapter_to_text(html_bytes: bytes) -> str:
+        """Convert an EPUB chapter's HTML to structured plain text.
+
+        Preserves table structure as markdown so technical content (stats,
+        spec tables, comparison grids) survives ingestion.
+        """
+        soup = BeautifulSoup(html_bytes, "html.parser")
+        for tag in soup(["script", "style"]):
+            tag.decompose()
+
+        lines = []
+        for element in soup.body.descendants if soup.body else soup.descendants:
+            if not hasattr(element, "name"):
+                continue  # NavigableString — handled via parent
+            if element.name == "table":
+                # Render table as markdown
+                rows = []
+                for tr in element.find_all("tr"):
+                    cells = [td.get_text(" ", strip=True)
+                             for td in tr.find_all(["td", "th"])]
+                    rows.append("| " + " | ".join(cells) + " |")
+                if rows:
+                    # Insert a separator after the header row
+                    header_sep = "| " + " | ".join(
+                        ["---"] * rows[0].count("|") - 1) + " |"
+                    rows.insert(1, header_sep)
+                    lines.append("\n".join(rows))
+                element.decompose()   # prevent double-processing children
+            elif element.name in ("p", "li", "h1", "h2", "h3", "h4", "h5", "h6"):
+                text = element.get_text(" ", strip=True)
+                if text:
+                    lines.append(text)
+
+        result = "\n".join(lines)
+        return "\n".join(line for line in result.splitlines() if line.strip())
+
     def extract_epub(self, filepath):
-        """Extract text from EPUB using ebooklib + BeautifulSoup.
+        """Extract text from EPUB with structured table preservation.
 
         Requires: pip install ebooklib beautifulsoup4
-        beautifulsoup4 is already a dependency; ebooklib is the only addition.
         """
         try:
             import ebooklib
@@ -252,17 +288,121 @@ class DocumentIngester:
             book = _epub.read_epub(str(filepath), options={"ignore_ncx": True})
             parts = []
             for item in book.get_items_of_type(ebooklib.ITEM_DOCUMENT):
-                soup = BeautifulSoup(item.get_content(), "html.parser")
-                for tag in soup(["script", "style"]):
-                    tag.decompose()
-                text = soup.get_text(separator="\n")
-                text = "\n".join(line for line in text.splitlines() if line.strip())
+                text = self._html_chapter_to_text(item.get_content())
                 if text:
                     parts.append(text)
             return "\n\n".join(parts) if parts else None
         except Exception as e:
             print(f"  ✗ Error reading EPUB: {e}")
             return None
+
+    def ingest_epub_with_vision(self, filepath, llm_client,
+                                chunk_size: int = 400, overlap: int = 50,
+                                md_extract: bool = False) -> int:
+        """Vision-enhanced EPUB ingestion.
+
+        For each chapter: stores structured text (tables preserved as markdown).
+        For each embedded image: describes with vision LLM and stores as a
+        separate chunk, mirroring the PDF vision pipeline.
+
+        Chunk format for image chunks:
+            [VISION: <model description>]
+
+            SOURCE: <epub filename>, embedded image <n>
+        """
+        try:
+            import ebooklib
+            from ebooklib import epub as _epub
+        except ImportError:
+            print("  ✗ ebooklib not installed — run: pip install ebooklib")
+            return 0
+
+        print(f"  Processing (EPUB+vision): {filepath.name}")
+
+        book = _epub.read_epub(str(filepath), options={"ignore_ncx": True})
+
+        # Clear stale chunks
+        try:
+            existing = self.collection.get(where={"filename": filepath.name}, include=[])
+            if existing["ids"]:
+                self.collection.delete(ids=existing["ids"])
+                print(f"    → Cleared {len(existing['ids'])} existing chunks")
+        except Exception as exc:
+            print(f"    ⚠ Could not clear existing chunks: {exc}")
+
+        doc_id_base = f"doc_{filepath.stem}_{int(datetime.now().timestamp())}"
+        chunks_stored = 0
+        img_index = 0
+        t_start = time.time()
+
+        # ── Text chapters ────────────────────────────────────────────────────
+        chapters = list(book.get_items_of_type(ebooklib.ITEM_DOCUMENT))
+        for ch_idx, item in enumerate(chapters):
+            chapter_text = self._html_chapter_to_text(item.get_content())
+            if not chapter_text or len(chapter_text.split()) < 15:
+                continue
+
+            base_meta = {
+                "filename": filepath.name,
+                "source": str(filepath),
+                "chapter": ch_idx,
+                "type": "epub_chapter",
+            }
+            doc_id = f"{doc_id_base}_ch{ch_idx}"
+            self.collection.add(
+                embeddings=_emb.embed_documents([chapter_text], self._embed_model),
+                documents=[chapter_text],
+                metadatas=[base_meta],
+                ids=[doc_id],
+            )
+            chunks_stored += 1
+
+        # ── Embedded images ──────────────────────────────────────────────────
+        images = list(book.get_items_of_type(ebooklib.ITEM_IMAGE))
+        print(f"    → {len(chapters)} chapters, {len(images)} embedded image(s)")
+
+        for img_item in images:
+            img_bytes = img_item.get_content()
+            if len(img_bytes) < 1024:   # skip tiny icons / bullets
+                continue
+
+            img_b64 = base64.b64encode(img_bytes).decode()
+            img_index += 1
+            print(f"    [img {img_index}/{len(images)}] Describing...", end=" ", flush=True)
+
+            t_img = time.time()
+            vision_desc = self._describe_page(llm_client, img_b64,
+                                              img_index, filepath.name)
+            elapsed_img = time.time() - t_img
+            print(f"{elapsed_img:.1f}s")
+
+            if not vision_desc:
+                continue
+
+            chunk_text = (
+                f"[VISION: {vision_desc}]\n\n"
+                f"SOURCE: {filepath.name}, embedded image {img_index}"
+            )
+            meta = {
+                "filename": filepath.name,
+                "source": str(filepath),
+                "image_index": img_index,
+                "type": "epub_image",
+            }
+            doc_id = f"{doc_id_base}_img{img_index}"
+            self.collection.add(
+                embeddings=_emb.embed_documents([chunk_text], self._embed_model),
+                documents=[chunk_text],
+                metadatas=[meta],
+                ids=[doc_id],
+            )
+            chunks_stored += 1
+
+        elapsed_total = time.time() - t_start
+        print(f"    ✓ Ingested {chunks_stored} chunks "
+              f"in {int(elapsed_total // 60)}m{int(elapsed_total % 60):02d}s "
+              f"(epub+vision)")
+        return chunks_stored
 
     def extract_text(self, filepath):
         """Route to appropriate extractor"""
@@ -522,11 +662,16 @@ class DocumentIngester:
             use_vision:  If True and file is a PDF, use vision-enhanced ingestion.
             md_extract:  If True, run LLM entity metadata extraction per chunk.
         """
-        # Vision path: PDF + use_vision flag + running LLM server
-        if use_vision and llm_client is not None and filepath.suffix.lower() == ".pdf":
-            return self.ingest_pdf_with_vision(
-                filepath, llm_client, chunk_size=chunk_size, overlap=overlap,
-                md_extract=md_extract)
+        # Vision path: PDF or EPUB + use_vision flag + running LLM server
+        if use_vision and llm_client is not None:
+            if filepath.suffix.lower() == ".pdf":
+                return self.ingest_pdf_with_vision(
+                    filepath, llm_client, chunk_size=chunk_size, overlap=overlap,
+                    md_extract=md_extract)
+            if filepath.suffix.lower() == ".epub":
+                return self.ingest_epub_with_vision(
+                    filepath, llm_client, chunk_size=chunk_size, overlap=overlap,
+                    md_extract=md_extract)
 
         print(f"  Processing: {filepath.name}")
 
