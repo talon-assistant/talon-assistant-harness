@@ -185,7 +185,7 @@ class LLMClient:
 
             if response.status_code == 200:
                 result = response.json()
-                if 'results' in result and len(result['results']) > 0:
+                if result and 'results' in result and len(result['results']) > 0:
                     return result['results'][0]['text'].strip()
                 else:
                     return "Error: Unexpected response format"

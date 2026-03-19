@@ -376,20 +376,40 @@ class DocumentIngester:
                 chunks_stored += 1
                 sub_idx += 1
 
-        # ── Embedded images — raster only, skip SVG/tiny ──────────────────────
-        _RASTER_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
+        # ── Embedded images — convert any format to PNG, skip SVG/tiny ─────────
+        _SKIP_TYPES = {"image/svg+xml", "image/svg", "application/svg+xml"}
         all_images = list(book.get_items_of_type(ebooklib.ITEM_IMAGE))
-        raster_images = [
+        candidate_images = [
             img for img in all_images
-            if img.media_type in _RASTER_TYPES and len(img.get_content()) >= 1024
+            if (img.media_type or "") not in _SKIP_TYPES
+            and len(img.get_content()) >= 1024
         ]
         print(f"    → {len(chapters)} chapters, "
-              f"{len(raster_images)}/{len(all_images)} raster image(s) to describe")
+              f"{len(candidate_images)}/{len(all_images)} image(s) to describe")
 
-        for img_item in raster_images:
-            img_b64 = base64.b64encode(img_item.get_content()).decode()
+        for img_item in candidate_images:
+            img_bytes = img_item.get_content()
+            # Normalise to PNG so the vision model always gets a known format.
+            # Pillow handles JPEG, PNG, GIF (first frame), BMP, TIFF, WebP, etc.
+            try:
+                from PIL import Image as _PILImage
+                import io as _io
+                pil_img = _PILImage.open(_io.BytesIO(img_bytes))
+                # For animated GIFs seek to frame 0
+                if hasattr(pil_img, "n_frames") and pil_img.n_frames > 1:
+                    pil_img.seek(0)
+                # Convert palette/RGBA modes that PNG handles natively
+                if pil_img.mode not in ("RGB", "RGBA", "L"):
+                    pil_img = pil_img.convert("RGB")
+                buf = _io.BytesIO()
+                pil_img.save(buf, format="PNG")
+                img_b64 = base64.b64encode(buf.getvalue()).decode()
+            except Exception as conv_exc:
+                print(f"    ⚠ Could not convert image to PNG: {conv_exc} — skipping")
+                continue
+
             img_index += 1
-            print(f"    [img {img_index}/{len(raster_images)}] Describing...",
+            print(f"    [img {img_index}/{len(candidate_images)}] Describing...",
                   end=" ", flush=True)
 
             t_img = time.time()
