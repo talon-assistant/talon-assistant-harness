@@ -91,7 +91,7 @@ class DocumentIngester:
         self.supported_extensions = {
             '.pdf', '.txt', '.docx', '.pptx', '.md', '.markdown',
             '.py', '.js', '.java', '.cpp', '.cs', '.html', '.htm',
-            '.csv', '.xlsx', '.xls'
+            '.csv', '.xlsx', '.xls', '.epub'
         }
 
         print(f"✓ Document ingester ready!")
@@ -235,6 +235,35 @@ class DocumentIngester:
             print(f"  ✗ Error reading HTML: {e}")
             return None
 
+    def extract_epub(self, filepath):
+        """Extract text from EPUB using ebooklib + BeautifulSoup.
+
+        Requires: pip install ebooklib beautifulsoup4
+        beautifulsoup4 is already a dependency; ebooklib is the only addition.
+        """
+        try:
+            import ebooklib
+            from ebooklib import epub as _epub
+        except ImportError:
+            print("  ✗ ebooklib not installed — run: pip install ebooklib")
+            return None
+
+        try:
+            book = _epub.read_epub(str(filepath), options={"ignore_ncx": True})
+            parts = []
+            for item in book.get_items_of_type(ebooklib.ITEM_DOCUMENT):
+                soup = BeautifulSoup(item.get_content(), "html.parser")
+                for tag in soup(["script", "style"]):
+                    tag.decompose()
+                text = soup.get_text(separator="\n")
+                text = "\n".join(line for line in text.splitlines() if line.strip())
+                if text:
+                    parts.append(text)
+            return "\n\n".join(parts) if parts else None
+        except Exception as e:
+            print(f"  ✗ Error reading EPUB: {e}")
+            return None
+
     def extract_text(self, filepath):
         """Route to appropriate extractor"""
         ext = filepath.suffix.lower()
@@ -253,6 +282,8 @@ class DocumentIngester:
             return self.extract_csv_excel(filepath)
         elif ext in ['.html', '.htm']:
             return self.extract_html(filepath)
+        elif ext == '.epub':
+            return self.extract_epub(filepath)
         else:
             return None
 

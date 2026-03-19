@@ -22,7 +22,7 @@ MAX_CHARS = 32_000  # ~8 000 tokens — leaves ~8 000 tokens for overhead + resp
 
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".webp", ".gif", ".tiff"}
 _DOC_EXTS   = {".pdf", ".docx", ".xlsx", ".xls", ".pptx",
-               ".txt", ".md", ".rst", ".csv"}
+               ".txt", ".md", ".rst", ".csv", ".epub"}
 
 
 def is_image(path: str) -> bool:
@@ -56,6 +56,8 @@ def extract(path: str) -> str | None:
             return _extract_csv(path)
         if ext in (".txt", ".md", ".rst"):
             return _extract_text(path)
+        if ext == ".epub":
+            return _extract_epub(path)
         return None
     except Exception as e:
         print(f"   [DocExtractor] Failed to extract '{os.path.basename(path)}': {e}")
@@ -135,3 +137,25 @@ def _extract_csv(path: str) -> str:
 def _extract_text(path: str) -> str:
     with open(path, encoding="utf-8", errors="replace") as f:
         return _trim(f.read())
+
+
+def _extract_epub(path: str) -> str:
+    try:
+        import ebooklib
+        from ebooklib import epub as _epub
+        from bs4 import BeautifulSoup
+    except ImportError as e:
+        raise ImportError(f"EPUB support requires ebooklib and beautifulsoup4: {e}")
+
+    book = _epub.read_epub(path, options={"ignore_ncx": True})
+    parts = []
+    for item in book.get_items_of_type(ebooklib.ITEM_DOCUMENT):
+        soup = BeautifulSoup(item.get_content(), "html.parser")
+        for tag in soup(["script", "style"]):
+            tag.decompose()
+        text = "\n".join(
+            line for line in soup.get_text(separator="\n").splitlines() if line.strip()
+        )
+        if text:
+            parts.append(text)
+    return _trim("\n\n".join(parts))
