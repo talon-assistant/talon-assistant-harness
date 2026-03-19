@@ -1599,7 +1599,9 @@ class TalonAssistant:
 
         docs_available = self._check_documents_exist()
 
-        if intent == "skip" or not docs_available:
+        if intent == "skip" or not docs_available or doc_blocks:
+            # doc_blocks: user attached a document directly — its text is injected
+            # below, so ChromaDB RAG would only add unrelated chunks.
             doc_context = ""
         elif use_explicit_rag:
             doc_context = self.memory.get_document_context(
