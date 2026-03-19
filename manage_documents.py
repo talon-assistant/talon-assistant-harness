@@ -1,14 +1,19 @@
 """manage_documents.py — ChromaDB document collection management.
 
 Usage:
-    python manage_documents.py list              # List all ingested documents
-    python manage_documents.py remove <name>     # Remove a specific document by filename
-    python manage_documents.py info <name>       # Show chunk count and metadata for a doc
-    python manage_documents.py clear             # Remove ALL documents (with confirmation)
+    python manage_documents.py list                        # List all ingested documents
+    python manage_documents.py remove <name>               # Remove a specific document by filename
+    python manage_documents.py info <name>                 # Show chunk count and metadata for a doc
+    python manage_documents.py sample <name>               # Print N random full chunks (default 3)
+    python manage_documents.py sample <name> -n 5          # Print 5 random chunks
+    python manage_documents.py sample <name> -n 5 --seq    # Print first 5 chunks in order
+    python manage_documents.py sample <name> --chunk <id>  # Print one specific chunk by ID
+    python manage_documents.py clear                       # Remove ALL documents (with confirmation)
 """
 
 import argparse
 import json
+import random
 import sys
 from pathlib import Path
 
@@ -90,6 +95,68 @@ def cmd_info(collection, name: str):
         print(f"        {preview}\n")
 
 
+def cmd_sample(collection, name: str, n: int = 3, sequential: bool = False,
+               chunk_id: str = None):
+    """Print full raw text of N chunks from a document."""
+    # Single chunk by ID
+    if chunk_id:
+        result = collection.get(ids=[chunk_id], include=["metadatas", "documents"])
+        if not result["ids"]:
+            print(f"No chunk found with id '{chunk_id}'.")
+            return
+        _print_chunk(1, result["ids"][0], result["metadatas"][0], result["documents"][0])
+        return
+
+    result = collection.get(
+        where={"filename": name},
+        include=["metadatas", "documents"]
+    )
+    if not result["ids"]:
+        # Try partial match suggestion
+        all_result = collection.get(include=["metadatas"])
+        matches = set(
+            m.get("filename", "") for m in all_result["metadatas"]
+            if name.lower() in m.get("filename", "").lower()
+        )
+        if matches:
+            print(f"No exact match for '{name}'. Did you mean:")
+            for m in sorted(matches):
+                print(f"  {m}")
+        else:
+            print(f"No document found matching '{name}'.")
+        return
+
+    total = len(result["ids"])
+    ids = result["ids"]
+    metas = result["metadatas"]
+    docs = result["documents"]
+
+    if sequential:
+        indices = list(range(min(n, total)))
+    else:
+        indices = random.sample(range(total), min(n, total))
+        indices.sort()  # keep them in document order even when random
+
+    print(f"\n{name} — showing {len(indices)} of {total} chunk(s)"
+          f" ({'first' if sequential else 'random'})\n")
+    for rank, idx in enumerate(indices, 1):
+        _print_chunk(rank, ids[idx], metas[idx], docs[idx])
+
+
+def _print_chunk(rank: int, chunk_id: str, meta: dict, doc: str):
+    """Pretty-print a single chunk with its full text."""
+    chunk_type = meta.get("type", "")
+    chapter = meta.get("chapter", meta.get("page_number", ""))
+    char_count = len(doc)
+    sep = "─" * 72
+    print(f"{sep}")
+    print(f"  Chunk #{rank}  │  id: {chunk_id}")
+    print(f"  type={chunk_type}  chapter/page={chapter}  ({char_count} chars)")
+    print(sep)
+    print(doc)
+    print()
+
+
 def cmd_remove(collection, name: str):
     """Remove all chunks for a specific document."""
     result = collection.get(
@@ -152,6 +219,16 @@ def main():
     p_info = sub.add_parser("info", help="Show chunks for a specific document")
     p_info.add_argument("name", help="Filename of the document")
 
+    p_sample = sub.add_parser("sample", help="Print full raw text of sampled chunks")
+    p_sample.add_argument("name", nargs="?", default="",
+                          help="Filename of the document (omit when using --chunk)")
+    p_sample.add_argument("-n", type=int, default=3,
+                          help="Number of chunks to show (default: 3)")
+    p_sample.add_argument("--seq", action="store_true",
+                          help="Show first N chunks in order instead of random")
+    p_sample.add_argument("--chunk", metavar="ID", default=None,
+                          help="Show one specific chunk by its ChromaDB ID")
+
     p_remove = sub.add_parser("remove", help="Remove a specific document")
     p_remove.add_argument("name", help="Filename of the document to remove")
 
@@ -169,6 +246,9 @@ def main():
         cmd_list(collection)
     elif args.command == "info":
         cmd_info(collection, args.name)
+    elif args.command == "sample":
+        cmd_sample(collection, args.name, n=args.n,
+                   sequential=args.seq, chunk_id=args.chunk)
     elif args.command == "remove":
         cmd_remove(collection, args.name)
     elif args.command == "clear":
