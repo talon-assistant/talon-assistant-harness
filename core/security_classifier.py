@@ -202,7 +202,17 @@ class SecurityClassifier:
         # --- reconstruct model
         self._artifact_types = ckpt.get("artifact_types", ["email", "hint", "insight", "rule", "signal", "signal_in", "summary", "web"])
         self._embed_model_name = ckpt.get("embed_model", "BAAI/bge-base-en-v1.5")
-        self._input_dim = ckpt.get("input_dim", 773)
+
+        # Prefer the saved input_dim; fall back to inferring it from the first
+        # Linear layer's weight shape so old checkpoints (saved before input_dim
+        # was added to the checkpoint) still load correctly.
+        saved_input_dim = ckpt.get("input_dim")
+        if saved_input_dim is None:
+            state_dict_peek = ckpt.get("state_dict", {})
+            w_key = next((k for k in state_dict_peek if k.endswith("0.weight")), None)
+            saved_input_dim = (int(state_dict_peek[w_key].shape[1])
+                               if w_key is not None else 773)
+        self._input_dim = saved_input_dim
 
         model = _build_mlp(self._input_dim)
         try:
