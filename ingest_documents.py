@@ -320,7 +320,11 @@ class DocumentIngester:
 
         print(f"  Processing (EPUB+vision): {filepath.name}")
 
-        book = _epub.read_epub(str(filepath), options={"ignore_ncx": True})
+        try:
+            book = _epub.read_epub(str(filepath), options={"ignore_ncx": True})
+        except Exception as exc:
+            print(f"  ✗ Could not open EPUB: {exc}")
+            return 0
 
         # Clear stale chunks
         try:
@@ -336,40 +340,57 @@ class DocumentIngester:
         img_index = 0
         t_start = time.time()
 
-        # ── Text chapters ────────────────────────────────────────────────────
+        # ── Text chapters — chunked like the text pipeline ────────────────────
         chapters = list(book.get_items_of_type(ebooklib.ITEM_DOCUMENT))
         for ch_idx, item in enumerate(chapters):
-            chapter_text = self._html_chapter_to_text(item.get_content())
+            try:
+                chapter_text = self._html_chapter_to_text(item.get_content())
+            except Exception as exc:
+                print(f"    ⚠ Chapter {ch_idx} extraction failed: {exc}")
+                continue
             if not chapter_text or len(chapter_text.split()) < 15:
                 continue
 
-            base_meta = {
-                "filename": filepath.name,
-                "source": str(filepath),
-                "chapter": ch_idx,
-                "type": "epub_chapter",
-            }
-            doc_id = f"{doc_id_base}_ch{ch_idx}"
-            self.collection.add(
-                embeddings=_emb.embed_documents([chapter_text], self._embed_model),
-                documents=[chapter_text],
-                metadatas=[base_meta],
-                ids=[doc_id],
-            )
-            chunks_stored += 1
+            # Split long chapters into overlapping word-count chunks so
+            # retrieval works at paragraph granularity, not chapter granularity.
+            words = chapter_text.split()
+            sub_idx = 0
+            for start in range(0, len(words), chunk_size - overlap):
+                sub_text = " ".join(words[start:start + chunk_size])
+                if len(sub_text.split()) < 15:
+                    continue
+                meta = {
+                    "filename": filepath.name,
+                    "source": str(filepath),
+                    "chapter": ch_idx,
+                    "sub_chunk": sub_idx,
+                    "type": "epub_chapter",
+                }
+                doc_id = f"{doc_id_base}_ch{ch_idx}_s{sub_idx}"
+                self.collection.add(
+                    embeddings=_emb.embed_documents([sub_text], self._embed_model),
+                    documents=[sub_text],
+                    metadatas=[meta],
+                    ids=[doc_id],
+                )
+                chunks_stored += 1
+                sub_idx += 1
 
-        # ── Embedded images ──────────────────────────────────────────────────
-        images = list(book.get_items_of_type(ebooklib.ITEM_IMAGE))
-        print(f"    → {len(chapters)} chapters, {len(images)} embedded image(s)")
+        # ── Embedded images — raster only, skip SVG/tiny ──────────────────────
+        _RASTER_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
+        all_images = list(book.get_items_of_type(ebooklib.ITEM_IMAGE))
+        raster_images = [
+            img for img in all_images
+            if img.media_type in _RASTER_TYPES and len(img.get_content()) >= 1024
+        ]
+        print(f"    → {len(chapters)} chapters, "
+              f"{len(raster_images)}/{len(all_images)} raster image(s) to describe")
 
-        for img_item in images:
-            img_bytes = img_item.get_content()
-            if len(img_bytes) < 1024:   # skip tiny icons / bullets
-                continue
-
-            img_b64 = base64.b64encode(img_bytes).decode()
+        for img_item in raster_images:
+            img_b64 = base64.b64encode(img_item.get_content()).decode()
             img_index += 1
-            print(f"    [img {img_index}/{len(images)}] Describing...", end=" ", flush=True)
+            print(f"    [img {img_index}/{len(raster_images)}] Describing...",
+                  end=" ", flush=True)
 
             t_img = time.time()
             vision_desc = self._describe_page(llm_client, img_b64,
