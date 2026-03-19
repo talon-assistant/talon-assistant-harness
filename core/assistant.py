@@ -441,6 +441,15 @@ class TalonAssistant:
                             if per_talent_cfg:
                                 talent_instance.update_config(per_talent_cfg)
 
+                            # Auto-disable if required_config / required_env unmet
+                            unmet = talent_instance.check_requirements(self.config)
+                            if unmet:
+                                talent_instance.enabled = False
+                                print(
+                                    f"   [Talents] Auto-disabled '{talent_instance.name}': "
+                                    + "; ".join(unmet)
+                                )
+
                             self.talents.append(talent_instance)
 
                 except Exception as e:

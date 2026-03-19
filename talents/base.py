@@ -1,3 +1,4 @@
+import os
 import re
 from abc import ABC, abstractmethod
 
@@ -17,6 +18,8 @@ class BaseTalent(ABC):
         keywords: list    — fallback trigger words (degraded mode only)
         priority: int     — display ordering in the sidebar
         routing_available — override to False when backend is unavailable
+        required_config: list[str] — dot-notation settings.json keys that must be non-empty
+        required_env: list[str]    — OS env var names that must be set
         get_config_schema() / update_config() / initialize()
     """
 
@@ -26,9 +29,48 @@ class BaseTalent(ABC):
     examples: list[str] = []  # Natural-language example commands for LLM routing
     priority: int = 50
 
+    # Declare settings.json keys (dot-notation) or OS env vars that must be
+    # present for this talent to operate.  Missing entries auto-disable the
+    # talent at load time and print a diagnostic.
+    #
+    # Examples:
+    #   required_config = ["hue.bridge_ip", "hue.username"]
+    #   required_env    = ["OPENAI_API_KEY"]
+    required_config: list[str] = []
+    required_env: list[str] = []
+
     def __init__(self):
         self._enabled = True
         self._config = {}  # Per-talent config from talents.json
+
+    def check_requirements(self, config: dict) -> list[str]:
+        """Return a list of unmet requirement strings (empty = all satisfied).
+
+        Checks every entry in ``required_config`` against the full settings dict
+        (dot-notation traversal) and every entry in ``required_env`` against
+        ``os.environ``.  Empty strings count as missing.
+        """
+        problems: list[str] = []
+        for key_path in self.required_config:
+            if not self._get_nested(config, key_path):
+                problems.append(f"config key '{key_path}' is missing or empty")
+        for env_name in self.required_env:
+            if not os.environ.get(env_name):
+                problems.append(f"env var '{env_name}' is not set")
+        return problems
+
+    @staticmethod
+    def _get_nested(d: dict, dot_path: str):
+        """Traverse a nested dict via dot-notation and return the value.
+        Returns None if any key is absent or the value is an empty string."""
+        current = d
+        for part in dot_path.split("."):
+            if not isinstance(current, dict):
+                return None
+            current = current.get(part)
+            if current is None:
+                return None
+        return None if current == "" else current
 
     @property
     def routing_available(self) -> bool:

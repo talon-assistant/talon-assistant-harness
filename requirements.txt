@@ -43,3 +43,6 @@ plyer
 # Linux / WSL2:       pip install unsloth
 trl
 datasets
+
+# Optional — scheduler talent cron support
+croniter
