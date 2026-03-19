@@ -260,7 +260,7 @@ class DocumentIngester:
                 if rows:
                     # Insert a separator after the header row
                     header_sep = "| " + " | ".join(
-                        ["---"] * rows[0].count("|") - 1) + " |"
+                        ["---"] * max(rows[0].count("|") - 1, 1)) + " |"
                     rows.insert(1, header_sep)
                     lines.append("\n".join(rows))
                 element.decompose()   # prevent double-processing children

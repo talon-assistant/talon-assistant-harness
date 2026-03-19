@@ -163,7 +163,7 @@ def _extract_epub(path: str) -> str:
                              for td in tr.find_all(["td", "th"])]
                     rows.append("| " + " | ".join(cells) + " |")
                 if rows:
-                    sep = "| " + " | ".join(["---"] * (rows[0].count("|") - 1)) + " |"
+                    sep = "| " + " | ".join(["---"] * max(rows[0].count("|") - 1, 1)) + " |"
                     rows.insert(1, sep)
                     lines.append("\n".join(rows))
                 element.decompose()
