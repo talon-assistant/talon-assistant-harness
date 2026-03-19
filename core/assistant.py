@@ -1,5 +1,6 @@
 import os
 import json
+import queue as _queue
 import re
 import importlib
 import inspect
@@ -316,6 +317,12 @@ class TalonAssistant:
         # 5b. Pre-captured screenshot + task stash for hotkey-triggered Task Assist
         self._pending_task_assist_screenshot = None
         self._pending_task_assist_task = None
+
+        # Human-in-the-loop channel for planner mid-step clarification.
+        # request_human_input() blocks on this queue; deliver_human_input()
+        # unblocks it from the GUI thread.
+        self._human_input_queue: _queue.Queue = _queue.Queue(maxsize=1)
+        self._human_input_callback = None  # set by AssistantBridge
 
         # 5c. Skill router — BGE-based pre-filter for on-demand talent roster
         from core.skill_router import SkillRouter
@@ -1293,6 +1300,39 @@ class TalonAssistant:
             print(f"   [Buffer] Summarisation failed: {e}")
 
     # ── Behavioral rules (trigger → action) ───────────────────────
+
+    def request_human_input(self, question: str, timeout: float = 120.0) -> str:
+        """Block the calling thread until the user provides an answer.
+
+        Called by PlannerTalent (running on CommandWorker thread) when a step
+        requires clarification.  The registered _human_input_callback notifies
+        the GUI (via a Qt signal), which shows an input dialog.  The answer is
+        delivered back via deliver_human_input().
+
+        Returns the user's answer string, or "" on timeout / cancellation.
+        """
+        # Drain any stale answer left from a previous call
+        while not self._human_input_queue.empty():
+            try:
+                self._human_input_queue.get_nowait()
+            except _queue.Empty:
+                break
+
+        if self._human_input_callback:
+            self._human_input_callback(question)
+
+        try:
+            return self._human_input_queue.get(timeout=timeout)
+        except _queue.Empty:
+            print("[Assistant] Human input timed out — continuing without answer")
+            return ""
+
+    def deliver_human_input(self, answer: str) -> None:
+        """Called by the GUI thread to unblock a waiting request_human_input()."""
+        try:
+            self._human_input_queue.put_nowait(answer)
+        except _queue.Full:
+            pass  # Already answered — discard
 
     def _check_rules(self, command):
         """Check if the command matches a stored behavioral rule.

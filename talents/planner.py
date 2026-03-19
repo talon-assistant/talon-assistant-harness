@@ -57,6 +57,7 @@ Rules:
 - Steps are executed in order; keep them short and specific.
 - Maximum 8 steps.
 - If the request is really just a single action, set is_multi_step to false.
+- If a required detail is missing (e.g. which folder, which device, which contact), add a step BEFORE the steps that need it using the prefix "ask_user: <clear question>". Later steps that depend on the answer should include the placeholder {{user_input}} where the answer will be substituted at runtime. Only ask when genuinely needed — do not ask for things that can be reasonably inferred.
 
 Respond ONLY with a JSON object — no markdown, no explanation:
 
@@ -148,9 +149,36 @@ If single-step:
         # ── Step 3: Execute each step ─────────────────────────────────────────
         step_results = []
         all_ok = True
+        last_user_input = ""  # answer from the most recent ask_user step
 
         for i, step in enumerate(steps, 1):
+            # Substitute {user_input} with the last answer the user provided
+            if last_user_input and "{user_input}" in step:
+                step = step.replace("{user_input}", last_user_input)
+
             print(f"   [Planner] Executing step {i}/{len(steps)}: {step}")
+
+            # ── ask_user: step — pause and ask for clarification ──────────
+            if step.strip().lower().startswith("ask_user:"):
+                question = step.split(":", 1)[1].strip()
+                if notify:
+                    notify(f"Step {i}/{len(steps)}", f"Needs input: {question}")
+
+                if hasattr(assistant, "request_human_input"):
+                    last_user_input = assistant.request_human_input(question)
+                else:
+                    last_user_input = ""
+
+                step_results.append({
+                    "step": i,
+                    "command": step,
+                    "talent": "human_input",
+                    "response": f"User answered: {last_user_input}" if last_user_input else "(no answer)",
+                    "success": bool(last_user_input),
+                })
+                if not last_user_input:
+                    all_ok = False
+                continue
 
             # Toast notification for real-time progress in the GUI
             if notify:

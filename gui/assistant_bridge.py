@@ -63,6 +63,10 @@ class AssistantBridge(QObject):
     # LLM server status
     server_status = pyqtSignal(str)  # stopped/starting/running/error
 
+    # Planner human-in-the-loop — emitted (from CommandWorker thread) when the
+    # planner needs the user to answer a question mid-routine
+    planner_input_requested = pyqtSignal(str)  # question text
+
     def __init__(self, config_dir="config"):
         super().__init__()
         self.config_dir = config_dir
@@ -86,6 +90,10 @@ class AssistantBridge(QObject):
 
         # Wire notification callback so talents can push toast/tray notifications
         self.assistant.notify_callback = self._talent_notify
+
+        # Wire human-in-the-loop callback for planner mid-step clarification.
+        # Called from CommandWorker thread — emits a Qt signal (auto-queued to GUI).
+        self.assistant._human_input_callback = self.planner_input_requested.emit
 
         # Re-wire any ReminderTalent timers loaded at startup (before bridge existed)
         for talent in self.assistant.talents:
@@ -492,6 +500,14 @@ class AssistantBridge(QObject):
                 "has_config": bool(schema and schema.get("fields")),
             })
         self.talents_loaded.emit(talent_list)
+
+    def deliver_planner_input(self, answer: str) -> None:
+        """Called by the GUI after the user answers a planner clarification dialog.
+
+        Unblocks the CommandWorker thread that is waiting in request_human_input().
+        """
+        if self.assistant:
+            self.assistant.deliver_human_input(answer)
 
     def _talent_notify(self, title, message):
         """Callback given to talents via context['notify'].

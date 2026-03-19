@@ -332,6 +332,9 @@ class MainWindow(QMainWindow):
         # Task Assist dialog (draft + review flow)
         self.bridge.task_assist_requested.connect(self._on_task_assist_requested)
 
+        # Planner human-in-the-loop: mid-routine clarification dialog
+        self.bridge.planner_input_requested.connect(self._on_planner_input_requested)
+
     def _on_init_complete(self):
         """Called when TalonAssistant is fully initialized."""
         self.chat_view.add_system_message("Talon is ready! Type a command or toggle voice mode.")
@@ -603,6 +606,24 @@ class MainWindow(QMainWindow):
     def _on_notification(self, title, message):
         if self.system_tray and not self.isVisible():
             self.system_tray.show_notification(title, message)
+
+    # ── Planner human-in-the-loop ────────────────────────────────
+
+    def _on_planner_input_requested(self, question: str):
+        """Show a blocking input dialog when the planner needs clarification.
+
+        Called on the GUI thread (signal queued from CommandWorker thread).
+        Blocks the GUI event loop via QInputDialog until the user responds,
+        then delivers the answer back to unblock the planner.
+        """
+        from PyQt6.QtWidgets import QInputDialog, QLineEdit
+        text, ok = QInputDialog.getText(
+            self,
+            "Talon needs more information",
+            question,
+            QLineEdit.EchoMode.Normal,
+        )
+        self.bridge.deliver_planner_input(text.strip() if ok else "")
 
     # ── Reminder alert (dismissable dialog) ────────────────────
 
