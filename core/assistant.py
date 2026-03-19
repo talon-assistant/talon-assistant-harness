@@ -1599,9 +1599,11 @@ class TalonAssistant:
 
         docs_available = self._check_documents_exist()
 
-        if intent == "skip" or not docs_available or doc_blocks:
-            # doc_blocks: user attached a document directly — its text is injected
-            # below, so ChromaDB RAG would only add unrelated chunks.
+        if intent == "skip" or not docs_available or (doc_blocks and not rag_explicit):
+            # doc_blocks without explicit RAG: attached document is injected directly,
+            # so ChromaDB RAG would only add unrelated chunks — skip it.
+            # If the user explicitly asks to cross-reference ("compare with my documents",
+            # "check the rulebook", etc.), rag_explicit overrides and RAG runs alongside.
             doc_context = ""
         elif use_explicit_rag:
             doc_context = self.memory.get_document_context(
