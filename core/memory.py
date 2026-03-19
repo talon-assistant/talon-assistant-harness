@@ -865,21 +865,30 @@ class MemorySystem:
             else:
                 all_chunks.sort(key=lambda x: x[2])
 
-            MAX_INJECT = 12 if use_explicit else 8
-            all_chunks = all_chunks[:MAX_INJECT]
+            # Candidate pool for reranker: slightly larger than final cap so
+            # the cross-encoder has enough to choose from.
+            RERANK_POOL = 12 if use_explicit else 2
+            FINAL_CAP   = 8  if use_explicit else 2
+            all_chunks = all_chunks[:RERANK_POOL]
 
             # ── Phase 2.5: cross-encoder reranking (explicit mode) ────────
             # Score each (query, chunk) pair jointly — much more accurate than
             # cosine distance, especially when query and document vocabularies
             # differ.  Only applied in explicit mode where latency tolerance is
             # higher (user explicitly asked for document search).
+            #
+            # min_score=-1.0: bge-reranker-base raw logits.  Clearly irrelevant
+            # pairs score ≈ -10 to -3; borderline ≈ -3 to 0; relevant > 0.
+            # -1.0 cuts out most noise while keeping strong marginal matches.
+            RERANK_MIN_SCORE = -1.0
             if use_explicit and len(all_chunks) > 1:
                 n_before = len(all_chunks)
                 all_chunks = _reranker.rerank(
-                    query, all_chunks, self._reranker_model, top_k=MAX_INJECT
+                    query, all_chunks, self._reranker_model,
+                    top_k=FINAL_CAP, min_score=RERANK_MIN_SCORE,
                 )
                 print(f"   [RAG] Cross-encoder reranked {n_before}→{len(all_chunks)} chunks "
-                      f"(min_score=-2.0)")
+                      f"(min_score={RERANK_MIN_SCORE})")
                 if not all_chunks:
                     print("   [RAG] All chunks below reranker threshold — skipping injection")
                     return ""
