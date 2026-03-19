@@ -10,7 +10,10 @@ class DesktopControlTalent(BaseTalent):
     name = "desktop_control"
     description = "Control desktop applications via keyboard and mouse, or describe what is on screen using vision"
     keywords = ["open", "click", "type", "press", "close", "start", "launch", "run",
-                "change", "make", "set", "navigate to", "browse to"]
+                "change", "make", "set", "navigate to", "browse to",
+                "create file", "create a file", "write file", "write a file",
+                "delete file", "delete a file", "rename file", "rename a file",
+                "move file", "copy file"]
     examples = [
         "open Chrome",
         "launch the calculator",
@@ -24,6 +27,10 @@ class DesktopControlTalent(BaseTalent):
         "what does it say",
         "read it out to me",
         "what is the result",
+        # File operations
+        "create a file called notes.txt in my documents",
+        "delete the file test.txt from my desktop",
+        "rename report.docx to final_report.docx",
         # URL / browser navigation
         "open a browser and go to cnn.com",
         "open chrome and navigate to youtube.com",
@@ -445,6 +452,18 @@ Example — typing text in notepad:
   "actions": [
     {"action": "open_application", "application": "notepad"},
     {"action": "type", "text": "Hello World! This is a test."}
+  ]
+}
+
+Example — creating a file via command prompt:
+{
+  "explanation": "Creating plain.txt in C:\\Users\\you",
+  "actions": [
+    {"action": "open_application", "application": "cmd"},
+    {"action": "type", "text": "echo. > \"C:\\Users\\you\\plain.txt\""},
+    {"action": "press_key", "key": "enter"},
+    {"action": "type", "text": "exit"},
+    {"action": "press_key", "key": "enter"}
   ]
 }
 
