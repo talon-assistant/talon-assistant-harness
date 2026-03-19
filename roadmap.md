@@ -92,6 +92,13 @@ This bridges the one-shot review path to the permanent RAG ingest pipeline.
 - RAG: corpus-frequency stop words for `$contains` — skip generic terms like
   "damage" or "shadowrun" that match too broadly across the corpus
 - Self-writing talents — Talon generates new talent plugins from a user description
+- **Configurable `--mdextract` domain schema** — The metadata extraction prompt is
+  hardwired for RPG content (creatures, spells, stats, locations). Add a `--domain`
+  flag (e.g. `--domain security`, `--domain networking`, `--domain programming`) that
+  swaps in an appropriate entity schema, or auto-detect from filename/content.
+  Until then `--mdextract` is not useful for technical books — for security books
+  you'd want CVEs, tool names, techniques, protocols; for programming books you'd
+  want function names, classes, parameters, APIs.
 
 ---
 
