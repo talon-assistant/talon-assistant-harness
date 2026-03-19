@@ -39,17 +39,45 @@ def _get_collection(chroma_path: str):
     )
 
 
+def _iter_all(collection, include: list[str], batch_size: int = 500):
+    """Paginate through the entire collection in batches.
+
+    Yields dicts with keys matching ``include`` plus "ids".
+    Avoids SQLite 'too many variables' on large collections.
+    """
+    offset = 0
+    while True:
+        result = collection.get(include=include, limit=batch_size, offset=offset)
+        batch_ids = result.get("ids", [])
+        if not batch_ids:
+            break
+        yield result
+        offset += len(batch_ids)
+        if len(batch_ids) < batch_size:
+            break
+
+
+def _all_metadatas(collection) -> tuple[list[str], list[dict]]:
+    """Return (ids, metadatas) for the entire collection, paginated."""
+    all_ids: list[str] = []
+    all_metas: list[dict] = []
+    for batch in _iter_all(collection, include=["metadatas"]):
+        all_ids.extend(batch["ids"])
+        all_metas.extend(batch["metadatas"])
+    return all_ids, all_metas
+
+
 def cmd_list(collection):
     """List all ingested documents with chunk counts."""
-    result = collection.get(include=["metadatas"])
-    if not result["ids"]:
+    all_ids, all_metas = _all_metadatas(collection)
+    if not all_ids:
         print("No documents ingested.")
         return
 
     # Aggregate by filename
     counts: dict[str, int] = {}
     types: dict[str, set] = {}
-    for meta in result["metadatas"]:
+    for meta in all_metas:
         fname = meta.get("filename", "<unknown>")
         counts[fname] = counts.get(fname, 0) + 1
         chunk_type = meta.get("type", "")
@@ -60,7 +88,7 @@ def cmd_list(collection):
     for fname in sorted(counts):
         type_str = ", ".join(sorted(types[fname]))
         print(f"{fname:<60} {counts[fname]:>6}  {type_str}")
-    print(f"\nTotal: {len(counts)} document(s), {len(result['ids'])} chunk(s)")
+    print(f"\nTotal: {len(counts)} document(s), {len(all_ids)} chunk(s)")
 
 
 def cmd_info(collection, name: str):
@@ -71,9 +99,9 @@ def cmd_info(collection, name: str):
     )
     if not result["ids"]:
         # Try partial match
-        all_result = collection.get(include=["metadatas"])
+        _, all_metas = _all_metadatas(collection)
         matches = set(
-            m.get("filename", "") for m in all_result["metadatas"]
+            m.get("filename", "") for m in all_metas
             if name.lower() in m.get("filename", "").lower()
         )
         if matches:
@@ -113,9 +141,9 @@ def cmd_sample(collection, name: str, n: int = 3, sequential: bool = False,
     )
     if not result["ids"]:
         # Try partial match suggestion
-        all_result = collection.get(include=["metadatas"])
+        _, all_metas = _all_metadatas(collection)
         matches = set(
-            m.get("filename", "") for m in all_result["metadatas"]
+            m.get("filename", "") for m in all_metas
             if name.lower() in m.get("filename", "").lower()
         )
         if matches:
@@ -165,9 +193,9 @@ def cmd_remove(collection, name: str):
     )
     if not result["ids"]:
         # Try partial match
-        all_result = collection.get(include=["metadatas"])
+        _, all_metas = _all_metadatas(collection)
         matches = set(
-            m.get("filename", "") for m in all_result["metadatas"]
+            m.get("filename", "") for m in all_metas
             if name.lower() in m.get("filename", "").lower()
         )
         if matches:
@@ -191,8 +219,12 @@ def cmd_remove(collection, name: str):
 
 def cmd_clear(collection):
     """Remove ALL documents from the collection."""
-    result = collection.get(include=[])
-    count = len(result["ids"])
+    # Count via paginated fetch to avoid SQLite variable limit
+    all_ids: list[str] = []
+    for batch in _iter_all(collection, include=[]):
+        all_ids.extend(batch["ids"])
+
+    count = len(all_ids)
     if count == 0:
         print("Collection is already empty.")
         return
@@ -205,7 +237,10 @@ def cmd_clear(collection):
         print("Aborted.")
         return
 
-    collection.delete(ids=result["ids"])
+    # Delete in batches to avoid the same SQLite variable limit on delete
+    batch_size = 500
+    for i in range(0, count, batch_size):
+        collection.delete(ids=all_ids[i:i + batch_size])
     print(f"✓ Cleared {count} chunk(s).")
 
 
