@@ -58,3 +58,18 @@ def embed_queries(texts: list[str], model_name: str) -> list[list[float]]:
         prefixed, normalize_embeddings=True, show_progress_bar=False
     )
     return vecs.tolist()
+
+
+class TalonEmbeddings:
+    """Thin class wrapper around the module-level embedding functions.
+
+    Exists so callers that prefer an object interface (e.g. SecurityClassifier)
+    can import and instantiate this instead of referencing the functions directly.
+    The underlying model cache is shared with the module-level functions.
+    """
+
+    def embed_documents(self, texts: list[str], model_name: str) -> list[list[float]]:
+        return embed_documents(texts, model_name)
+
+    def embed_queries(self, texts: list[str], model_name: str) -> list[list[float]]:
+        return embed_queries(texts, model_name)
