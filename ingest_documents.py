@@ -241,36 +241,37 @@ class DocumentIngester:
 
         Preserves table structure as markdown so technical content (stats,
         spec tables, comparison grids) survives ingestion.
+
+        Two-pass approach: tables are converted to markdown and replaced
+        in-place BEFORE any iteration, avoiding BeautifulSoup linked-list
+        corruption from decompose() during a descendants walk.
         """
+        from bs4 import NavigableString as _NS
         soup = BeautifulSoup(html_bytes, "html.parser")
         for tag in soup(["script", "style"]):
             tag.decompose()
 
-        lines = []
-        for element in soup.body.descendants if soup.body else soup.descendants:
-            if not hasattr(element, "name"):
-                continue  # NavigableString — handled via parent
-            if element.name == "table":
-                # Render table as markdown
-                rows = []
-                for tr in element.find_all("tr"):
-                    cells = [td.get_text(" ", strip=True)
-                             for td in tr.find_all(["td", "th"])]
+        # Pass 1: replace every <table> with its markdown equivalent in-place.
+        # find_all() returns a static list so replacements don't affect iteration.
+        for table in soup.find_all("table"):
+            rows = []
+            for tr in table.find_all("tr"):
+                cells = [td.get_text(" ", strip=True)
+                         for td in tr.find_all(["td", "th"])]
+                if cells:
                     rows.append("| " + " | ".join(cells) + " |")
-                if rows:
-                    # Insert a separator after the header row
-                    header_sep = "| " + " | ".join(
-                        ["---"] * max(rows[0].count("|") - 1, 1)) + " |"
-                    rows.insert(1, header_sep)
-                    lines.append("\n".join(rows))
-                element.decompose()   # prevent double-processing children
-            elif element.name in ("p", "li", "h1", "h2", "h3", "h4", "h5", "h6"):
-                text = element.get_text(" ", strip=True)
-                if text:
-                    lines.append(text)
+            if rows:
+                sep = "| " + " | ".join(
+                    ["---"] * max(rows[0].count("|") - 1, 1)) + " |"
+                rows.insert(1, sep)
+                table.replace_with(_NS("\n" + "\n".join(rows) + "\n"))
+            else:
+                table.decompose()
 
-        result = "\n".join(lines)
-        return "\n".join(line for line in result.splitlines() if line.strip())
+        # Pass 2: plain text extraction — tables are now inline markdown strings.
+        root = soup.body if soup.body else soup
+        text = root.get_text(separator="\n")
+        return "\n".join(line for line in text.splitlines() if line.strip())
 
     def extract_epub(self, filepath):
         """Extract text from EPUB with structured table preservation.

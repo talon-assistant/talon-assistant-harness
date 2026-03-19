@@ -148,30 +148,26 @@ def _extract_epub(path: str) -> str:
         raise ImportError(f"EPUB support requires ebooklib and beautifulsoup4: {e}")
 
     def _chapter_to_text(html_bytes: bytes) -> str:
+        from bs4 import NavigableString as _NS
         soup = BeautifulSoup(html_bytes, "html.parser")
         for tag in soup(["script", "style"]):
             tag.decompose()
-        lines = []
-        root = soup.body if soup.body else soup
-        for element in root.descendants:
-            if not hasattr(element, "name"):
-                continue
-            if element.name == "table":
-                rows = []
-                for tr in element.find_all("tr"):
-                    cells = [td.get_text(" ", strip=True)
-                             for td in tr.find_all(["td", "th"])]
+        for table in soup.find_all("table"):
+            rows = []
+            for tr in table.find_all("tr"):
+                cells = [td.get_text(" ", strip=True)
+                         for td in tr.find_all(["td", "th"])]
+                if cells:
                     rows.append("| " + " | ".join(cells) + " |")
-                if rows:
-                    sep = "| " + " | ".join(["---"] * max(rows[0].count("|") - 1, 1)) + " |"
-                    rows.insert(1, sep)
-                    lines.append("\n".join(rows))
-                element.decompose()
-            elif element.name in ("p", "li", "h1", "h2", "h3", "h4", "h5", "h6"):
-                text = element.get_text(" ", strip=True)
-                if text:
-                    lines.append(text)
-        return "\n".join(line for line in lines if line.strip())
+            if rows:
+                sep = "| " + " | ".join(["---"] * max(rows[0].count("|") - 1, 1)) + " |"
+                rows.insert(1, sep)
+                table.replace_with(_NS("\n" + "\n".join(rows) + "\n"))
+            else:
+                table.decompose()
+        root = soup.body if soup.body else soup
+        text = root.get_text(separator="\n")
+        return "\n".join(line for line in text.splitlines() if line.strip())
 
     book = _epub.read_epub(path, options={"ignore_ncx": True})
     parts = []
