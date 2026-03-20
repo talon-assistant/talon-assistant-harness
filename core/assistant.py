@@ -1495,6 +1495,35 @@ class TalonAssistant:
                 print(f"\nTalon: {response}")
             return response
 
+        # Fast-path: local system facts — answer directly without LLM or RAG.
+        _SYS_TRIGGERS = {
+            ("home directory", "home folder", "home dir",
+             "my home", "home path"):
+                lambda: os.path.expanduser("~"),
+            ("username", "my user", "my account", "current user",
+             "logged in as", "who am i"):
+                lambda: os.environ.get("USERNAME") or os.environ.get("USER", "unknown"),
+            ("current directory", "working directory", "current folder",
+             "present directory", "pwd"):
+                lambda: os.getcwd(),
+            ("computer name", "hostname", "machine name", "pc name"):
+                lambda: __import__("socket").gethostname(),
+            ("operating system", "what os", "which os", "my os",
+             "what system", "platform"):
+                lambda: __import__("platform").system() + " " +
+                        __import__("platform").release(),
+        }
+        for triggers, fn in _SYS_TRIGGERS.items():
+            if any(t in cmd_lower for t in triggers):
+                val = fn()
+                response = f"{val}"
+                self.memory.log_command(command, success=True, response=response)
+                if speak_response:
+                    self.voice.speak(response)
+                else:
+                    print(f"\nTalon: {response}")
+                return response
+
         # Fast-path: rule definition detected — store it and acknowledge directly
         # without wasting an LLM call on a conversational reply.
         if any(ind in cmd_lower for ind in self._RULE_INDICATORS):
