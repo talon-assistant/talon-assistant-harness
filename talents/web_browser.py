@@ -93,6 +93,9 @@ class WebBrowserTalent(BaseTalent):
         "check hacker news",
         "browse to arstechnica.com",
         "what are the latest stories on npr.org",
+        "connect to dallasobserver.com and find things to do this weekend",
+        "connect to the dallas observer website",
+        "can you connect to that site and read it",
     ]
     keywords = [
         "headlines at", "stories at", "browse to", "fetch http",

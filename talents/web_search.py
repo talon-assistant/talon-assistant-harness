@@ -41,6 +41,13 @@ class WebSearchTalent(BaseTalent):
         + _INJECTION_DEFENSE_CLAUSE
     )
 
+    # Conversational openers to strip before prefix detection
+    _CONVERSATIONAL_OPENERS = [
+        "can you ", "could you ", "would you ", "will you ",
+        "please ", "are you able to ", "i need you to ",
+        "i want you to ", "i'd like you to ",
+    ]
+
     # Lighter touch on query cleaning — only strip command prefixes, keep the question
     _COMMAND_PREFIXES = [
         "search the web for", "search the internet for",
@@ -117,9 +124,13 @@ class WebSearchTalent(BaseTalent):
             return None
 
         # Case 2: Referential command ("search for it", "look that up", etc.).
-        # Strip any prefixes first; if what remains is very short or matches a
-        # referential trigger, pull the actual topic from the buffer.
+        # Strip conversational openers first ("can you", "could you", etc.),
+        # then strip command prefixes ("search the web for", "look up", etc.).
         stripped = cmd_lower
+        for opener in self._CONVERSATIONAL_OPENERS:
+            if stripped.startswith(opener):
+                stripped = stripped[len(opener):].strip()
+                break
         for prefix in self._COMMAND_PREFIXES:
             if stripped.startswith(prefix):
                 stripped = stripped[len(prefix):].strip()
