@@ -892,9 +892,13 @@ class TalonAssistant:
         """Detect if user wants to repeat last action.
 
         Uses word-boundary matching to avoid false positives like
-        'again' matching inside 'against'.
+        'again' matching inside 'against'. Commands longer than 8 words
+        are unlikely to be bare repeat requests — they probably contain
+        'again' incidentally (e.g. 'can you try again with web search').
         """
         import re
+        if len(command.split()) > 8:
+            return False
         repeat_keywords = ['again', 'repeat', 'do that', 'same thing', 'one more time']
         cmd_lower = command.lower()
         return any(re.search(r'\b' + re.escape(kw) + r'\b', cmd_lower)

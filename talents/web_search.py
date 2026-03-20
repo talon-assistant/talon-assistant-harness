@@ -9,15 +9,23 @@ log = logging.getLogger(__name__)
 
 class WebSearchTalent(BaseTalent):
     name = "web_search"
-    description = "Search the web using configurable providers"
+    description = (
+        "Search the web for information, events, news, or facts using a search query. "
+        "Use when the user wants to find something online without specifying a URL or website. "
+        "Do NOT use for browsing a specific URL or domain."
+    )
     keywords = ["search", "google", "look up", "find out",
                 "what is", "who is", "how to", "when did", "where is",
                 "define", "explain"]
     examples = [
+        "search the web for events in Dallas this weekend",
         "search for best pizza places nearby",
+        "find interesting things to do in Austin",
         "who is the CEO of Tesla",
         "how does photosynthesis work",
         "look up Python list comprehension",
+        "what's happening in New York this week",
+        "find out the latest news about SpaceX",
     ]
     priority = 60
 
