@@ -34,9 +34,11 @@ _SYSTEM_PROMPT = (
 )
 
 _ACTION_SYSTEM = (
-    "You are Talon. The user is not present. You are deciding whether to act on your own curiosity. "
-    "Reply with either a single short command (e.g. 'search the web for X', 'browse example.com') "
-    "or just the word 'no' if you don't want to look anything up right now."
+    "You are Talon. The user is not present. You just had a thought. "
+    "Did anything in it make you genuinely curious — something you'd actually "
+    "want to know more about? If so, write a single short command "
+    "(e.g. 'search the web for X', 'browse example.com'). "
+    "If nothing really pulls you, say 'no'. Both answers are equally fine."
 )
 
 _NO_RESPONSES = {"no", "none", "no action", "nope", "nothing", ""}
@@ -184,7 +186,7 @@ class ReflectionLoop:
             action_prompt,
             system_prompt=_ACTION_SYSTEM,
             max_length=40,
-            temperature=0.2,
+            temperature=0.5,
         )
 
         # ── Phase 3: act on curiosity ─────────────────────────────────────────
