@@ -129,7 +129,7 @@ class WebBrowserTalent(BaseTalent):
 
     # ── URL / domain extraction ───────────────────────────────────────────────
 
-    def _extract_url(self, command: str, llm) -> str | None:
+    def _extract_url(self, command: str, llm, context: dict | None = None) -> str | None:
         """Return a fully-qualified URL from the command, or None."""
         # 1. Explicit http(s) URL
         m = re.search(r'https?://\S+', command)
@@ -155,7 +155,34 @@ class WebBrowserTalent(BaseTalent):
             if alias in cmd_lower:
                 return alias.replace(" ", "")   # return alias key for RSS lookup
 
-        # 4. LLM extraction — last resort
+        # 4. Scan conversation buffer for URLs from recent assistant responses.
+        # When the user says "summarize the culturemap list", the previous
+        # web_search response may have included a culturemap.com URL.
+        assistant = (context or {}).get("assistant")
+        if assistant and hasattr(assistant, "conversation_buffer"):
+            url_re = re.compile(r'https?://[^\s)\]>,"\']+')
+            for entry in reversed(list(assistant.conversation_buffer)):
+                if entry.get("role") not in ("talon", "assistant"):
+                    continue
+                urls = url_re.findall(entry.get("text", ""))
+                if not urls:
+                    continue
+                # If only one URL, use it. If multiple, ask the LLM to pick.
+                if len(urls) == 1:
+                    print(f"   [WebBrowser] URL from buffer: {urls[0]}")
+                    return _normalise_url(urls[0])
+                pick = self._extract_arg(
+                    llm,
+                    f"Command: {command}\nURLs found: {', '.join(urls)}",
+                    "the single URL most relevant to the command",
+                    max_length=120,
+                )
+                if pick and pick.upper() != "NONE" and pick.startswith("http"):
+                    print(f"   [WebBrowser] URL from buffer (LLM pick): {pick}")
+                    return _normalise_url(pick)
+                # Fall through to LLM extraction
+
+        # 5. LLM extraction — last resort
         raw = self._extract_arg(
             llm, command, "website URL or domain name (e.g. cnn.com)", max_length=50
         )
@@ -264,7 +291,7 @@ class WebBrowserTalent(BaseTalent):
         voice          = context.get("voice")
 
         # ── Step 1: resolve URL ───────────────────────────────────────────────
-        url = self._extract_url(command, llm)
+        url = self._extract_url(command, llm, context)
         if not url:
             return {
                 "success": False,

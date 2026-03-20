@@ -35,9 +35,10 @@ class WebSearchTalent(BaseTalent):
         "You MUST answer using ONLY the search results provided in the user message. "
         "NEVER use your own knowledge or training data. "
         "If the search results contain the answer, state it directly with specific numbers and facts. "
+        "After each source you cite, include its URL in parentheses — e.g. (https://example.com). "
         "If the search results do NOT contain enough information, say "
         "\"I couldn't find specific information about that in the search results.\" "
-        "NEVER make up data. NEVER guess. NEVER say 'check website X'."
+        "NEVER make up data. NEVER guess. NEVER omit URLs for sources you cite."
         + _INJECTION_DEFENSE_CLAUSE
     )
 
