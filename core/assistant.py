@@ -198,6 +198,10 @@ class TalonAssistant:
          "search the web for {0}"),
         (r"(?i)\bi(?:'ll| will) (?:retrieve|fetch|get) (?:the |that )?(.+?)(?:\.|!|\?|$)",
          "search the web for {0}"),
+        (r"(?i)\bi(?:'ll| will) find (?:you )?(.+?)(?:\.|!|\?|$)",
+         "search the web for {0}"),
+        (r"(?i)\bi(?:'ll| will) (?:look for|hunt down|track down) (.+?)(?:\.|!|\?|$)",
+         "search the web for {0}"),
     ]
 
     # ── Intent classification patterns ────────────────────────────
