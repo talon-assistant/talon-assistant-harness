@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import threading
 import time
+import traceback
 from datetime import datetime
 
 
@@ -66,24 +67,25 @@ class ReflectionLoop:
     # ── internal ──────────────────────────────────────────────────────────────
 
     def _loop(self) -> None:
-        # Give startup time to settle before the first reflection.
-        initial_wait = 300  # 5 minutes
+        interval_s = self._cfg.get("interval_minutes", 60) * 60
+        # Initial wait: one full interval, capped at 5 minutes.
+        initial_wait = min(interval_s, 300)
+        print(f"   [Reflection] First thought in {initial_wait}s.")
         self._stop.wait(initial_wait)
 
         while not self._stop.is_set():
             try:
                 self._reflect()
-            except Exception as e:
-                print(f"   [Reflection] Error: {e}")
+            except Exception:
+                print(f"   [Reflection] Error:\n{traceback.format_exc()}")
 
-            interval_s = self._cfg.get("interval_minutes", 60) * 60
             self._stop.wait(interval_s)
 
     def _reflect(self) -> None:
         assistant  = self._assistant
         llm        = assistant.llm
         memory     = assistant.memory
-        max_tokens = self._cfg.get("max_tokens_per_thought", 400)
+        max_tokens = self._cfg.get("max_tokens_per_thought", 4096)
 
         now      = datetime.now()
         time_str = now.strftime("%A, %B %d at %I:%M %p")

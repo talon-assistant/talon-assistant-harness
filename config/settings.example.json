@@ -97,7 +97,7 @@
     "_note": "Periodic unsupervised free thought. Once per interval Talon generates one reflection with no user prompt. Stored in memory and can surface in future conversations via RAG.",
     "enabled": false,
     "interval_minutes": 60,
-    "max_tokens_per_thought": 400
+    "max_tokens_per_thought": 4096
   },
 
   "scheduler": [
