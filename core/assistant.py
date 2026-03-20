@@ -324,6 +324,10 @@ class TalonAssistant:
         self._human_input_queue: _queue.Queue = _queue.Queue(maxsize=1)
         self._human_input_callback = None  # set by AssistantBridge
 
+        # Global TTS state — mirrored here from AssistantBridge so that
+        # non-GUI callers (scheduler, signal_remote) can respect it.
+        self.tts_enabled: bool = True
+
         # 5c. Skill router — BGE-based pre-filter for on-demand talent roster
         from core.skill_router import SkillRouter
         self._skill_router = SkillRouter()

@@ -294,6 +294,9 @@ class AssistantBridge(QObject):
     def set_tts_enabled(self, enabled):
         """Toggle TTS on/off."""
         self._tts_enabled = enabled
+        # Mirror onto assistant so scheduler/signal_remote can respect it
+        if self.assistant is not None:
+            self.assistant.tts_enabled = enabled
 
     @pyqtSlot(dict)
     def update_settings(self, new_settings):
