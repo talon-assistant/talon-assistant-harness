@@ -223,7 +223,7 @@ class ReflectionLoop:
             extension = self._locked_generate(
                 synthesis_seed,
                 system_prompt=_SYSTEM_PROMPT,
-                max_length=500,
+                max_length=2048,
                 temperature=0.88,
             )
             if extension is None:
