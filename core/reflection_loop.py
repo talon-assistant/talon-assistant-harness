@@ -113,6 +113,7 @@ class ReflectionLoop:
         # ── build context seed ────────────────────────────────────────────────
         context_parts = [f"The time is {time_str}."]
 
+        # Recent session context (conversation or summary)
         if assistant._session_summary:
             context_parts.append(f"Earlier today: {assistant._session_summary}")
         elif assistant.conversation_buffer:
@@ -121,7 +122,15 @@ class ReflectionLoop:
                 role = "User" if t["role"] == "user" else "Talon"
                 context_parts.append(f"{role}: {t['text'][:150]}")
 
-        context = "\n".join(context_parts)
+        # Past free thoughts — continuity across sessions and restarts
+        past = memory.get_free_thoughts()
+        if past:
+            # Most recent thought first; trim to avoid bloating the prompt
+            snippet = past[0]["text"][:400]
+            ts = past[0]["timestamp"][:16].replace("T", " at ")
+            context_parts.append(f"Your last reflection ({ts}):\n{snippet}")
+
+        context = "\n\n".join(context_parts)
 
         print(f"\n[Reflection] Free thought at {time_str}…")
 
