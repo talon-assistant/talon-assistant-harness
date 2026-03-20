@@ -1763,12 +1763,17 @@ class TalonAssistant:
 
     def process_command(self, command, speak_response=True,
                         _executing_rule=False, attachments=None,
-                        command_source="local"):
+                        command_source="local", _planner_substep=False):
         """Central command processing pipeline.
 
         Args:
             _executing_rule: Internal flag — True when re-invoked by a
-                behavioral rule to prevent infinite loops.
+                behavioral rule or Signal remote to prevent rule re-matching
+                and buffer pollution.
+            _planner_substep: Internal flag — True only when the planner is
+                executing a sub-step.  Used to block recursive planner
+                re-selection without affecting Signal-originated top-level
+                commands (which also set _executing_rule=True).
             attachments: Optional list of local image file paths provided by
                 the user alongside the command (GUI file-picker / drag-drop).
             command_source: Origin of the command — "local" (GUI/voice) or
@@ -1894,7 +1899,7 @@ class TalonAssistant:
             if attachments:
                 talent = None
             else:
-                talent = self._find_talent(command, exclude_planner=_executing_rule)
+                talent = self._find_talent(command, exclude_planner=_planner_substep)
 
             # Unpack explicit RAG intent sentinel before talent path check.
             # Normalise to None so the conversation fallback is reached correctly.

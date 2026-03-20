@@ -195,6 +195,7 @@ If single-step:
                     step,
                     speak_response=speak,
                     _executing_rule=True,
+                    _planner_substep=True,
                 )
 
                 if result:
