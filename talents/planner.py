@@ -58,6 +58,7 @@ Rules:
 - Maximum 8 steps.
 - If the request is really just a single action, set is_multi_step to false.
 - If a required detail is missing (e.g. which folder, which device, which contact), add a step BEFORE the steps that need it using the prefix "ask_user: <clear question>". Later steps that depend on the answer should include the placeholder {{user_input}} where the answer will be substituted at runtime. Only ask when genuinely needed — do not ask for things that can be reasonably inferred.
+- If a step needs a value produced by the immediately preceding step (e.g. a file path, an ID, a generated name), include the placeholder {{last_result}} in that step's text. It will be replaced at runtime with the full response text of the previous step. Use this only when there is a genuine data dependency — not as a general way to chain every step.
 
 Respond ONLY with a JSON object — no markdown, no explanation:
 
@@ -150,11 +151,15 @@ If single-step:
         step_results = []
         all_ok = True
         last_user_input = ""  # answer from the most recent ask_user step
+        last_result = ""      # response text from the immediately preceding step
 
         for i, step in enumerate(steps, 1):
             # Substitute {user_input} with the last answer the user provided
             if last_user_input and "{user_input}" in step:
                 step = step.replace("{user_input}", last_user_input)
+            # Substitute {last_result} with the previous step's response text
+            if last_result and "{last_result}" in step:
+                step = step.replace("{last_result}", last_result)
 
             print(f"   [Planner] Executing step {i}/{len(steps)}: {step}")
 
@@ -216,6 +221,10 @@ If single-step:
                 "response": resp,
                 "success": ok,
             })
+
+            # Make this step's response available to the next step
+            if resp:
+                last_result = resp
 
             if not ok:
                 all_ok = False
