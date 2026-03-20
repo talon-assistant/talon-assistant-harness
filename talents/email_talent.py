@@ -157,7 +157,11 @@ class EmailTalent(BaseTalent):
         elif any(w in cmd_lower for w in ["folder", "folders", "move to", "archive",
                                            "move email", "move message"]):
             return self._handle_folders(command, context)
-        elif any(w in cmd_lower for w in ["send", "compose", "write"]):
+        elif any(w in cmd_lower for w in ["send", "compose", "write"]) or \
+                self._extract_attach_paths(command):
+            # Also route to send when the command contains a real file path —
+            # e.g. when {last_result} expansion injects a digest path alongside
+            # words like "from" that would otherwise match the read branch.
             return self._handle_send(command, context)
         elif any(w in cmd_lower for w in ["read", "latest", "last", "recent",
                                            "from", "about", "regarding"]):

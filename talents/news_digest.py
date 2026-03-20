@@ -297,11 +297,14 @@ class NewsDigestTalent(BaseTalent):
             f.write(html)
         print(f"[NewsDigest] Saved → {out_path}")
 
-        # ── open ──────────────────────────────────────────────────────────────
-        webbrowser.open(f"file:///{out_path.replace(os.sep, '/')}")
+        # ── open (skip when called remotely — no browser on the Signal sender's end) ──
+        command_source = context.get("command_source", "local")
+        if command_source == "local":
+            webbrowser.open(f"file:///{out_path.replace(os.sep, '/')}")
 
+        open_note = " Opening in your browser." if command_source == "local" else ""
         msg = (f"Morning digest ready — {story_count} stories from {feed_count} sources. "
-               f"Saved to {out_path}. Opening in your browser.")
+               f"Saved to {out_path}.{open_note}")
         if speak and voice:
             voice.speak(msg)
         return {
