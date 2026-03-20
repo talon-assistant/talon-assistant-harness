@@ -144,13 +144,13 @@ class ReflectionLoop:
                 context_parts.append(f"{role}: {t['text'][:150]}")
 
         # Past free thoughts — continuity across sessions and restarts.
-        # Include up to 3 recent thoughts so Talon can notice patterns
-        # across reflection cycles rather than only seeing the last one.
+        # Include up to 7 recent thoughts so Talon can notice patterns,
+        # build on earlier ideas, and develop a richer inner narrative.
         past = memory.get_free_thoughts()
-        for i, thought in enumerate(past[:3]):
+        for i, thought in enumerate(past[:7]):
             snippet = thought["text"][:300 if i == 0 else 150]
             ts = thought["timestamp"][:16].replace("T", " at ")
-            label = "Your last reflection" if i == 0 else f"Earlier reflection"
+            label = "Your last reflection" if i == 0 else "Earlier reflection"
             context_parts.append(f"{label} ({ts}):\n{snippet}")
 
         context = "\n\n".join(context_parts)
