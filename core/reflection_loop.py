@@ -159,6 +159,8 @@ class ReflectionLoop:
             action = action_raw.strip()
             if action.lower().rstrip(".") not in _NO_RESPONSES:
                 print(f"   [Reflection] Curiosity: {action}")
+            else:
+                print(f"   [Reflection] Curiosity: no")
                 # Route through the full talent pipeline (no TTS, no buffer).
                 result = assistant.process_command(
                     action,
