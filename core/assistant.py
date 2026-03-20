@@ -1950,6 +1950,45 @@ class TalonAssistant:
             # sentinel, so rag_explicit stays False for planner sub-steps.
             rag_explicit = (talent is self._CONVERSATION_RAG)
             if rag_explicit:
+                # Before falling to conversation/RAG, check whether the user is
+                # asking about a URL that appeared in a recent assistant response.
+                # e.g. "what's in the culturemap guide?" → browse the CultureMap
+                # URL that was cited in the previous web_search response.
+                _url_re = re.compile(r'https?://[^\s)\]>,"\']+')
+                _cmd_lower = command.lower()
+                _browser_redirect = None
+                for _entry in reversed(list(self.conversation_buffer)):
+                    if _entry.get("role") not in ("talon", "assistant"):
+                        continue
+                    _buf_urls = _url_re.findall(_entry.get("text", ""))
+                    if not _buf_urls:
+                        continue
+                    for _url in _buf_urls:
+                        # Extract meaningful domain parts (skip "www", "com", etc.)
+                        _host = re.sub(r'https?://(www\.)?', '', _url).split('/')[0]
+                        _parts = [p for p in _host.replace('-', '').split('.')
+                                  if len(p) > 3 and p not in ('com', 'org',
+                                                               'net', 'gov')]
+                        if any(p in _cmd_lower for p in _parts):
+                            _browser_redirect = _url
+                            break
+                    if _browser_redirect:
+                        break
+
+                if _browser_redirect:
+                    _browser_talent = next(
+                        (t for t in self.talents
+                         if t.enabled and t.name == "web_browser"), None
+                    )
+                    if _browser_talent:
+                        print(f"   [RoutingGap] RAG→web_browser: '{command}' "
+                              f"references buffer URL {_browser_redirect}")
+                        # Append URL so web_browser's _extract_url finds it directly
+                        command = f"{command} — {_browser_redirect}"
+                        talent = _browser_talent
+                        rag_explicit = False
+
+            if rag_explicit:
                 talent = None   # Route to conversation path
             context["rag_explicit"] = rag_explicit
 
