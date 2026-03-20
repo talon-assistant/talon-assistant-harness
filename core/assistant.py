@@ -625,7 +625,7 @@ class TalonAssistant:
                 self.credential_store.migrate_legacy_email(username)
                 break
 
-    def _build_context(self, command, speak_response):
+    def _build_context(self, command, speak_response, command_source="local"):
         """Build the context dict passed to talent.execute()"""
         # Preferences and patterns only — document RAG is handled separately
         # in _handle_conversation() with distance-threshold gating.
@@ -1789,7 +1789,7 @@ class TalonAssistant:
             # Step 0.5: Correction detection
             if not _executing_rule and self._is_correction(command):
                 print(f"   [Correction] Detected: {command!r}")
-                context = self._build_context(command, speak_response)
+                context = self._build_context(command, speak_response, command_source)
                 result = self._handle_correction(command, context)
                 if result and (result.get("success") or result.get("response")):
                     resp = result.get("response", "")
@@ -1843,7 +1843,7 @@ class TalonAssistant:
                         rule_action, speak_response, _executing_rule=True)
 
             # Step 2: Build context
-            context = self._build_context(command, speak_response)
+            context = self._build_context(command, speak_response, command_source)
             if attachments:
                 context["attachments"] = attachments
             if _executing_rule:
