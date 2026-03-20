@@ -49,6 +49,9 @@ Thumbs.db
 Desktop.ini
 nul
 
+# Local docs / roadmaps
+docs/local/
+
 # Logs
 *.log
 

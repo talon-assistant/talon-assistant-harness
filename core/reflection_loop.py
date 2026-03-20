@@ -128,7 +128,7 @@ class ReflectionLoop:
     def _reflect(self) -> None:
         assistant  = self._assistant
         memory     = assistant.memory
-        max_tokens = self._cfg.get("max_tokens_per_thought", 4096)
+        max_tokens = self._cfg.get("max_tokens_per_thought", 8192)
 
         now      = datetime.now()
         time_str = now.strftime("%A, %B %d at %I:%M %p")
