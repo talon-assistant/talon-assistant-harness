@@ -1685,10 +1685,6 @@ class TalonAssistant:
                 "Would you like me to search the web instead?"
             )
             self.memory.log_command(command, success=True, response=response)
-            if speak_response:
-                self.voice.speak(response)
-            else:
-                print(f"\nTalon: {response}")
             return response
 
         # Inject preferences/patterns with accurate label
