@@ -992,7 +992,7 @@ class MemorySystem:
                                       for fn, txt, dist, pg in hop_chunks]
                         all_chunks = self._rrf_fuse(all_chunks, discounted)
                         all_chunks = self._jaccard_dedup(all_chunks)
-                        all_chunks = all_chunks[:MAX_INJECT + 4]
+                        all_chunks = all_chunks[:FINAL_CAP + 4]
                         print(f"   [RAG] Multi-hop added {len(hop_chunks)} chunk(s) "
                               f"from entities: {unique_entities[:3]}")
 

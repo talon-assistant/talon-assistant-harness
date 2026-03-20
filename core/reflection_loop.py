@@ -39,7 +39,7 @@ _ACTION_SYSTEM = (
     "or just the word 'no' if you don't want to look anything up right now."
 )
 
-_NO_RESPONSES = {"no", "no.", "none", "no action", "no.", "nope", "nothing", ""}
+_NO_RESPONSES = {"no", "none", "no action", "nope", "nothing", ""}
 
 
 class ReflectionLoop:
@@ -88,22 +88,43 @@ class ReflectionLoop:
 
             self._stop.wait(interval_s)
 
-    def _reflect(self) -> None:
-        assistant = self._assistant
+    # ── per-phase locking helpers ─────────────────────────────────────────────
+    # Each LLM call acquires and releases the command_lock individually so user
+    # commands can slip in between phases.  If the lock is busy (user typing),
+    # the phase is skipped rather than blocking.
 
-        # Don't interrupt an active user command — skip this cycle if busy.
-        if not assistant.command_lock.acquire(blocking=False):
-            print("   [Reflection] Skipped — system busy.")
-            return
+    def _locked_generate(self, *args, **kwargs):
+        """Acquire command_lock, run llm.generate(), release.
 
+        Returns the generated text, or None if the lock was busy.
+        """
+        lock = self._assistant.command_lock
+        if not lock.acquire(blocking=False):
+            return None
         try:
-            self._reflect_locked()
+            return self._assistant.llm.generate(*args, **kwargs)
         finally:
-            assistant.command_lock.release()
+            lock.release()
 
-    def _reflect_locked(self) -> None:
+    def _locked_process_command(self, *args, **kwargs):
+        """Run process_command under the command_lock (RLock re-entrant).
+
+        process_command already acquires the lock internally, but we grab it
+        first so the entire operation is atomic from the user's perspective.
+        Returns the result dict, or None if the lock was busy.
+        """
+        lock = self._assistant.command_lock
+        if not lock.acquire(blocking=False):
+            return None
+        try:
+            return self._assistant.process_command(*args, **kwargs)
+        finally:
+            lock.release()
+
+    # ── reflection pipeline ───────────────────────────────────────────────────
+
+    def _reflect(self) -> None:
         assistant  = self._assistant
-        llm        = assistant.llm
         memory     = assistant.memory
         max_tokens = self._cfg.get("max_tokens_per_thought", 4096)
 
@@ -122,40 +143,44 @@ class ReflectionLoop:
                 role = "User" if t["role"] == "user" else "Talon"
                 context_parts.append(f"{role}: {t['text'][:150]}")
 
-        # Past free thoughts — continuity across sessions and restarts
+        # Past free thoughts — continuity across sessions and restarts.
+        # Include up to 3 recent thoughts so Talon can notice patterns
+        # across reflection cycles rather than only seeing the last one.
         past = memory.get_free_thoughts()
-        if past:
-            # Most recent thought first; trim to avoid bloating the prompt
-            snippet = past[0]["text"][:400]
-            ts = past[0]["timestamp"][:16].replace("T", " at ")
-            context_parts.append(f"Your last reflection ({ts}):\n{snippet}")
+        for i, thought in enumerate(past[:3]):
+            snippet = thought["text"][:300 if i == 0 else 150]
+            ts = thought["timestamp"][:16].replace("T", " at ")
+            label = "Your last reflection" if i == 0 else f"Earlier reflection"
+            context_parts.append(f"{label} ({ts}):\n{snippet}")
 
         context = "\n\n".join(context_parts)
 
         print(f"\n[Reflection] Free thought at {time_str}…")
 
         # ── Phase 1: free thought ─────────────────────────────────────────────
-        thought = llm.generate(
+        thought = self._locked_generate(
             context + "\n\n",
             system_prompt=_SYSTEM_PROMPT,
             max_length=max_tokens,
             temperature=0.88,
         )
 
-        if not thought or not thought.strip():
+        if thought is None:
+            print("   [Reflection] Phase 1 skipped — system busy.")
+            return
+        if not thought.strip():
             print("   [Reflection] No output generated.")
             return
 
         thought = thought.strip()
 
         # ── Phase 2: curiosity check ──────────────────────────────────────────
-        # Ask the LLM if there's something it wants to act on.
         action_prompt = (
             f"Your thought:\n{thought}\n\n"
             "Is there something specific you want to search for, browse, or look up? "
             "Write a single short command, or just 'no'."
         )
-        action_raw = llm.generate(
+        action_raw = self._locked_generate(
             action_prompt,
             system_prompt=_ACTION_SYSTEM,
             max_length=40,
@@ -164,7 +189,9 @@ class ReflectionLoop:
 
         # ── Phase 3: act on curiosity ─────────────────────────────────────────
         enrichment = ""
-        if not action_raw or not action_raw.strip():
+        if action_raw is None:
+            print("   [Reflection] Phase 2 skipped — system busy.")
+        elif not action_raw.strip():
             print("   [Reflection] Curiosity: (no response)")
         else:
             action = action_raw.strip()
@@ -172,14 +199,15 @@ class ReflectionLoop:
                 print("   [Reflection] Curiosity: no")
             else:
                 print(f"   [Reflection] Curiosity: {action}")
-                # Route through the full talent pipeline (no TTS, no buffer).
-                result = assistant.process_command(
+                result = self._locked_process_command(
                     action,
                     speak_response=False,
                     _executing_rule=True,
                     command_source="reflection",
                 )
-                if result and result.get("success") and result.get("response"):
+                if result is None:
+                    print("   [Reflection] Phase 3 skipped — system busy.")
+                elif result.get("success") and result.get("response"):
                     enrichment = result["response"]
                     print(f"   [Reflection] Got results ({len(enrichment)} chars).")
 
@@ -190,13 +218,15 @@ class ReflectionLoop:
                 f"You explored and found:\n{enrichment[:1500]}\n\n"
                 "Continue your reflection, weaving in what you discovered."
             )
-            extension = llm.generate(
+            extension = self._locked_generate(
                 synthesis_seed,
                 system_prompt=_SYSTEM_PROMPT,
                 max_length=500,
                 temperature=0.88,
             )
-            if extension and extension.strip():
+            if extension is None:
+                print("   [Reflection] Phase 4 skipped — system busy.")
+            elif extension.strip():
                 thought = thought + "\n\n---\n\n" + extension.strip()
 
         preview = thought[:120] + ("…" if len(thought) > 120 else "")

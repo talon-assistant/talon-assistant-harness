@@ -909,53 +909,42 @@ class TalonAssistant:
                    for kw in repeat_keywords)
 
     def _handle_repeat(self, speak_response):
-        """Handle a repeat-last-action request"""
+        """Handle a repeat-last-action request.
+
+        Re-runs the original command text through process_command() so
+        the full talent pipeline handles it — works for every talent,
+        not just hue_lights.
+        """
         last_action = self.memory.get_last_successful_action()
-        if last_action:
-            cmd_text, action_json, result = last_action
-            print(f"Repeating last action: {cmd_text}")
-
-            try:
-                actions = json.loads(action_json)
-
-                # Guard: action_json must be a dict to be re-executable.
-                # Some talents (e.g. weather) log a plain string — those
-                # can't be mechanically repeated, so fall through gracefully.
-                if not isinstance(actions, dict):
-                    raise ValueError(
-                        f"Stored action is not a dict ({type(actions).__name__}), "
-                        "cannot re-execute."
-                    )
-
-                # Find the right talent to re-execute
-                for talent in self.talents:
-                    if hasattr(talent, '_execute_single_action'):
-                        result = talent._execute_single_action(actions)
-                        print(f"  -> {result}")
-                        break
-                    elif hasattr(talent, '_control_hue') and actions.get("action") == "hue_light":
-                        result = talent._control_hue(actions)
-                        print(f"  -> {result}")
-                        break
-
-                if speak_response:
-                    self.voice.speak("Done!")
-                else:
-                    print("\nDone!")
-            except Exception as e:
-                print(f"Error repeating action: {e}")
-                if speak_response:
-                    self.voice.speak("Sorry, I couldn't repeat that.")
-        else:
+        if not last_action:
+            msg = "I don't have a previous action to repeat."
             if speak_response:
-                self.voice.speak("I don't have a previous action to repeat.")
+                self.voice.speak(msg)
             else:
-                print("No previous action found.")
+                print(f"\nTalon: {msg}")
+            return {"response": msg, "talent": "", "success": False}
+
+        cmd_text, _action_json, _result = last_action
+        print(f"   [Repeat] Re-executing: {cmd_text}")
+        return self.process_command(
+            cmd_text, speak_response=speak_response, _executing_rule=True)
 
     def _detect_preference(self, command, response=""):
-        """Detect if command contains a preference to remember"""
-        preference_keywords = ['prefer', 'like', 'favorite', 'always', 'usually', 'remember']
-        if any(kw in command for kw in preference_keywords):
+        """Detect if command contains a preference to remember.
+
+        Uses word-boundary matching to avoid false positives like
+        "I'd like to know" matching on "like".  Only triggers when the
+        keyword stands alone as a word (not a substring).
+        """
+        _PREF_RE = re.compile(
+            r'\b(?:i\s+)?(?:prefer|always|usually|favorite|favourite)\b',
+            re.IGNORECASE,
+        )
+        # "remember that I..." is a preference; "can you remember" is not
+        _REMEMBER_RE = re.compile(
+            r'\bremember\s+(?:that|my|i)\b', re.IGNORECASE,
+        )
+        if _PREF_RE.search(command) or _REMEMBER_RE.search(command):
             _sem_blocked, _sem_alert = self.security.check_semantic(command, "hint")
             if _sem_blocked:
                 print(f"   [Pref] Preference blocked by semantic classifier: {command[:80]}")
@@ -1208,11 +1197,12 @@ class TalonAssistant:
             if pattern in cmd:
                 return "synthesis"
 
-        # "factual": question word + document reference word, OR
-        #            question word in a longer command (5+ words)
+        # "factual": question word + document reference word.
+        # Pure length is not enough — "how are you doing today friend" is
+        # 6 words with a question word but clearly conversational.
         has_question = bool(words & self._QUESTION_WORDS)
         has_doc_ref  = any(ref in cmd for ref in self._DOCUMENT_REFERENCE_WORDS)
-        if has_question and (has_doc_ref or len(words) >= 5):
+        if has_question and has_doc_ref:
             return "factual"
 
         return "ambient"
@@ -1481,8 +1471,12 @@ class TalonAssistant:
                       "anything else")
         return "\n".join(lines)
 
-    def _handle_conversation(self, command, context, speak_response):
-        """Handle commands that no talent matched -- general conversation"""
+    def _handle_conversation(self, command, context):
+        """Handle commands that no talent matched — general conversation.
+
+        Returns the response string only. The caller is responsible for
+        security filtering, speaking/printing, and buffering.
+        """
         cmd_lower = command.lower()
 
         # Fast-path: current time/date queries — answer directly without an LLM
@@ -1495,18 +1489,10 @@ class TalonAssistant:
         if any(t in cmd_lower for t in _TIME_TRIGGERS):
             response = datetime.now().strftime("It's %I:%M %p.")
             self.memory.log_command(command, success=True, response=response)
-            if speak_response:
-                self.voice.speak(response)
-            else:
-                print(f"\nTalon: {response}")
             return response
         if any(t in cmd_lower for t in _DATE_TRIGGERS):
             response = datetime.now().strftime("Today is %A, %B %d, %Y.")
             self.memory.log_command(command, success=True, response=response)
-            if speak_response:
-                self.voice.speak(response)
-            else:
-                print(f"\nTalon: {response}")
             return response
 
         # Fast-path: local system facts — answer directly without LLM or RAG.
@@ -1532,10 +1518,6 @@ class TalonAssistant:
                 val = fn()
                 response = f"{val}"
                 self.memory.log_command(command, success=True, response=response)
-                if speak_response:
-                    self.voice.speak(response)
-                else:
-                    print(f"\nTalon: {response}")
                 return response
 
         # Fast-path: rule definition detected — store it and acknowledge directly
@@ -1546,10 +1528,6 @@ class TalonAssistant:
                 response = (f"Got it! I'll {rule['action']} whenever you say "
                             f"\"{rule['trigger']}\".")
                 self.memory.log_command(command, success=True, response=response)
-                if speak_response:
-                    self.voice.speak(response)
-                else:
-                    print(f"\nTalon: {response}")
                 return response
 
         # Only trigger vision for phrases that *clearly* ask about the screen.
@@ -1797,11 +1775,6 @@ class TalonAssistant:
         self.memory.log_command(command, success=True, response=response)
         self._detect_preference(command, response)
 
-        if speak_response:
-            self.voice.speak(response)
-        else:
-            print(f"\nTalon: {response}")
-
         return response
 
     def process_command(self, command, speak_response=True,
@@ -1894,8 +1867,7 @@ class TalonAssistant:
 
             # Step 1: Repeat detection
             if self._detect_repeat_request(command):
-                self._handle_repeat(speak_response)
-                return {"response": "Done!", "talent": "", "success": True}
+                return self._handle_repeat(speak_response) or {"response": "", "talent": "", "success": False}
 
             # Step 1.5: Rule matching (skip if already executing a rule action)
             if not _executing_rule:
@@ -1958,7 +1930,7 @@ class TalonAssistant:
                 _cmd_lower = command.lower()
                 _browser_redirect = None
                 for _entry in reversed(list(self.conversation_buffer)):
-                    if _entry.get("role") not in ("talon", "assistant"):
+                    if _entry.get("role") != "talon":
                         continue
                     _buf_urls = _url_re.findall(_entry.get("text", ""))
                     if not _buf_urls:
@@ -2005,8 +1977,15 @@ class TalonAssistant:
                         and not result.get("actions_taken")):
                     print(f"   [Routing] {talent.name} declined — "
                           f"falling through to conversation")
-                    response = self._handle_conversation(
-                        command, context, speak_response)
+                    response = self._handle_conversation(command, context)
+                    response = self._security_filter_response(
+                        response, context="conversation")
+                    if speak_response and response:
+                        self.voice.speak(response)
+                    elif response:
+                        print(f"\nTalon: {response}")
+                    if not _executing_rule and response:
+                        self._buffer_turn(command, response.strip())
                     print(f"\n{'=' * 50}\n")
                     return {"response": response or "", "talent": "", "success": True}
 
@@ -2066,7 +2045,7 @@ class TalonAssistant:
 
             else:
                 # No talent matched -- conversational fallback
-                response = self._handle_conversation(command, context, speak_response)
+                response = self._handle_conversation(command, context)
                 response = self._security_filter_response(response, context="conversation")
 
                 # Promise interception: if the model promised an action but
@@ -2093,6 +2072,12 @@ class TalonAssistant:
                                 "talent": intercept_result.get("talent", ""),
                                 "success": True,
                             }
+
+                # Output the response (security-filtered above, before speaking)
+                if speak_response and response:
+                    self.voice.speak(response)
+                elif response:
+                    print(f"\nTalon: {response}")
 
                 # Buffer this turn (conversation path, no interception)
                 if not _executing_rule and response:

@@ -162,7 +162,7 @@ class WebBrowserTalent(BaseTalent):
         if assistant and hasattr(assistant, "conversation_buffer"):
             url_re = re.compile(r'https?://[^\s)\]>,"\']+')
             for entry in reversed(list(assistant.conversation_buffer)):
-                if entry.get("role") not in ("talon", "assistant"):
+                if entry.get("role") != "talon":
                     continue
                 urls = url_re.findall(entry.get("text", ""))
                 if not urls:

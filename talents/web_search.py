@@ -125,12 +125,14 @@ class WebSearchTalent(BaseTalent):
             return None
 
         # Case 2: Referential command ("search for it", "look that up", etc.).
-        # Strip conversational openers first ("can you", "could you", etc.),
-        # then strip command prefixes ("search the web for", "look up", etc.).
+        # Strip conversational openers and command prefixes.  Scan for
+        # openers anywhere in the string (not just position 0) so preamble
+        # like "its march 20... can you search for X" is handled properly.
         stripped = cmd_lower
         for opener in self._CONVERSATIONAL_OPENERS:
-            if stripped.startswith(opener):
-                stripped = stripped[len(opener):].strip()
+            idx = stripped.find(opener)
+            if idx != -1:
+                stripped = stripped[idx + len(opener):].strip()
                 break
         for prefix in self._COMMAND_PREFIXES:
             if stripped.startswith(prefix):
