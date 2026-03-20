@@ -80,12 +80,10 @@ class ReflectionLoop:
             self._stop.wait(interval_s)
 
     def _reflect(self) -> None:
-        assistant   = self._assistant
-        llm         = assistant.llm
-        memory      = assistant.memory
-        duration_s  = self._cfg.get("duration_minutes", 2) * 60
-        max_tokens  = self._cfg.get("max_tokens_per_thought", 250)
-        deadline    = time.time() + duration_s
+        assistant  = self._assistant
+        llm        = assistant.llm
+        memory     = assistant.memory
+        max_tokens = self._cfg.get("max_tokens_per_thought", 400)
 
         now      = datetime.now()
         time_str = now.strftime("%A, %B %d at %I:%M %p")
@@ -103,37 +101,21 @@ class ReflectionLoop:
 
         context = "\n".join(context_parts)
 
-        print(f"\n[Reflection] Free thought beginning at {time_str}…")
+        print(f"\n[Reflection] Free thought at {time_str}…")
 
-        seed        = context + "\n\n"
-        thought_num = 0
+        thought = llm.generate(
+            context + "\n\n",
+            system_prompt=_SYSTEM_PROMPT,
+            max_length=max_tokens,
+            temperature=0.88,
+        )
 
-        while time.time() < deadline and not self._stop.is_set():
-            thought_num += 1
-
-            thought = llm.generate(
-                seed,
-                system_prompt=_SYSTEM_PROMPT,
-                max_length=max_tokens,
-                temperature=0.88,
-            )
-
-            if not thought or not thought.strip():
-                break
-
-            thought = thought.strip()
-            preview = thought[:120] + ("…" if len(thought) > 120 else "")
-            print(f"   [Reflection] [{thought_num}] {preview}")
-
-            memory.store_free_thought(thought, thought_num)
-
-            # Seed the next thought from this one.
-            seed = thought + "\n\n"
-
-            if time.time() < deadline and not self._stop.is_set():
-                time.sleep(1)
-
-        if thought_num:
-            print(f"   [Reflection] Done — {thought_num} thought(s).")
-        else:
+        if not thought or not thought.strip():
             print("   [Reflection] No output generated.")
+            return
+
+        thought = thought.strip()
+        preview = thought[:120] + ("…" if len(thought) > 120 else "")
+        print(f"   [Reflection] {preview}")
+
+        memory.store_free_thought(thought)
