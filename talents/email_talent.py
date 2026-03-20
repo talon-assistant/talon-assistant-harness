@@ -16,6 +16,7 @@ Examples:
     "list my email folders"
 """
 
+import os
 import re
 import html as _html_mod
 import json
