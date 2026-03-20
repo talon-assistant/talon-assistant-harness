@@ -82,6 +82,7 @@ If single-step:
         speak = context.get("speak_response", True)
         notify = context.get("notify")
         assistant = context.get("assistant")
+        command_source = context.get("command_source", "local")
 
         if not assistant:
             # Should never happen — context always includes assistant
@@ -196,6 +197,7 @@ If single-step:
                     speak_response=speak,
                     _executing_rule=True,
                     _planner_substep=True,
+                    command_source=command_source,
                 )
 
                 if result:

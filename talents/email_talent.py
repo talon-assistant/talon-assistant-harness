@@ -340,7 +340,12 @@ class EmailTalent(BaseTalent):
 
     def _extract_attach_paths(self, command):
         """Return list of existing local file paths found in command text."""
-        return [p for p in self._PATH_RE.findall(command) if os.path.isfile(p)]
+        paths = []
+        for p in self._PATH_RE.findall(command):
+            p = p.rstrip(".,;:!?")   # strip sentence-ending punctuation
+            if os.path.isfile(p):
+                paths.append(p)
+        return paths
 
     def _handle_send(self, command, context):
         """Compose a draft via LLM and return it for user review in compose dialog."""
