@@ -75,6 +75,7 @@ class TalonAssistant:
         "or defines a new behavioral rule, choose conversation.\n"
         "- If the command describes a multi-step routine or sequence of actions "
         "(e.g. 'good morning', 'movie night', 'evening routine', 'set up my workspace', "
+        "'generate the digest and email it', 'run the report then send it to X', "
         "or any command that clearly requires multiple different actions), choose planner.\n"
         "- If the user explicitly asks to search, check, or look something up in "
         "their own documents, files, notes, or reference books, choose conversation_rag.\n"
@@ -648,9 +649,31 @@ class TalonAssistant:
             ctx["notify"] = self.notify_callback
         return ctx
 
+    # Patterns that strongly suggest a multi-talent chain regardless of what
+    # the LLM picks.  Checked before the LLM so obvious cases don't get
+    # swallowed by the most-keyword-matching talent.
+    _MULTI_STEP_RE = re.compile(
+        r'\b(?:and\s+(?:then\s+)?|then\s+)'
+        r'(?:send|email|text|forward|message|notify|share|post|tweet|upload|save|copy)',
+        re.IGNORECASE,
+    )
+
     def _find_talent(self, command):
         """Route command to the best talent using LLM intent classification.
         Falls back to keyword matching only if the LLM is unreachable."""
+
+        # Pre-router: syntactic multi-step detection.
+        # If the command chains a primary action with a send/share verb via a
+        # conjunction, hand it to the planner immediately — the LLM router would
+        # otherwise latch onto the first action's keywords and skip step 2.
+        if self._MULTI_STEP_RE.search(command):
+            planner = next(
+                (t for t in self.talents if t.enabled and t.name == "planner"), None
+            )
+            if planner:
+                print("   [Router] Multi-step chain detected — routing to planner")
+                return planner
+
         result = self._route_with_llm(command)
         if result is self._CONVERSATION:
             return None                          # LLM chose normal conversation
