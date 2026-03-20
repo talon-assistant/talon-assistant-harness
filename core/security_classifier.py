@@ -246,12 +246,13 @@ class SecurityClassifier:
             self._model = None
             return
 
-        trained_on = ckpt.get("trained_on", "?")
+        trained_on = ckpt.get("trained_on")
         val_f1 = ckpt.get("val_f1", None)
         f1_str = f", val_F1={val_f1:.3f}" if val_f1 is not None else ""
+        count_str = f"{trained_on} examples, " if trained_on else ""
         if self._verbose:
             print(
-                f"   [SecurityClassifier] Loaded ({trained_on} examples{f1_str}, "
+                f"   [SecurityClassifier] Loaded ({count_str}"
                 f"threshold={self.threshold:.2f})"
             )
 
