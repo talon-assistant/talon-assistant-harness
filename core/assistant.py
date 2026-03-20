@@ -658,15 +658,21 @@ class TalonAssistant:
         re.IGNORECASE,
     )
 
-    def _find_talent(self, command):
+    def _find_talent(self, command, exclude_planner=False):
         """Route command to the best talent using LLM intent classification.
-        Falls back to keyword matching only if the LLM is unreachable."""
+        Falls back to keyword matching only if the LLM is unreachable.
+
+        exclude_planner: when True (planner sub-step context), skip the
+            multi-step pre-router and never return the planner talent.
+            Prevents recursive re-planning of planner-issued sub-commands.
+        """
 
         # Pre-router: syntactic multi-step detection.
         # If the command chains a primary action with a send/share verb via a
         # conjunction, hand it to the planner immediately — the LLM router would
         # otherwise latch onto the first action's keywords and skip step 2.
-        if self._MULTI_STEP_RE.search(command):
+        # Skipped for planner sub-steps to prevent recursive re-planning.
+        if not exclude_planner and self._MULTI_STEP_RE.search(command):
             planner = next(
                 (t for t in self.talents if t.enabled and t.name == "planner"), None
             )
@@ -675,6 +681,12 @@ class TalonAssistant:
                 return planner
 
         result = self._route_with_llm(command)
+
+        # If we're inside a planner sub-step and the LLM still chose the
+        # planner, fall through to conversation instead to break the loop.
+        if exclude_planner and result is not None and getattr(result, "name", "") == "planner":
+            print("   [Router] Planner sub-step — overriding planner re-selection with conversation")
+            return None
         if result is self._CONVERSATION:
             return None                          # LLM chose normal conversation
         if result is self._CONVERSATION_RAG:
@@ -1882,7 +1894,7 @@ class TalonAssistant:
             if attachments:
                 talent = None
             else:
-                talent = self._find_talent(command)
+                talent = self._find_talent(command, exclude_planner=_executing_rule)
 
             # Unpack explicit RAG intent sentinel before talent path check.
             # Normalise to None so the conversation fallback is reached correctly.

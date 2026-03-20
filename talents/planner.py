@@ -52,13 +52,11 @@ Available handlers (what Talon can do):
 
 Rules:
 - Only output a plan if the request clearly needs 2 or more DIFFERENT handlers (e.g. lights AND weather). If all parts of the request use the same handler (e.g. open calculator, type, press enter, read screen — all desktop_control), set is_multi_step to false.
-- Each step must be completely self-contained and executable on its own with no dependency on any previous step's result.
-- NEVER generate a step like "read the answer", "tell me the result", or "check what it says" that requires knowing the outcome of a prior step. If reading/observing the result is needed, merge it into the same step as the action (e.g. "calculate 2+2 on the calculator and read the result from the screen" as one combined step).
 - Steps are executed in order; keep them short and specific.
 - Maximum 8 steps.
 - If the request is really just a single action, set is_multi_step to false.
 - If a required detail is missing (e.g. which folder, which device, which contact), add a step BEFORE the steps that need it using the prefix "ask_user: <clear question>". Later steps that depend on the answer should include the placeholder {{user_input}} where the answer will be substituted at runtime. Only ask when genuinely needed — do not ask for things that can be reasonably inferred.
-- If a step needs a value produced by the immediately preceding step (e.g. a file path, an ID, a generated name), include the placeholder {{last_result}} in that step's text. It will be replaced at runtime with the full response text of the previous step. Use this only when there is a genuine data dependency — not as a general way to chain every step.
+- If a step produces a file path or output that the NEXT step needs, write the next step using the placeholder {{last_result}} exactly where that value belongs. The placeholder is replaced at runtime with the full response text of the previous step. EXAMPLE — "generate morning news digest" produces a path; the email step must be written as: "email the file at {{last_result}} to user@example.com". Do NOT write "attach the generated digest" without the placeholder — that gives the email talent no path to attach.
 
 Respond ONLY with a JSON object — no markdown, no explanation:
 

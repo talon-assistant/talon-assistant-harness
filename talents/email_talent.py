@@ -333,6 +333,15 @@ class EmailTalent(BaseTalent):
 
     # ── Send email (draft + confirm flow) ─────────────────────────
 
+    # Regex to pull Windows/Unix absolute file paths out of a command string.
+    _PATH_RE = re.compile(
+        r'(?:[A-Za-z]:\\(?:[^\s,\'"]+\\)*[^\s,\'"]+|/(?:[^\s,\'"]+/)*[^\s,\'"]+)'
+    )
+
+    def _extract_attach_paths(self, command):
+        """Return list of existing local file paths found in command text."""
+        return [p for p in self._PATH_RE.findall(command) if os.path.isfile(p)]
+
     def _handle_send(self, command, context):
         """Compose a draft via LLM and return it for user review in compose dialog."""
         llm = context.get("llm")
@@ -343,6 +352,10 @@ class EmailTalent(BaseTalent):
                 "actions_taken": [],
                 "spoken": False,
             }
+
+        # Extract any file paths present in the command (e.g. from {last_result}
+        # substitution) so they can be attached rather than pasted into the body.
+        attach_paths = self._extract_attach_paths(command)
 
         response = llm.generate(
             f"Compose an email based on this request:\n\n{command}",
@@ -378,10 +391,12 @@ class EmailTalent(BaseTalent):
         if not gate_enabled or command_source == "signal":
             # Send immediately (gate disabled, or remote command = implicit confirmation)
             try:
-                self._send_smtp(to, subject, body)
+                self._send_smtp(to, subject, body, attach_paths=attach_paths)
+                attach_note = (f" with {len(attach_paths)} attachment(s)"
+                               if attach_paths else "")
                 return {
                     "success": True,
-                    "response": f"Email sent to {to}.",
+                    "response": f"Email sent to {to}{attach_note}.",
                     "actions_taken": [{"action": "email_sent", "to": to}],
                     "spoken": False,
                 }
@@ -394,18 +409,21 @@ class EmailTalent(BaseTalent):
                 }
 
         # Gate enabled, local command — present draft for user review before sending
+        attach_note = (f"\nAttachments: {', '.join(os.path.basename(p) for p in attach_paths)}"
+                       if attach_paths else "")
         return {
             "success": True,
             "response": (
                 f"Here is my draft email:\n\n"
                 f"To: {to}\n"
-                f"Subject: {subject}\n\n"
+                f"Subject: {subject}{attach_note}\n\n"
                 f"{body}\n\n"
                 f"Review the compose window, then click Send or Cancel."
             ),
             "actions_taken": [{"action": "email_draft_created", "to": to}],
             "spoken": False,
-            "pending_email": {"to": to, "subject": subject, "body": body},
+            "pending_email": {"to": to, "subject": subject, "body": body,
+                              "attach_paths": attach_paths},
         }
 
     # ── Reply to email ─────────────────────────────────────────────
@@ -968,8 +986,15 @@ class EmailTalent(BaseTalent):
 
     # ── SMTP helpers ───────────────────────────────────────────────
 
-    def _send_smtp(self, to_addr, subject, body):
-        """Send an email via SMTP (STARTTLS)."""
+    def _send_smtp(self, to_addr, subject, body, attach_paths=None):
+        """Send an email via SMTP (STARTTLS).
+
+        attach_paths: optional list of local file paths to attach.
+        """
+        import mimetypes
+        from email.mime.base import MIMEBase
+        from email import encoders as _enc
+
         server = self._config.get("smtp_server", "")
         port = self._config.get("smtp_port", 587)
         username = self._config["username"]
@@ -985,6 +1010,23 @@ class EmailTalent(BaseTalent):
         msg["To"] = to_addr
         msg["Subject"] = subject
         msg.attach(MIMEText(body, "plain"))
+
+        for path in (attach_paths or []):
+            if not os.path.isfile(path):
+                print(f"   [Email] Attachment not found, skipping: {path}")
+                continue
+            ctype, encoding = mimetypes.guess_type(path)
+            if ctype is None or encoding is not None:
+                ctype = "application/octet-stream"
+            maintype, subtype = ctype.split("/", 1)
+            with open(path, "rb") as f:
+                part = MIMEBase(maintype, subtype)
+                part.set_payload(f.read())
+            _enc.encode_base64(part)
+            part.add_header("Content-Disposition", "attachment",
+                            filename=os.path.basename(path))
+            msg.attach(part)
+            print(f"   [Email] Attached: {os.path.basename(path)}")
 
         print(f"   [Email] Sending via SMTP {server}:{port} to {to_addr}...")
         with smtplib.SMTP(server, port) as smtp:
