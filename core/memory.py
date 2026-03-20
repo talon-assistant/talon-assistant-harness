@@ -491,6 +491,55 @@ class MemorySystem:
             ids=[doc_id],
         )
 
+    def get_free_thoughts(self) -> list[dict]:
+        """Return all stored free thoughts, newest first.
+
+        Each entry: {"id": str, "timestamp": str, "thought_num": int, "text": str}
+        """
+        try:
+            results = self.memory_collection.get(
+                where={"type": "free_thought"},
+                include=["documents", "metadatas"],
+            )
+            docs   = results.get("documents", [])
+            metas  = results.get("metadatas", [])
+            ids    = results.get("ids", [])
+            paired = sorted(
+                zip(ids, metas, docs),
+                key=lambda x: x[1].get("timestamp", ""),
+                reverse=True,
+            )
+            return [
+                {"id": i, "timestamp": m.get("timestamp", ""),
+                 "thought_num": m.get("thought_num", 1), "text": d}
+                for i, m, d in paired
+            ]
+        except Exception as e:
+            print(f"   [Memory] Could not retrieve free thoughts: {e}")
+            return []
+
+    def delete_free_thought(self, doc_id: str) -> None:
+        """Delete a single free thought by ChromaDB id."""
+        try:
+            self.memory_collection.delete(ids=[doc_id])
+        except Exception as e:
+            print(f"   [Memory] Could not delete free thought {doc_id}: {e}")
+
+    def clear_free_thoughts(self) -> int:
+        """Delete all free thoughts. Returns count deleted."""
+        try:
+            existing = self.memory_collection.get(
+                where={"type": "free_thought"},
+                include=["metadatas"],
+            )
+            ids = existing.get("ids", [])
+            if ids:
+                self.memory_collection.delete(ids=ids)
+            return len(ids)
+        except Exception as e:
+            print(f"   [Memory] Could not clear free thoughts: {e}")
+            return 0
+
     def search_memory(self, query, n_results=3, memory_type=None,
                        max_distance=1.2):
         """Search conversation memory semantically.

@@ -177,6 +177,11 @@ class MainWindow(QMainWindow):
         task_assist_action.triggered.connect(self._trigger_task_assist)
         tools_menu.addAction(task_assist_action)
 
+        thoughts_action = QAction("Talon's Thoughts...", self)
+        thoughts_action.setToolTip("Review and manage Talon's free-thought reflections")
+        thoughts_action.triggered.connect(self._open_free_thoughts)
+        tools_menu.addAction(thoughts_action)
+
         # ── Help menu ─────────────────────────────────────────
         help_menu = menubar.addMenu("Help")
 
@@ -610,6 +615,12 @@ class MainWindow(QMainWindow):
     def _open_about(self):
         from gui.dialogs.about_dialog import AboutDialog
         dialog = AboutDialog(parent=self)
+        dialog.exec()
+
+    def _open_free_thoughts(self):
+        from gui.dialogs.free_thoughts_dialog import FreeThoughtsDialog
+        memory = self.bridge.assistant.memory
+        dialog = FreeThoughtsDialog(memory, parent=self)
         dialog.exec()
 
     # ── Notifications ────────────────────────────────────────
