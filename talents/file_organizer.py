@@ -58,6 +58,7 @@ class FileOrganizerTalent(BaseTalent):
         "list files", "show files", "what files",
         "file organizer", "clean up", "sort downloads",
         "find pdf", "find images", "find documents",
+        "list pdf", "list images", "show pdf", "show documents",
     ]
     priority = 42
 
@@ -266,18 +267,21 @@ class FileOrganizerTalent(BaseTalent):
             max_r = int(count_match.group(1)) if count_match else None
             return self._find_large_files(directory, max_results=max_r)
 
-        ext_match = re.search(r'find\s+(\w+)\s+files?', cmd)
+        ext_match = re.search(r'(?:find|list|show|get|search\s+for)\s+(\w+)\s+files?', cmd)
         if ext_match:
             file_type = ext_match.group(1)
-            if not directory:
-                directory = self._config.get("default_directory", "")
-            if not directory:
-                self._pending_search = {"intent": "find_type", "file_type": file_type,
-                                        "max_results": None, "expires": time.time() + 60}
-                return self._fail("Which folder should I search? Please include a path.")
-            return self._find_by_type(directory, file_type)
+            # Ignore non-type words that look like types
+            if file_type not in ("my", "the", "all", "some", "any", "a"):
+                if not directory:
+                    directory = self._config.get("default_directory", "")
+                if not directory:
+                    self._pending_search = {"intent": "find_type", "file_type": file_type,
+                                            "max_results": None, "expires": time.time() + 60}
+                    return self._fail("Which folder should I search? Please include a path.")
+                return self._find_by_type(directory, file_type)
 
-        if any(p in cmd for p in ["list files", "show files", "what files", "what's in"]):
+        if any(p in cmd for p in ["list files", "show files", "what files", "what's in",
+                                   "list all", "show all"]):
             if not directory:
                 self._pending_search = {"intent": "list", "file_type": None,
                                         "max_results": None, "expires": time.time() + 60}
