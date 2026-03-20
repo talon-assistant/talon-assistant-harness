@@ -365,14 +365,18 @@ class EmailTalent(BaseTalent):
         body    = composed.get("body", "")
 
         # Confirmation gate: external_send
-        # When the gate is enabled (default), always show the compose/review dialog
-        # so the user can inspect and confirm before anything is sent.
-        # Only bypass the dialog and send directly when the gate is explicitly disabled.
+        # Signal-originated commands skip the desktop compose dialog — the
+        # explicit remote command is itself sufficient confirmation.  Instead,
+        # send immediately and reply with a confirmation.
+        # Local/voice commands show the compose dialog for review unless the
+        # gate is explicitly disabled in security settings.
+        command_source = context.get("command_source", "local")
         from core.security import get_security_filter as _gsf
         _sf = _gsf()
-        send_requires_confirmation = (not _sf) or _sf.gate_required("external_send")
-        if not send_requires_confirmation:
-            # Gate disabled — skip compose dialog and send immediately
+        gate_enabled = (not _sf) or _sf.gate_required("external_send")
+
+        if not gate_enabled or command_source == "signal":
+            # Send immediately (gate disabled, or remote command = implicit confirmation)
             try:
                 self._send_smtp(to, subject, body)
                 return {
@@ -389,7 +393,7 @@ class EmailTalent(BaseTalent):
                     "spoken": False,
                 }
 
-        # Gate enabled — present draft for user review before sending
+        # Gate enabled, local command — present draft for user review before sending
         return {
             "success": True,
             "response": (
@@ -479,13 +483,14 @@ class EmailTalent(BaseTalent):
                 )
 
             # Confirmation gate: external_send
-            # Same logic as compose: show review dialog unless the gate is
-            # explicitly disabled in config.
+            # Signal-originated commands bypass the desktop compose dialog;
+            # the remote command is treated as implicit confirmation.
+            command_source = context.get("command_source", "local")
             from core.security import get_security_filter as _gsf
             _sf = _gsf()
-            reply_requires_confirmation = (not _sf) or _sf.gate_required("external_send")
-            if not reply_requires_confirmation:
-                # Gate disabled — skip compose dialog and send immediately
+            gate_enabled = (not _sf) or _sf.gate_required("external_send")
+            if not gate_enabled or command_source == "signal":
+                # Send immediately
                 try:
                     self._send_smtp_reply(reply_to_addr, reply_subject,
                                           reply_body, original_msg_id)
@@ -504,7 +509,7 @@ class EmailTalent(BaseTalent):
                         "spoken": False,
                     }
 
-            # Gate enabled — present draft for user review before sending
+            # Gate enabled, local command — present draft for user review before sending
             return {
                 "success": True,
                 "response": (

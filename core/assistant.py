@@ -638,6 +638,7 @@ class TalonAssistant:
             "assistant": self,        # Allows talents to call process_command()
             "server_manager": self.server_manager,  # LLMServerManager or None
             "rag_explicit": False,  # Overwritten by process_command() after routing
+            "command_source": command_source,  # "local" or "signal"
         }
         if self.notify_callback:
             ctx["notify"] = self.notify_callback
@@ -1722,7 +1723,8 @@ class TalonAssistant:
         return response
 
     def process_command(self, command, speak_response=True,
-                        _executing_rule=False, attachments=None):
+                        _executing_rule=False, attachments=None,
+                        command_source="local"):
         """Central command processing pipeline.
 
         Args:
@@ -1730,6 +1732,9 @@ class TalonAssistant:
                 behavioral rule to prevent infinite loops.
             attachments: Optional list of local image file paths provided by
                 the user alongside the command (GUI file-picker / drag-drop).
+            command_source: Origin of the command — "local" (GUI/voice) or
+                "signal" (Signal remote). Passed to talents via context so
+                they can adapt behaviour (e.g. skip desktop dialogs).
 
         Returns:
             dict with keys: response (str), talent (str), success (bool)

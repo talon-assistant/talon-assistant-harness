@@ -301,7 +301,7 @@ class NewsDigestTalent(BaseTalent):
         webbrowser.open(f"file:///{out_path.replace(os.sep, '/')}")
 
         msg = (f"Morning digest ready — {story_count} stories from {feed_count} sources. "
-               f"Opening in your browser.")
+               f"Saved to {out_path}. Opening in your browser.")
         if speak and voice:
             voice.speak(msg)
         return {

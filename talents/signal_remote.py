@@ -299,6 +299,7 @@ class SignalRemoteTalent(BaseTalent):
                 command,
                 speak_response=False,
                 _executing_rule=True,
+                command_source="signal",
             )
             response = (result.get("response") or "").strip()
         except Exception as e:
