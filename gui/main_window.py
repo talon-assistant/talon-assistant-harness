@@ -308,6 +308,17 @@ class MainWindow(QMainWindow):
         # Voice panel stop button -> bridge
         self.voice_panel.stop_requested.connect(self.bridge.stop_speaking)
 
+        # Apply tts_enabled_default from config so the button state and
+        # assistant.tts_enabled match the user's preference at startup.
+        # Without this, tts_button starts checked=True regardless of config,
+        # causing the scheduler to speak even when TTS is configured off.
+        _tts_default = True
+        if self.bridge.assistant is not None:
+            _tts_default = self.bridge.assistant.config.get(
+                "voice", {}).get("tts_enabled_default", True)
+        self.voice_panel.tts_button.setChecked(_tts_default)
+        # setChecked triggers the toggled signal → set_tts_enabled is called automatically
+
         # Escape key shortcut to stop TTS
         self._stop_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Escape), self)
         self._stop_shortcut.activated.connect(self.bridge.stop_speaking)
