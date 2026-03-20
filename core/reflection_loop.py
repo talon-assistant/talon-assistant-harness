@@ -164,12 +164,14 @@ class ReflectionLoop:
 
         # ── Phase 3: act on curiosity ─────────────────────────────────────────
         enrichment = ""
-        if action_raw:
+        if not action_raw or not action_raw.strip():
+            print("   [Reflection] Curiosity: (no response)")
+        else:
             action = action_raw.strip()
-            if action.lower().rstrip(".") not in _NO_RESPONSES:
-                print(f"   [Reflection] Curiosity: {action}")
+            if action.lower().rstrip(".") in _NO_RESPONSES:
+                print("   [Reflection] Curiosity: no")
             else:
-                print(f"   [Reflection] Curiosity: no")
+                print(f"   [Reflection] Curiosity: {action}")
                 # Route through the full talent pipeline (no TTS, no buffer).
                 result = assistant.process_command(
                     action,
