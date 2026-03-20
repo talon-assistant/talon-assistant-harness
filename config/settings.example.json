@@ -93,6 +93,14 @@
 
   "_news_digest_note": "Feed config lives in config/news_digest.json — edit there or use the News Digest talent settings gear in the UI.",
 
+  "reflection": {
+    "_note": "Periodic unsupervised free thought. Talon generates without any user prompt, seeding each thought from the previous one. Thoughts are stored in memory and can surface in future conversations via RAG.",
+    "enabled": false,
+    "interval_minutes": 60,
+    "duration_minutes": 2,
+    "max_tokens_per_thought": 250
+  },
+
   "scheduler": [
     {
       "_note":   "Set enabled:true to activate. Time is 24-hour local time (HH:MM).",

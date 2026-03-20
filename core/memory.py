@@ -459,6 +459,38 @@ class MemorySystem:
             print(f"   [Memory] Could not retrieve session reflection: {e}")
             return ""
 
+    def store_free_thought(self, text: str, thought_num: int = 1) -> None:
+        """Store a single free-thought reflection in talon_memory.
+
+        Keeps a rolling cap of 30 free thoughts — oldest pruned when exceeded.
+        They embed naturally alongside other memories and surface in ambient RAG
+        when semantically relevant to a future user query.
+        """
+        try:
+            existing = self.memory_collection.get(
+                where={"type": "free_thought"},
+                include=["metadatas"],
+            )
+            ids   = existing.get("ids", [])
+            metas = existing.get("metadatas", [])
+            if len(ids) >= 30:
+                paired     = sorted(zip(ids, metas),
+                                    key=lambda x: x[1].get("timestamp", ""))
+                oldest_id  = paired[0][0]
+                self.memory_collection.delete(ids=[oldest_id])
+        except Exception as e:
+            print(f"   [Memory] Could not prune free thoughts: {e}")
+
+        ts     = datetime.now().isoformat()
+        doc_id = f"freethought_{int(time.time() * 1000)}_{thought_num}"
+        self.memory_collection.add(
+            embeddings=_emb.embed_documents([text], self._embed_model),
+            documents=[text],
+            metadatas=[{"type": "free_thought", "timestamp": ts,
+                        "thought_num": thought_num}],
+            ids=[doc_id],
+        )
+
     def search_memory(self, query, n_results=3, memory_type=None,
                        max_distance=1.2):
         """Search conversation memory semantically.

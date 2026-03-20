@@ -366,6 +366,12 @@ class TalonAssistant:
         if schedule:
             self.scheduler.start(schedule, self)
 
+        # 10. Reflection loop — periodic unsupervised free thought
+        from core.reflection_loop import ReflectionLoop
+        self.reflection_loop = ReflectionLoop(self)
+        self.reflection_loop.configure(self.config.get("reflection", {}))
+        self.reflection_loop.start()
+
         print("\n" + "=" * 50)
         print("TALON READY")
         print("=" * 50 + "\n")
