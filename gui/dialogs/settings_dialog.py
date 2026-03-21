@@ -1,4 +1,5 @@
 import json
+import os
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QTabWidget,
                              QWidget, QFormLayout, QLineEdit, QSpinBox,
                              QDoubleSpinBox, QCheckBox, QComboBox, QLabel,
@@ -1178,6 +1179,30 @@ class SettingsDialog(QDialog):
                 changed.add(dotted_key)
         return changed
 
+    @staticmethod
+    def _diff_settings(defaults: dict, current: dict) -> dict:
+        """Return only the keys in *current* that differ from *defaults*.
+
+        This ensures settings.json stores user overrides only — not a
+        full copy of the example defaults.  Keys that match the example
+        are omitted so future pulls can update defaults without being
+        shadowed by stale values.
+        """
+        diff: dict = {}
+        for key, val in current.items():
+            default_val = defaults.get(key)
+            if isinstance(val, dict) and isinstance(default_val, dict):
+                nested = SettingsDialog._diff_settings(default_val, val)
+                if nested:
+                    diff[key] = nested
+            elif val != default_val:
+                diff[key] = val
+        # Keys in current that don't exist in defaults at all — always keep
+        for key in current:
+            if key not in defaults and key not in diff:
+                diff[key] = current[key]
+        return diff
+
     def _on_save(self):
         new_settings = self._collect_values()
 
@@ -1188,9 +1213,21 @@ class SettingsDialog(QDialog):
                 "Some changes require an app restart to take effect.")
             self.restart_label.setVisible(True)
 
-        # Persist to disk
-        with open(self._config_path, 'w') as f:
-            json.dump(new_settings, f, indent=2)
+        # Load example defaults so we can compute the delta
+        example_path = os.path.join(
+            os.path.dirname(self._config_path), "settings.example.json")
+        defaults = {}
+        try:
+            with open(example_path, 'r') as f:
+                defaults = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            pass
 
+        # Persist only user overrides (keys that differ from defaults)
+        user_overrides = self._diff_settings(defaults, new_settings)
+        with open(self._config_path, 'w') as f:
+            json.dump(user_overrides, f, indent=2)
+
+        # Emit the full merged settings for the running app
         self.settings_saved.emit(new_settings)
         self.accept()
