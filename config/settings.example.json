@@ -144,8 +144,38 @@
   "scheduler": [
     {
       "_note":   "Set enabled:true to activate. Time is 24-hour local time (HH:MM).",
-      "command": "generate morning news digest",
+      "command": "search the web for Dallas Texas weather today",
+      "time":    "06:00",
+      "days":    ["mon","tue","wed","thu","fri","sat","sun"],
+      "enabled": false
+    },
+    {
+      "command": "search the web for top news stories today and give me one highlight from world news, US politics, business, technology, and science",
       "time":    "07:00",
+      "days":    ["mon","tue","wed","thu","fri","sat","sun"],
+      "enabled": false
+    },
+    {
+      "command": "search the web for Dow Jones Nasdaq S&P 500 stock market status today",
+      "time":    "11:00",
+      "days":    ["mon","tue","wed","thu","fri","sat","sun"],
+      "enabled": false
+    },
+    {
+      "command": "check my email inbox and summarize anything that looks important",
+      "time":    "12:00",
+      "days":    ["mon","tue","wed","thu","fri","sat","sun"],
+      "enabled": false
+    },
+    {
+      "command": "search the web for top 3 international news stories today",
+      "time":    "16:00",
+      "days":    ["mon","tue","wed","thu","fri","sat","sun"],
+      "enabled": false
+    },
+    {
+      "command": "search the web for latest science and technology news breakthroughs today",
+      "time":    "18:00",
       "days":    ["mon","tue","wed","thu","fri","sat","sun"],
       "enabled": false
     }
