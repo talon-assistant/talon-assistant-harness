@@ -150,6 +150,20 @@ class MemorySystem:
                        )
                        """)
 
+        # Self-initiated goals (personality / consciousness roadmap)
+        cursor.execute("""
+                       CREATE TABLE IF NOT EXISTS goals
+                       (
+                           id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                           created_at  TEXT,
+                           updated_at  TEXT,
+                           text        TEXT,
+                           status      TEXT DEFAULT 'active',
+                           progress    TEXT DEFAULT '',
+                           source      TEXT DEFAULT 'reflection'
+                       )
+                       """)
+
         conn.commit()
         conn.close()
 
@@ -555,6 +569,106 @@ class MemorySystem:
         except Exception as e:
             print(f"   [Memory] Could not clear free thoughts: {e}")
             return 0
+
+    # ── Self-initiated goals ─────────────────────────────────────────────────
+
+    def store_goal(self, text: str, source: str = "reflection") -> int:
+        """Create a new active goal. Returns the row id."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        now = datetime.now().isoformat()
+        cursor.execute(
+            "INSERT INTO goals (created_at, updated_at, text, status, source) "
+            "VALUES (?, ?, ?, 'active', ?)",
+            (now, now, text, source),
+        )
+        gid = cursor.lastrowid
+        conn.commit()
+        conn.close()
+        print(f"   [Goals] Created goal #{gid}: {text[:80]}")
+        return gid
+
+    def get_active_goals(self) -> list[dict]:
+        """Return all active goals, newest first."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT id, created_at, updated_at, text, progress "
+            "FROM goals WHERE status = 'active' ORDER BY created_at DESC"
+        )
+        rows = cursor.fetchall()
+        conn.close()
+        return [
+            {"id": r[0], "created_at": r[1], "updated_at": r[2],
+             "text": r[3], "progress": r[4]}
+            for r in rows
+        ]
+
+    def update_goal_progress(self, goal_id: int, progress: str) -> None:
+        """Append a progress note to an existing goal."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        now = datetime.now().isoformat()
+        cursor.execute(
+            "UPDATE goals SET progress = progress || ? || char(10), "
+            "updated_at = ? WHERE id = ?",
+            (f"[{now[:16]}] {progress}", now, goal_id),
+        )
+        conn.commit()
+        conn.close()
+
+    def complete_goal(self, goal_id: int, status: str = "completed") -> None:
+        """Mark a goal as completed or abandoned."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        now = datetime.now().isoformat()
+        cursor.execute(
+            "UPDATE goals SET status = ?, updated_at = ? WHERE id = ?",
+            (status, now, goal_id),
+        )
+        conn.commit()
+        conn.close()
+        print(f"   [Goals] Goal #{goal_id} → {status}")
+
+    # ── Anticipation — user behaviour patterns ────────────────────────────────
+
+    def get_command_patterns(self, lookback_days: int = 14) -> list[dict]:
+        """Analyse recent command history for temporal patterns.
+
+        Returns a list of pattern dicts:
+          {"hour": int, "day_name": str, "topic": str, "count": int}
+        Grouped by (hour, day-of-week, first-two-words-of-command).
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT timestamp, command_text FROM commands "
+            "WHERE success = 1 AND timestamp >= datetime('now', ?)",
+            (f"-{lookback_days} days",),
+        )
+        rows = cursor.fetchall()
+        conn.close()
+
+        from collections import Counter
+        buckets: Counter = Counter()
+        for ts_str, cmd in rows:
+            try:
+                dt = datetime.fromisoformat(ts_str)
+            except (ValueError, TypeError):
+                continue
+            # Coarse topic: first two meaningful words
+            words = cmd.lower().split()[:3]
+            topic = " ".join(w for w in words if len(w) > 2)[:40]
+            if not topic:
+                continue
+            buckets[(dt.hour, dt.strftime("%a"), topic)] += 1
+
+        # Only surface patterns that repeated ≥ 2 times
+        return [
+            {"hour": h, "day_name": d, "topic": t, "count": c}
+            for (h, d, t), c in buckets.most_common(20)
+            if c >= 2
+        ]
 
     def search_memory(self, query, n_results=3, memory_type=None,
                        max_distance=1.2):

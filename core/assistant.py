@@ -377,8 +377,13 @@ class TalonAssistant:
         reflection_cfg = personality.get("reflection",
                                          self.config.get("reflection", {}))
         self.reflection_loop = ReflectionLoop(self)
-        self.reflection_loop.configure(reflection_cfg,
-                                       valence_cfg=personality.get("valence", {}))
+        self.reflection_loop.configure(
+            reflection_cfg,
+            valence_cfg=personality.get("valence", {}),
+            goals_cfg=personality.get("goals", {}),
+            coherence_cfg=personality.get("coherence", {}),
+            anticipation_cfg=personality.get("anticipation", {}),
+        )
         self.reflection_loop.start()
 
         print("\n" + "=" * 50)

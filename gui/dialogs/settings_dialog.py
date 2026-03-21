@@ -1016,6 +1016,60 @@ class SettingsDialog(QDialog):
         val_form.addRow("", val_hint)
         outer_layout.addWidget(val_box)
 
+        # ── Goals ───────────────────────────────────────────────
+        goal_box = QGroupBox("Self-Initiated Goals")
+        goal_form = QFormLayout(goal_box)
+        goal = pers.get("goals", {})
+        self._add_check("personality.goals.enabled", goal_form,
+                        "Enabled", goal.get("enabled", False))
+        self._add_spin("personality.goals.max_active", goal_form,
+                       "Max Active Goals",
+                       goal.get("max_active", 5), 1, 20)
+        goal_hint = QLabel(
+            "During reflection, Talon can set goals for itself — things "
+            "it wants to explore or understand over time. Goals persist "
+            "across sessions and are injected into reflection context."
+        )
+        goal_hint.setWordWrap(True)
+        goal_hint.setObjectName("settings_hint")
+        goal_form.addRow("", goal_hint)
+        outer_layout.addWidget(goal_box)
+
+        # ── Coherence ──────────────────────────────────────────────
+        coh_box = QGroupBox("Coherence (Contradiction Detection)")
+        coh_form = QFormLayout(coh_box)
+        coh = pers.get("coherence", {})
+        self._add_check("personality.coherence.enabled", coh_form,
+                        "Enabled", coh.get("enabled", False))
+        coh_hint = QLabel(
+            "After each thought, Talon checks for contradictions with "
+            "semantically similar past thoughts and reconciles them, "
+            "building a more unified self-model over time."
+        )
+        coh_hint.setWordWrap(True)
+        coh_hint.setObjectName("settings_hint")
+        coh_form.addRow("", coh_hint)
+        outer_layout.addWidget(coh_box)
+
+        # ── Anticipation ───────────────────────────────────────────
+        ant_box = QGroupBox("Anticipation (User Patterns)")
+        ant_form = QFormLayout(ant_box)
+        ant = pers.get("anticipation", {})
+        self._add_check("personality.anticipation.enabled", ant_form,
+                        "Enabled", ant.get("enabled", False))
+        self._add_spin("personality.anticipation.lookback_days", ant_form,
+                       "Lookback (days)",
+                       ant.get("lookback_days", 14), 1, 90)
+        ant_hint = QLabel(
+            "Analyses command history for temporal patterns (e.g. 'user "
+            "asks about weather on weekday mornings') and injects relevant "
+            "patterns into reflection context so Talon can anticipate needs."
+        )
+        ant_hint.setWordWrap(True)
+        ant_hint.setObjectName("settings_hint")
+        ant_form.addRow("", ant_hint)
+        outer_layout.addWidget(ant_box)
+
         outer_layout.addStretch()
         return self._scrollable(outer)
 

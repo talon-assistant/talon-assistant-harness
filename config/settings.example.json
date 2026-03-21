@@ -106,6 +106,20 @@
       "enabled": false,
       "low_threshold": 4,
       "high_threshold": 7
+    },
+    "goals": {
+      "_note": "Self-initiated goals. During reflection Talon can set goals for itself — things it wants to explore or understand over time. Goals persist across sessions and are injected into reflection context.",
+      "enabled": false,
+      "max_active": 5
+    },
+    "coherence": {
+      "_note": "Contradiction detection. After each thought, Talon checks for contradictions with past thoughts and reconciles them, building a more unified self-model over time.",
+      "enabled": false
+    },
+    "anticipation": {
+      "_note": "User behaviour modelling. Analyses command history for temporal patterns (e.g. 'user asks about weather on weekday mornings') and injects relevant patterns into reflection context.",
+      "enabled": false,
+      "lookback_days": 14
     }
   },
 
