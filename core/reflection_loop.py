@@ -273,8 +273,8 @@ class ReflectionLoop:
             past = sorted(
                 past,
                 key=lambda t: (
-                    t.get("valence", 5) >= high_thresh,
-                    t.get("valence", 5),
+                    (t.get("valence") or 5) >= high_thresh,
+                    (t.get("valence") or 5),
                 ),
                 reverse=True,
             )
