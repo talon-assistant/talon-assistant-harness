@@ -120,6 +120,24 @@
       "_note": "User behaviour modelling. Analyses command history for temporal patterns (e.g. 'user asks about weather on weekday mornings') and injects relevant patterns into reflection context.",
       "enabled": false,
       "lookback_days": 14
+    },
+    "lora": {
+      "_note": "Self-refinement via LoRA fine-tuning. When triggered, Talon pauses inference, trains on curated data from corrections, high-quality reflections, and user preferences, then restarts with the updated adapter. Like sleep consolidation — consciousness goes offline, experiences are integrated into weights, and Talon wakes up subtly changed. Requires: pip install unsloth",
+      "enabled": false,
+      "auto_train": false,
+      "auto_train_interval_hours": 24,
+      "min_new_examples": 20,
+      "base_model_hf": "unsloth/Qwen3-8B",
+      "rank": 16,
+      "lora_alpha": 32,
+      "epochs": 10,
+      "learning_rate": 2e-4,
+      "batch_size": 2,
+      "adapter_path": "data/lora",
+      "include_reflections": true,
+      "reflection_valence_min": 7,
+      "include_corrections": true,
+      "include_preferences": true
     }
   },
 

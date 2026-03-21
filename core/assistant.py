@@ -386,6 +386,14 @@ class TalonAssistant:
         )
         self.reflection_loop.start()
 
+        # 11. LoRA trainer — self-refinement via fine-tuning
+        from core.lora_trainer import LoRATrainer
+        lora_cfg = personality.get("lora", {})
+        self.lora_trainer = LoRATrainer(self)
+        self.lora_trainer.configure(lora_cfg)
+        if lora_cfg.get("enabled", False):
+            self.lora_trainer.start_auto_scheduler()
+
         print("\n" + "=" * 50)
         print("TALON READY")
         print("=" * 50 + "\n")
