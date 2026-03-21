@@ -93,11 +93,20 @@
 
   "_news_digest_note": "Feed config lives in config/news_digest.json — edit there or use the News Digest talent settings gear in the UI.",
 
-  "reflection": {
-    "_note": "Periodic unsupervised free thought. Once per interval Talon generates one reflection with no user prompt. Stored in memory and can surface in future conversations via RAG.",
-    "enabled": false,
-    "interval_minutes": 60,
-    "max_tokens_per_thought": 4096
+  "personality": {
+    "_note": "Experimental features exploring emergent AI behaviour. All default to off.",
+    "reflection": {
+      "_note": "Periodic unsupervised free thought. Once per interval Talon generates one reflection with no user prompt. Stored in memory and can surface in future conversations via RAG.",
+      "enabled": false,
+      "interval_minutes": 60,
+      "max_tokens_per_thought": 8192
+    },
+    "valence": {
+      "_note": "After each reflection Talon self-rates the thought quality (1-10). Higher-rated thoughts are preferred when seeding future reflections, creating a feedback loop of increasingly meaningful inner life.",
+      "enabled": false,
+      "low_threshold": 4,
+      "high_threshold": 7
+    }
   },
 
   "scheduler": [

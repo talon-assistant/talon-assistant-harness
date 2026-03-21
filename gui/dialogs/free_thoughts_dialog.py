@@ -77,7 +77,9 @@ class FreeThoughtsDialog(QDialog):
             preview = t["text"][:60].replace("\n", " ")
             if len(t["text"]) > 60:
                 preview += "…"
-            item = QListWidgetItem(f"{ts}\n  {preview}")
+            v = t.get("valence")
+            v_tag = f"  [{v}/10]" if v is not None else ""
+            item = QListWidgetItem(f"{ts}{v_tag}\n  {preview}")
             item.setData(Qt.ItemDataRole.UserRole, t["id"])
             self._list.addItem(item)
 
@@ -102,9 +104,12 @@ class FreeThoughtsDialog(QDialog):
         thought = next((t for t in self._thoughts if t["id"] == doc_id), None)
         if thought:
             ts = thought["timestamp"][:19].replace("T", " at ")
+            v = thought.get("valence")
+            v_html = (f" &nbsp;·&nbsp; Valence: <b>{v}/10</b>"
+                      if v is not None else "")
             self._preview.setHtml(
                 f"<p style='color:#666; font-size:11px; margin-bottom:12px;'>"
-                f"Generated {ts}</p>"
+                f"Generated {ts}{v_html}</p>"
                 f"<p style='white-space: pre-wrap;'>{thought['text']}</p>"
             )
         self._delete_btn.setEnabled(True)

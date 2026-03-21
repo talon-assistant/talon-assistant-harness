@@ -372,8 +372,13 @@ class TalonAssistant:
 
         # 10. Reflection loop — periodic unsupervised free thought
         from core.reflection_loop import ReflectionLoop
+        personality = self.config.get("personality", {})
+        # Back-compat: accept top-level "reflection" if personality block absent
+        reflection_cfg = personality.get("reflection",
+                                         self.config.get("reflection", {}))
         self.reflection_loop = ReflectionLoop(self)
-        self.reflection_loop.configure(self.config.get("reflection", {}))
+        self.reflection_loop.configure(reflection_cfg,
+                                       valence_cfg=personality.get("valence", {}))
         self.reflection_loop.start()
 
         print("\n" + "=" * 50)

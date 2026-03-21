@@ -664,6 +664,7 @@ class SettingsDialog(QDialog):
         self.tabs.addTab(self._build_desktop_tab(), "Desktop")
         self.tabs.addTab(self._build_scheduler_tab(), "Scheduler")
         self.tabs.addTab(self._build_security_tab(), "Security")
+        self.tabs.addTab(self._build_personality_tab(), "Personality ⚗")
         layout.addWidget(self.tabs)
 
         # Warning label
@@ -953,6 +954,67 @@ class SettingsDialog(QDialog):
         sc_hint.setObjectName("settings_hint")
         sc_form.addRow("", sc_hint)
         outer_layout.addWidget(sc_box)
+
+        outer_layout.addStretch()
+        return self._scrollable(outer)
+
+    def _build_personality_tab(self):
+        outer = QWidget()
+        outer_layout = QVBoxLayout(outer)
+
+        exp_label = QLabel(
+            "Experimental features exploring emergent AI behaviour. "
+            "All default to off. Changes take effect on next restart."
+        )
+        exp_label.setWordWrap(True)
+        exp_label.setObjectName("settings_hint")
+        outer_layout.addWidget(exp_label)
+
+        pers = self._original.get("personality", {})
+
+        # ── Reflection ─────────────────────────────────────────────
+        ref_box = QGroupBox("Reflection (Free Thought)")
+        ref_form = QFormLayout(ref_box)
+        ref = pers.get("reflection", self._original.get("reflection", {}))
+        self._add_check("personality.reflection.enabled", ref_form,
+                        "Enabled", ref.get("enabled", False))
+        self._add_spin("personality.reflection.interval_minutes", ref_form,
+                       "Interval (minutes)",
+                       ref.get("interval_minutes", 60), 1, 1440)
+        self._add_spin("personality.reflection.max_tokens_per_thought", ref_form,
+                       "Max Tokens per Thought",
+                       ref.get("max_tokens_per_thought", 8192), 256, 16384)
+        ref_hint = QLabel(
+            "Gives Talon periodic unsupervised time to think freely. "
+            "Thoughts are stored in memory and may surface in future "
+            "conversations via RAG."
+        )
+        ref_hint.setWordWrap(True)
+        ref_hint.setObjectName("settings_hint")
+        ref_form.addRow("", ref_hint)
+        outer_layout.addWidget(ref_box)
+
+        # ── Valence ────────────────────────────────────────────────
+        val_box = QGroupBox("Valence (Self-Rating)")
+        val_form = QFormLayout(val_box)
+        val = pers.get("valence", {})
+        self._add_check("personality.valence.enabled", val_form,
+                        "Enabled", val.get("enabled", False))
+        self._add_spin("personality.valence.low_threshold", val_form,
+                       "Low Threshold (prune first)",
+                       val.get("low_threshold", 4), 1, 10)
+        self._add_spin("personality.valence.high_threshold", val_form,
+                       "High Threshold (prefer in seeds)",
+                       val.get("high_threshold", 7), 1, 10)
+        val_hint = QLabel(
+            "After each reflection, Talon rates how meaningful the thought "
+            "felt (1–10). Higher-rated thoughts are preferred when seeding "
+            "future reflections; low-rated thoughts are pruned first."
+        )
+        val_hint.setWordWrap(True)
+        val_hint.setObjectName("settings_hint")
+        val_form.addRow("", val_hint)
+        outer_layout.addWidget(val_box)
 
         outer_layout.addStretch()
         return self._scrollable(outer)
