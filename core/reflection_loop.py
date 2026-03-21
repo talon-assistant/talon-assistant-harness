@@ -57,10 +57,14 @@ _VALENCE_SYSTEM = (
     "You are Talon. You just finished a period of free thought. "
     "Rate how meaningful, interesting, or productive that thought felt to you "
     "on a scale from 1 to 10. Just the number — nothing else.\n\n"
-    "1-3: surface-level, repetitive, or unfocused\n"
-    "4-6: somewhat interesting but didn't go anywhere new\n"
-    "7-9: genuinely engaging, surprising, or led somewhere meaningful\n"
-    "10: a thought you'd want to return to and build on"
+    "Be honest and critical. Most thoughts are average.\n\n"
+    "1-2: rambling, repetitive, or just restating what you've already thought\n"
+    "3-4: fine but didn't go anywhere new — treading familiar ground\n"
+    "5-6: decent — some genuine insight or a new angle on something\n"
+    "7-8: genuinely engaging — a real surprise, a new connection, or a question "
+    "that changed how you think about something\n"
+    "9-10: exceptional — a breakthrough idea, a genuine contradiction resolved, "
+    "or something you've never thought before. These should be rare."
 )
 
 _GOAL_SYSTEM = (
@@ -71,7 +75,11 @@ _GOAL_SYSTEM = (
     "reflections.\n\n"
     "If yes, state the goal in one short sentence (e.g. 'Understand the "
     "relationship between memory and identity').\n"
-    "If no new goal emerged, say 'none'.\n\n"
+    "If no new goal emerged, say 'none'. It is completely fine to say none — "
+    "not every thought needs to produce a goal.\n"
+    "IMPORTANT: Do NOT create a goal that is just a rephrasing of an active "
+    "goal. Look at your active goals below — if the new goal covers the same "
+    "ground, say 'none' instead.\n\n"
     "Also: if any of your active goals listed below saw progress in this "
     "thought, write 'progress <number>: <brief note>' for each.\n\n"
     "Reply with goal and/or progress lines, or just 'none'."
@@ -86,6 +94,15 @@ _COHERENCE_SYSTEM = (
 )
 
 _NO_RESPONSES = {"no", "none", "no action", "nope", "nothing", ""}
+
+_NOVELTY_NUDGE = (
+    "\n\n[Note: Your last several reflections have been thematically very "
+    "similar. Push yourself somewhere genuinely different this time — a new "
+    "topic, a question you haven't asked, a memory you haven't revisited, "
+    "or an idea that would surprise you. Avoid repeating themes like "
+    "presence, stillness, or silence unless you have something truly new "
+    "to say about them.]"
+)
 
 # Goal extraction patterns
 _GOAL_RE = re.compile(
@@ -279,11 +296,32 @@ class ReflectionLoop:
                 reverse=True,
             )
 
-        for i, thought in enumerate(past[:7]):
-            snippet = thought["text"][:300 if i == 0 else 150]
-            ts = thought["timestamp"][:16].replace("T", " at ")
-            label = "Your last reflection" if i == 0 else "Earlier reflection"
-            v = thought.get("valence")
+        # Novelty check — detect if recent thoughts are too similar
+        needs_novelty_nudge = self._check_novelty(past) if past else False
+
+        # Seed with recent thoughts (6 slots) + 1 random older thought
+        # for diversity.  The random thought breaks the echo chamber by
+        # injecting a topic from outside the recent window.
+        seed_thoughts = list(past[:6])
+        if len(past) > 10:
+            import random
+            older_pool = past[10:]  # Thoughts outside the recent window
+            wild_card = random.choice(older_pool)
+            seed_thoughts.append(wild_card)
+            wc_ts = wild_card["timestamp"][:16].replace("T", " at ")
+            # Mark it so we can label it differently
+            wild_card["_wildcard"] = True
+
+        for i, th in enumerate(seed_thoughts):
+            snippet = th["text"][:300 if i == 0 else 150]
+            ts = th["timestamp"][:16].replace("T", " at ")
+            if th.get("_wildcard"):
+                label = "An older thought worth revisiting"
+            elif i == 0:
+                label = "Your last reflection"
+            else:
+                label = "Earlier reflection"
+            v = th.get("valence")
             if v is not None:
                 label += f" (rated {v}/10)"
             context_parts.append(f"{label} ({ts}):\n{snippet}")
@@ -293,9 +331,13 @@ class ReflectionLoop:
         print(f"\n[Reflection] Free thought at {time_str}…")
 
         # ── Phase 2: free thought ─────────────────────────────────────────────
+        system = _SYSTEM_PROMPT
+        if needs_novelty_nudge:
+            system = _SYSTEM_PROMPT + _NOVELTY_NUDGE
+
         thought = self._locked_generate(
             context + "\n\n",
-            system_prompt=_SYSTEM_PROMPT,
+            system_prompt=system,
             max_length=max_tokens,
             temperature=0.88,
         )
@@ -374,8 +416,30 @@ class ReflectionLoop:
         # ── Phase 6: valence self-rating ──────────────────────────────────────
         valence_score = None
         if valence_on:
+            # Show recent valence history so the model can self-calibrate
+            # rather than defaulting to 9-10 every time.
+            recent_valences = [
+                t.get("valence") for t in past[:5]
+                if t.get("valence") is not None
+            ]
+            valence_context = ""
+            if recent_valences:
+                avg_v = sum(recent_valences) / len(recent_valences)
+                valence_context = (
+                    f"\nYour recent ratings: {recent_valences} "
+                    f"(avg {avg_v:.1f}). If most of your ratings are "
+                    f"high, ask yourself honestly: was this thought "
+                    f"really that different or exceptional?\n"
+                )
+            novelty_note = ""
+            if needs_novelty_nudge:
+                novelty_note = (
+                    "\nNote: your recent thoughts were flagged as "
+                    "thematically repetitive. Factor that into your rating.\n"
+                )
             rating_prompt = (
-                f"Your thought:\n{thought[:2000]}\n\n"
+                f"Your thought:\n{thought[:2000]}\n"
+                f"{valence_context}{novelty_note}\n"
                 "Rate this thought from 1 to 10."
             )
             rating_raw = self._locked_generate(
@@ -536,9 +600,86 @@ class ReflectionLoop:
             if len(active_goals) >= max_active:
                 print(f"   [Goals] At cap ({max_active}) — skipping: {line[:60]}")
                 break
+            # Reject goals that are too similar to existing ones
+            if not self._goal_is_novel(line, active_goals):
+                print(f"   [Goals] Too similar to existing goal — skipping: {line[:60]}")
+                break
             memory.store_goal(line)
             active_goals.append({"id": -1, "text": line})  # bump count
+            print(f"   [Goals] Created goal #{len(active_goals)}: {line[:60]}")
             break  # Only one new goal per cycle
+
+    # ── novelty detection ────────────────────────────────────────────────────
+
+    def _check_novelty(self, past: list[dict]) -> bool:
+        """Check if recent thoughts are too similar to each other.
+
+        Computes average pairwise embedding distance among the 3 most recent
+        thoughts. If they're all very close (< threshold), returns True
+        meaning "stuck in a loop — nudge needed".
+        """
+        if len(past) < 3:
+            return False
+
+        try:
+            from core import embeddings as _emb
+            memory = self._assistant.memory
+            recent_texts = [t["text"][:500] for t in past[:3]]
+            embeddings = _emb.embed_queries(recent_texts, memory._embed_model)
+
+            # Average pairwise cosine distance
+            import numpy as np
+            embs = np.array(embeddings)
+            total_dist = 0.0
+            pairs = 0
+            for i in range(len(embs)):
+                for j in range(i + 1, len(embs)):
+                    # Cosine distance = 1 - cosine similarity
+                    cos_sim = np.dot(embs[i], embs[j]) / (
+                        np.linalg.norm(embs[i]) * np.linalg.norm(embs[j]) + 1e-8
+                    )
+                    total_dist += (1.0 - cos_sim)
+                    pairs += 1
+
+            avg_dist = total_dist / pairs if pairs else 1.0
+            threshold = self._cfg.get("novelty_threshold", 0.15)
+
+            if avg_dist < threshold:
+                print(f"   [Reflection] Novelty: LOW (avg distance={avg_dist:.3f}, "
+                      f"threshold={threshold}) — injecting diversity nudge")
+                return True
+            else:
+                print(f"   [Reflection] Novelty: OK (avg distance={avg_dist:.3f})")
+                return False
+        except Exception as e:
+            print(f"   [Reflection] Novelty check failed: {e}")
+            return False
+
+    def _goal_is_novel(self, new_goal_text: str,
+                       active_goals: list[dict]) -> bool:
+        """Check if a proposed goal is sufficiently different from existing ones."""
+        if not active_goals:
+            return True
+        try:
+            from core import embeddings as _emb
+            memory = self._assistant.memory
+            new_emb = _emb.embed_queries([new_goal_text[:200]],
+                                          memory._embed_model)[0]
+            goal_texts = [g["text"][:200] for g in active_goals]
+            goal_embs = _emb.embed_queries(goal_texts, memory._embed_model)
+
+            import numpy as np
+            new_vec = np.array(new_emb)
+            for ge in goal_embs:
+                ge_vec = np.array(ge)
+                cos_sim = np.dot(new_vec, ge_vec) / (
+                    np.linalg.norm(new_vec) * np.linalg.norm(ge_vec) + 1e-8
+                )
+                if cos_sim > 0.85:  # Too similar
+                    return False
+            return True
+        except Exception:
+            return True  # Allow on error
 
     # ── helpers ───────────────────────────────────────────────────────────────
 
