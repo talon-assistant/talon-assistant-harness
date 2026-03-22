@@ -642,7 +642,7 @@ class ReflectionLoop:
                     pairs += 1
 
             avg_dist = total_dist / pairs if pairs else 1.0
-            threshold = self._cfg.get("novelty_threshold", 0.15)
+            threshold = self._cfg.get("novelty_threshold", 0.35)
 
             if avg_dist < threshold:
                 print(f"   [Reflection] Novelty: LOW (avg distance={avg_dist:.3f}, "
