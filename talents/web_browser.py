@@ -293,14 +293,7 @@ class WebBrowserTalent(BaseTalent):
         # ── Step 1: resolve URL ───────────────────────────────────────────────
         url = self._extract_url(command, llm, context)
         if not url:
-            return {
-                "success": False,
-                "response": (
-                    "I couldn't find a website or URL in your request. "
-                    "Try including the address, e.g. 'summarise cnn.com'."
-                ),
-                "actions_taken": [],
-            }
+            return {"response": "", "talent": self.name, "success": False}
 
         domain = _domain_from_url(url)
         print(f"   [WebBrowser] Target: {url}  (domain={domain})")

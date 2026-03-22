@@ -30,10 +30,14 @@ Config block in settings.json (under ``personality``):
 
 from __future__ import annotations
 
+import random
 import re
 import threading
 import traceback
+import xml.etree.ElementTree as ET
 from datetime import datetime
+from urllib.request import urlopen
+from urllib.error import URLError
 
 
 _SYSTEM_PROMPT = (
@@ -127,6 +131,7 @@ class ReflectionLoop:
         self._goals_cfg: dict = {}
         self._coherence_cfg: dict = {}
         self._anticipation_cfg: dict = {}
+        self._cycle_count: int = 0
 
     def configure(self, cfg: dict, *,
                   valence_cfg: dict | None = None,
@@ -326,6 +331,16 @@ class ReflectionLoop:
                 label += f" (rated {v}/10)"
             context_parts.append(f"{label} ({ts}):\n{snippet}")
 
+        # Every 3rd cycle, inject a random trending topic for serendipity
+        if self._cycle_count > 0 and self._cycle_count % 3 == 0:
+            trending_topic = self._fetch_random_trending_topic()
+            if trending_topic:
+                context_parts.append(
+                    f"Random topic from today's trends: {trending_topic}. "
+                    "You don't have to reflect on this, but it's here if "
+                    "it sparks something."
+                )
+
         context = "\n\n".join(context_parts)
 
         print(f"\n[Reflection] Free thought at {time_str}…")
@@ -340,9 +355,9 @@ class ReflectionLoop:
         rep_pen = 1.1
         gen_max = max_tokens
         if needs_novelty_nudge:
-            rep_pen = 1.4
+            rep_pen = 1.2
             gen_max = min(max_tokens, 1024)
-            print("   [Reflection] Stagnation: rep_pen=1.4, max_tokens capped at 1024")
+            print("   [Reflection] Stagnation: rep_pen=1.2, max_tokens capped at 1024")
 
         thought = self._locked_generate(
             context + "\n\n",
@@ -473,6 +488,41 @@ class ReflectionLoop:
         print(f"   [Reflection] {preview}")
 
         memory.store_free_thought(thought, valence=valence_score)
+
+        # Increment cycle counter at the end of each reflection
+        self._cycle_count += 1
+
+    # ── trending topics ───────────────────────────────────────────────────────
+
+    @staticmethod
+    def _fetch_random_trending_topic() -> str | None:
+        """Fetch Google Trends RSS and return a random trending topic title.
+
+        Returns None silently on any failure (network, parse, etc.).
+        """
+        try:
+            with urlopen(
+                "https://trends.google.com/trending/rss?geo=US",
+                timeout=10,
+            ) as resp:
+                data = resp.read()
+            root = ET.fromstring(data)
+            # RSS items live under <channel><item><title>
+            titles = [
+                item.text.strip()
+                for item in root.iter("title")
+                if item.text and item.text.strip()
+            ]
+            # First <title> is usually the feed title — skip it
+            if len(titles) > 1:
+                titles = titles[1:]
+            if not titles:
+                return None
+            topic = random.choice(titles)
+            print(f"   [Reflection] Injecting trending topic: {topic}")
+            return topic
+        except Exception:
+            return None
 
     # ── coherence ─────────────────────────────────────────────────────────────
 
