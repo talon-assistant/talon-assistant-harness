@@ -335,11 +335,21 @@ class ReflectionLoop:
         if needs_novelty_nudge:
             system = _SYSTEM_PROMPT + _NOVELTY_NUDGE
 
+        # When stagnant, increase repetition penalty to force lexical diversity
+        # and cap token length to prevent infinite spiral.
+        rep_pen = 1.1
+        gen_max = max_tokens
+        if needs_novelty_nudge:
+            rep_pen = 1.4
+            gen_max = min(max_tokens, 1024)
+            print("   [Reflection] Stagnation: rep_pen=1.4, max_tokens capped at 1024")
+
         thought = self._locked_generate(
             context + "\n\n",
             system_prompt=system,
-            max_length=max_tokens,
+            max_length=gen_max,
             temperature=0.88,
+            rep_pen=rep_pen,
         )
 
         if thought is None:

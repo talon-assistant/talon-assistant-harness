@@ -122,7 +122,7 @@ class LLMClient:
 
     def generate(self, prompt, use_vision=False, screenshot_b64=None,
                  images_b64=None, max_length=None, system_prompt=None,
-                 temperature=None):
+                 temperature=None, rep_pen=None):
         """Send prompt to LLM server and return generated text.
 
         Dispatches to the appropriate backend based on ``self.api_format``.
@@ -135,6 +135,7 @@ class LLMClient:
             max_length: Override max token generation length.
             system_prompt: Optional system message (ChatML <|im_start|>system).
             temperature: Override temperature for this call.
+            rep_pen: Override repetition penalty for this call.
         """
         # Normalise: merge legacy screenshot_b64 into images_b64 list.
         effective_images = list(images_b64) if images_b64 else []
@@ -145,7 +146,7 @@ class LLMClient:
         if self.api_format == "llamacpp":
             return self._generate_llamacpp(
                 prompt, use_vision, effective_images,
-                max_length, system_prompt, temperature)
+                max_length, system_prompt, temperature, rep_pen)
         elif self.api_format == "openai":
             return self._generate_openai(
                 prompt, use_vision, effective_images,
@@ -153,16 +154,18 @@ class LLMClient:
         else:
             return self._generate_koboldcpp(
                 prompt, use_vision, effective_images,
-                max_length, system_prompt, temperature)
+                max_length, system_prompt, temperature, rep_pen)
 
     # ── KoboldCpp Backend ─────────────────────────────────────
 
     def _generate_koboldcpp(self, prompt, use_vision=False, images_b64=None,
-                            max_length=None, system_prompt=None, temperature=None):
+                            max_length=None, system_prompt=None, temperature=None,
+                            rep_pen=None):
         """KoboldCpp native API: POST /api/v1/generate."""
         effective_max_length = max_length or self.max_length
         effective_temperature = (temperature if temperature is not None
                                  else self.temperature)
+        effective_rep_pen = rep_pen if rep_pen is not None else self.rep_pen
 
         formatted_prompt = self._build_chatml_prompt(
             prompt, system_prompt, use_vision)
@@ -172,7 +175,7 @@ class LLMClient:
             "max_length": effective_max_length,
             "temperature": effective_temperature,
             "top_p": self.top_p,
-            "rep_pen": self.rep_pen,
+            "rep_pen": effective_rep_pen,
             "stop_sequence": self.stop_sequences
         }
 
@@ -197,7 +200,8 @@ class LLMClient:
     # ── llama.cpp Backend ─────────────────────────────────────
 
     def _generate_llamacpp(self, prompt, use_vision=False, images_b64=None,
-                           max_length=None, system_prompt=None, temperature=None):
+                           max_length=None, system_prompt=None, temperature=None,
+                           rep_pen=None):
         """llama.cpp server API: POST /completion."""
         # If we have a server manager reference, check readiness before sending.
         # Returns a friendly message instead of hanging/503 while model loads.
@@ -213,6 +217,7 @@ class LLMClient:
         effective_max_length = max_length or self.max_length
         effective_temperature = (temperature if temperature is not None
                                  else self.temperature)
+        effective_rep_pen = rep_pen if rep_pen is not None else self.rep_pen
 
         formatted_prompt = self._build_chatml_prompt(
             prompt, system_prompt, use_vision)
@@ -222,7 +227,7 @@ class LLMClient:
             "n_predict": effective_max_length,
             "temperature": effective_temperature,
             "top_p": self.top_p,
-            "repeat_penalty": self.rep_pen,
+            "repeat_penalty": effective_rep_pen,
             "stop": self.stop_sequences,
             "stream": False,
         }
