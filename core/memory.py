@@ -630,6 +630,31 @@ class MemorySystem:
         conn.close()
         print(f"   [Goals] Goal #{goal_id} → {status}")
 
+    def get_all_goals(self) -> list[dict]:
+        """Return all goals (active, completed, abandoned), newest first."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT id, created_at, updated_at, text, status, progress, source "
+            "FROM goals ORDER BY created_at DESC"
+        )
+        rows = cursor.fetchall()
+        conn.close()
+        return [
+            {"id": r[0], "created_at": r[1], "updated_at": r[2],
+             "text": r[3], "status": r[4], "progress": r[5], "source": r[6]}
+            for r in rows
+        ]
+
+    def delete_goal(self, goal_id: int) -> None:
+        """Permanently delete a goal by id."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM goals WHERE id = ?", (goal_id,))
+        conn.commit()
+        conn.close()
+        print(f"   [Goals] Deleted goal #{goal_id}")
+
     # ── Anticipation — user behaviour patterns ────────────────────────────────
 
     def get_command_patterns(self, lookback_days: int = 14) -> list[dict]:
