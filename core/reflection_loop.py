@@ -332,11 +332,11 @@ class ReflectionLoop:
                 label += f" (rated {v}/10)"
             context_parts.append(f"{label} ({ts}):\n{snippet}")
 
-        # Every 3rd LOW-novelty cycle, force a trending topic as the
-        # reflection seed.  The topic is mandatory — the model must engage
-        # with it, not just acknowledge and ignore it.
+        # When stagnant, force a trending topic as the reflection seed.
+        # The topic is mandatory — the model must engage with it, not just
+        # acknowledge and ignore it.
         forced_topic = None
-        if needs_novelty_nudge and self._cycle_count % 3 == 0:
+        if needs_novelty_nudge and self._cycle_count % 2 == 0:
             forced_topic = self._fetch_random_trending_topic()
             if forced_topic:
                 context_parts.append(
@@ -419,7 +419,7 @@ class ReflectionLoop:
                     enrichment = result["response"]
                     print(f"   [Reflection] Got results ({len(enrichment)} chars).")
 
-        # Synthesis
+        # Synthesis — also respect stagnation token cap
         if enrichment:
             synthesis_seed = (
                 f"Your earlier thought:\n{thought}\n\n"
@@ -428,9 +428,10 @@ class ReflectionLoop:
             )
             extension = self._locked_generate(
                 synthesis_seed,
-                system_prompt=_SYSTEM_PROMPT,
-                max_length=max_tokens,
+                system_prompt=system,
+                max_length=gen_max,
                 temperature=0.88,
+                rep_pen=rep_pen,
             )
             if extension is None:
                 print("   [Reflection] Synthesis skipped — system busy.")
