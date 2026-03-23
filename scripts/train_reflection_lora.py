@@ -205,11 +205,8 @@ def train(args):
         "args": sft_config,
     }
 
-    if is_vision:
-        from unsloth.trainer import UnslothVisionDataCollator
-        trainer_kwargs["data_collator"] = UnslothVisionDataCollator(
-            model, tokenizer
-        )
+    # Note: even though we use a VL model, our training data is text-only
+    # so we do NOT use UnslothVisionDataCollator (it expects image messages).
 
     trainer = SFTTrainer(**trainer_kwargs)
 

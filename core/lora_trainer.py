@@ -543,12 +543,8 @@ class LoRATrainer:
             "args": sft_config,
         }
 
-        # Vision models need the special data collator
-        if is_vision:
-            from unsloth.trainer import UnslothVisionDataCollator
-            trainer_kwargs["data_collator"] = UnslothVisionDataCollator(
-                model, tokenizer
-            )
+        # Note: even with a VL model, training data is text-only so we
+        # skip the vision data collator (it expects image messages).
 
         trainer = SFTTrainer(**trainer_kwargs)
 
