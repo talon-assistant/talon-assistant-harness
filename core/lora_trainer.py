@@ -526,7 +526,7 @@ class LoRATrainer:
             logging_steps=5,
             save_strategy="epoch",
             save_total_limit=2,
-            fp16=True,
+            bf16=True,
             optim="adamw_8bit",
             lr_scheduler_type="cosine",
             seed=42,

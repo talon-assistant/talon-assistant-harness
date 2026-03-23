@@ -188,7 +188,7 @@ def train(args):
         warmup_steps=min(10, len(examples) // args.batch),
         logging_steps=5,
         save_strategy="no",  # Save manually at the end
-        fp16=True,
+        bf16=True,
         optim="adamw_8bit",
         lr_scheduler_type="cosine",
         seed=42,
