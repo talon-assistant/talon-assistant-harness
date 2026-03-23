@@ -646,22 +646,24 @@ class ReflectionLoop:
             else:
                 print(f"   [Coherence] Reconciliation: "
                       f"{result.strip()[:100]}…")
-            # Store the reconciliation as a memory so it can surface later
-            try:
-                from core import embeddings as _emb
-                import time
-                ts = datetime.now().isoformat()
-                doc_id = f"coherence_{int(time.time() * 1000)}"
-                text = (f"[Belief reconciliation]\n{reconciliation.strip()}")
-                memory.memory_collection.add(
-                    embeddings=_emb.embed_documents([text],
-                                                    memory._embed_model),
-                    documents=[text],
-                    metadatas=[{"type": "coherence", "timestamp": ts}],
-                    ids=[doc_id],
-                )
-            except Exception as e:
-                print(f"   [Coherence] Could not store reconciliation: {e}")
+                # Store the reconciliation as a memory
+                try:
+                    from core import embeddings as _emb
+                    import time
+                    ts = datetime.now().isoformat()
+                    doc_id = f"coherence_{int(time.time() * 1000)}"
+                    text = f"[Belief reconciliation]\n{result.strip()}"
+                    memory.memory_collection.add(
+                        embeddings=_emb.embed_documents(
+                            [text], memory._embed_model),
+                        documents=[text],
+                        metadatas=[{"type": "coherence",
+                                    "timestamp": ts}],
+                        ids=[doc_id],
+                    )
+                except Exception as e:
+                    print(f"   [Coherence] Could not store "
+                          f"reconciliation: {e}")
 
     # ── goal extraction ───────────────────────────────────────────────────────
 
