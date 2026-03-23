@@ -402,7 +402,15 @@ class ReflectionLoop:
         elif not action_raw.strip():
             print("   [Reflection] Curiosity: (no response)")
         else:
-            action = action_raw.strip()
+            # Take only the first line/sentence — model sometimes appends
+            # justifications that pollute the search query.
+            action = action_raw.strip().split("\n")[0].strip()
+            # Strip trailing justifications like "Specific because: ..."
+            for marker in (" Specific because", " Because ", " — because",
+                           " (because", " Reason:"):
+                idx = action.find(marker)
+                if idx > 10:
+                    action = action[:idx].strip()
             if action.lower().rstrip(".") in _NO_RESPONSES:
                 print("   [Reflection] Curiosity: no")
             else:
