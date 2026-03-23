@@ -127,7 +127,7 @@
       "auto_train": false,
       "auto_train_interval_hours": 24,
       "min_new_examples": 20,
-      "base_model_hf": "unsloth/Qwen3-8B",
+      "base_model_hf": "unsloth/Qwen3-VL-8B-Instruct-unsloth-bnb-4bit",
       "rank": 16,
       "lora_alpha": 32,
       "epochs": 10,
@@ -137,7 +137,9 @@
       "include_reflections": true,
       "reflection_valence_min": 7,
       "include_corrections": true,
-      "include_preferences": true
+      "include_preferences": true,
+      "include_seeds": true,
+      "seeds_path": "data/lora/reflection_seeds.jsonl"
     }
   },
 

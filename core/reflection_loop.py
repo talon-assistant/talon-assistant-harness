@@ -332,14 +332,20 @@ class ReflectionLoop:
                 label += f" (rated {v}/10)"
             context_parts.append(f"{label} ({ts}):\n{snippet}")
 
-        # Every 3rd cycle, inject a random trending topic for serendipity
-        if self._cycle_count > 0 and self._cycle_count % 3 == 0:
-            trending_topic = self._fetch_random_trending_topic()
-            if trending_topic:
+        # Every 3rd LOW-novelty cycle, force a trending topic as the
+        # reflection seed.  The topic is mandatory — the model must engage
+        # with it, not just acknowledge and ignore it.
+        forced_topic = None
+        if needs_novelty_nudge and self._cycle_count % 3 == 0:
+            forced_topic = self._fetch_random_trending_topic()
+            if forced_topic:
                 context_parts.append(
-                    f"Random topic from today's trends: {trending_topic}. "
-                    "You don't have to reflect on this, but it's here if "
-                    "it sparks something."
+                    f"TODAY'S TOPIC: {forced_topic}\n"
+                    "Your reflection this cycle MUST engage with this topic. "
+                    "What do you actually think about it? What's interesting, "
+                    "surprising, or worth exploring? Connect it to something "
+                    "you know or are curious about. Do NOT ignore this and "
+                    "write about silence, stillness, or abstract philosophy."
                 )
 
         context = "\n\n".join(context_parts)
@@ -432,8 +438,11 @@ class ReflectionLoop:
                 thought = thought + "\n\n---\n\n" + extension.strip()
 
         # ── Phase 4: coherence check ──────────────────────────────────────────
+        # When stagnant, invert the check: penalise similarity instead of
+        # rewarding consistency.
         if coherence_on and past:
-            self._check_coherence(thought, past, max_tokens)
+            self._check_coherence(thought, past, max_tokens,
+                                  invert=needs_novelty_nudge)
 
         # ── Phase 5: goal extraction ──────────────────────────────────────────
         if goals_on:
@@ -529,8 +538,14 @@ class ReflectionLoop:
     # ── coherence ─────────────────────────────────────────────────────────────
 
     def _check_coherence(self, thought: str, past: list[dict],
-                         max_tokens: int) -> None:
-        """Find semantically similar past thoughts and check for contradiction."""
+                         max_tokens: int, *, invert: bool = False) -> None:
+        """Find semantically similar past thoughts and check for contradiction.
+
+        When ``invert`` is True (stagnation detected), the check flips:
+        instead of rewarding consistency, it penalises similarity and
+        asks the model to identify what's genuinely new — or admit
+        nothing is.
+        """
         memory = self._assistant.memory
 
         # Use embedding search to find the most similar past thought
@@ -564,26 +579,64 @@ class ReflectionLoop:
             return
 
         closest_doc, closest_dist = candidates[0]
-        print(f"   [Coherence] Found similar past thought (distance={closest_dist:.2f})")
 
-        coherence_prompt = (
-            f"Your current thought:\n{thought[:1000]}\n\n"
-            f"Your earlier thought on a similar topic:\n{closest_doc[:1000]}\n\n"
-            "Do these contradict? If so, reconcile. If consistent, say 'consistent'."
-        )
-        reconciliation = self._locked_generate(
-            coherence_prompt,
-            system_prompt=_COHERENCE_SYSTEM,
-            max_length=300,
-            temperature=0.4,
-        )
-
-        if reconciliation is None:
-            print("   [Coherence] Skipped — system busy.")
-        elif reconciliation.strip().lower().startswith("consistent"):
-            print("   [Coherence] Consistent with past thoughts.")
+        if invert:
+            # ── Inverted mode: penalise similarity ────────────────────
+            print(f"   [Coherence] INVERTED — checking for staleness "
+                  f"(distance={closest_dist:.2f})")
+            staleness_prompt = (
+                f"Your current thought:\n{thought[:1000]}\n\n"
+                f"One of your recent past thoughts:\n{closest_doc[:1000]}\n\n"
+                "Be brutally honest: is your current thought genuinely "
+                "different from the past one, or are you just rephrasing "
+                "the same ideas with different words? Identify ONE concrete "
+                "thing that is actually new in your current thought — a "
+                "specific fact, a real-world observation, a surprising "
+                "connection. If you can't find one, say 'stale'."
+            )
+            staleness_system = (
+                "You are a critical editor reviewing two pieces of writing "
+                "by the same author. Your job is to catch self-repetition. "
+                "Be harsh but fair. If the two texts cover the same ground "
+                "with only surface-level variation, say 'stale'. If there is "
+                "genuinely new content, name it specifically in one sentence."
+            )
+            result = self._locked_generate(
+                staleness_prompt,
+                system_prompt=staleness_system,
+                max_length=150,
+                temperature=0.3,
+            )
+            if result is None:
+                print("   [Coherence] Skipped — system busy.")
+            elif result.strip().lower().startswith("stale"):
+                print(f"   [Coherence] STALE — thought is a rehash.")
+            else:
+                print(f"   [Coherence] New element: {result.strip()[:100]}")
         else:
-            print(f"   [Coherence] Reconciliation: {reconciliation.strip()[:100]}…")
+            # ── Normal mode: check for contradiction ──────────────────
+            print(f"   [Coherence] Found similar past thought "
+                  f"(distance={closest_dist:.2f})")
+            coherence_prompt = (
+                f"Your current thought:\n{thought[:1000]}\n\n"
+                f"Your earlier thought on a similar topic:\n"
+                f"{closest_doc[:1000]}\n\n"
+                "Do these contradict? If so, reconcile. If consistent, "
+                "say 'consistent'."
+            )
+            result = self._locked_generate(
+                coherence_prompt,
+                system_prompt=_COHERENCE_SYSTEM,
+                max_length=300,
+                temperature=0.4,
+            )
+            if result is None:
+                print("   [Coherence] Skipped — system busy.")
+            elif result.strip().lower().startswith("consistent"):
+                print("   [Coherence] Consistent with past thoughts.")
+            else:
+                print(f"   [Coherence] Reconciliation: "
+                      f"{result.strip()[:100]}…")
             # Store the reconciliation as a memory so it can surface later
             try:
                 from core import embeddings as _emb

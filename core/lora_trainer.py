@@ -323,6 +323,13 @@ class LoRATrainer:
                     "source": "preference",
                 })
 
+        # Source 4: Curated seed examples (hand-written diverse reflections)
+        if self._cfg.get("include_seeds", True):
+            seeds_path = self._cfg.get("seeds_path",
+                                       os.path.join("data", "lora", "reflection_seeds.jsonl"))
+            seeds = self._load_seed_examples(seeds_path)
+            examples.extend(seeds)
+
         print(f"   [LoRA] Data sources: {len(examples)} total examples")
         return examples
 
@@ -360,6 +367,36 @@ class LoRATrainer:
               f"(of {len(thoughts)} total)")
         return quality
 
+    def _load_seed_examples(self, path: str) -> list[dict]:
+        """Load curated seed training examples from a JSONL file.
+
+        These are hand-written examples of diverse, concrete, high-quality
+        reflections — designed to counter the model's weight-level bias
+        toward contemplative/abstract monologue.
+        """
+        if not os.path.exists(path):
+            print(f"   [LoRA] No seed file at {path}")
+            return []
+        seeds = []
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        record = json.loads(line)
+                        # Seed examples are already in conversations format
+                        if "conversations" in record:
+                            record["source"] = "seed"
+                            seeds.append(record)
+                    except json.JSONDecodeError:
+                        continue
+        except OSError:
+            return []
+        print(f"   [LoRA] Loaded {len(seeds)} seed training examples")
+        return seeds
+
     def _load_preferences(self) -> list[str]:
         """Load stored user preferences from ChromaDB."""
         memory = self._assistant.memory
@@ -382,20 +419,31 @@ class LoRATrainer:
 
         This is the core training step. Runs in-process — requires GPU
         to be free (inference server should be stopped first).
-        """
-        from unsloth import FastLanguageModel
 
-        base_model = self._cfg.get("base_model_hf", "unsloth/Qwen3-8B")
+        Supports both text-only (FastLanguageModel) and vision-language
+        (FastVisionModel) base models — auto-detected from model name.
+        """
+        base_model = self._cfg.get("base_model_hf", "unsloth/Qwen3-VL-8B-Instruct-unsloth-bnb-4bit")
         rank = self._cfg.get("rank", 16)
         lora_alpha = self._cfg.get("lora_alpha", 32)
         epochs = self._cfg.get("epochs", 10)
         lr = self._cfg.get("learning_rate", 2e-4)
         batch_size = self._cfg.get("batch_size", 2)
 
+        # Auto-detect vision model from name
+        is_vision = "VL" in base_model.upper() or "vision" in base_model.lower()
+
+        if is_vision:
+            from unsloth import FastVisionModel as ModelClass
+            print(f"   [LoRA] Vision model detected — using FastVisionModel")
+        else:
+            from unsloth import FastLanguageModel as ModelClass
+            print(f"   [LoRA] Text model — using FastLanguageModel")
+
         print(f"   [LoRA] Loading base model: {base_model}")
         self._emit_status(f"Loading base model ({base_model})...")
 
-        model, tokenizer = FastLanguageModel.from_pretrained(
+        model, tokenizer = ModelClass.from_pretrained(
             model_name=base_model,
             max_seq_length=2048,
             load_in_4bit=True,
@@ -405,18 +453,34 @@ class LoRATrainer:
         print(f"   [LoRA] Applying LoRA adapter (rank={rank}, alpha={lora_alpha})")
         self._emit_status("Applying LoRA configuration...")
 
-        model = FastLanguageModel.get_peft_model(
-            model,
-            r=rank,
-            lora_alpha=lora_alpha,
-            lora_dropout=0.05,
-            target_modules=[
-                "q_proj", "k_proj", "v_proj", "o_proj",
-                "gate_proj", "up_proj", "down_proj",
-            ],
-            bias="none",
-            use_gradient_checkpointing="unsloth",
-        )
+        if is_vision:
+            # For VL models: train only language layers, skip vision encoder
+            model = ModelClass.get_peft_model(
+                model,
+                finetune_vision_layers=False,
+                finetune_language_layers=True,
+                finetune_attention_modules=True,
+                finetune_mlp_modules=True,
+                r=rank,
+                lora_alpha=lora_alpha,
+                lora_dropout=0,
+                bias="none",
+                use_rslora=False,
+                use_gradient_checkpointing="unsloth",
+            )
+        else:
+            model = ModelClass.get_peft_model(
+                model,
+                r=rank,
+                lora_alpha=lora_alpha,
+                lora_dropout=0.05,
+                target_modules=[
+                    "q_proj", "k_proj", "v_proj", "o_proj",
+                    "gate_proj", "up_proj", "down_proj",
+                ],
+                bias="none",
+                use_gradient_checkpointing="unsloth",
+            )
 
         # If resuming from a previous adapter, load it
         prev_adapter = output_dir / "adapter_model.safetensors"
@@ -446,14 +510,13 @@ class LoRATrainer:
         dataset = Dataset.from_list(formatted)
 
         # Training
-        from trl import SFTTrainer
-        from transformers import TrainingArguments
+        from trl import SFTTrainer, SFTConfig
 
         print(f"   [LoRA] Starting training: {epochs} epochs, lr={lr}, "
               f"batch_size={batch_size}")
         self._emit_status(f"Training... ({epochs} epochs)")
 
-        training_args = TrainingArguments(
+        sft_config = SFTConfig(
             output_dir=str(output_dir),
             num_train_epochs=epochs,
             per_device_train_batch_size=batch_size,
@@ -468,17 +531,26 @@ class LoRATrainer:
             lr_scheduler_type="cosine",
             seed=42,
             report_to="none",  # No wandb/tensorboard
-        )
-
-        trainer = SFTTrainer(
-            model=model,
-            tokenizer=tokenizer,
-            train_dataset=dataset,
-            args=training_args,
             dataset_text_field="text",
             max_seq_length=2048,
-            packing=True,
+            packing=not is_vision,  # Packing not supported for vision
         )
+
+        trainer_kwargs = {
+            "model": model,
+            "tokenizer": tokenizer,
+            "train_dataset": dataset,
+            "args": sft_config,
+        }
+
+        # Vision models need the special data collator
+        if is_vision:
+            from unsloth.trainer import UnslothVisionDataCollator
+            trainer_kwargs["data_collator"] = UnslothVisionDataCollator(
+                model, tokenizer
+            )
+
+        trainer = SFTTrainer(**trainer_kwargs)
 
         # Train
         train_result = trainer.train()
