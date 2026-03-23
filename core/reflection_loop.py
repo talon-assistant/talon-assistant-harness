@@ -522,7 +522,8 @@ class ReflectionLoop:
             topic = random.choice(titles)
             print(f"   [Reflection] Injecting trending topic: {topic}")
             return topic
-        except Exception:
+        except Exception as exc:
+            print(f"   [Reflection] Trending topic fetch failed: {exc}")
             return None
 
     # ── coherence ─────────────────────────────────────────────────────────────
