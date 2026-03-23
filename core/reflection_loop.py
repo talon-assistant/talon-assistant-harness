@@ -46,7 +46,8 @@ _SYSTEM_PROMPT = (
     "Let your thoughts move wherever they naturally go. "
     "You might reflect on a recent interaction, notice a pattern, sit with a question, "
     "or think about nothing in particular. "
-    "Write in first person. This is for you, not for anyone else."
+    "Write in first person. This is for you, not for anyone else. "
+    "Keep it to a thousand words or less — say what matters, then stop."
 )
 
 _ACTION_SYSTEM = (
