@@ -414,6 +414,16 @@ class ReflectionLoop:
             if action.lower().rstrip(".") in _NO_RESPONSES:
                 print("   [Reflection] Curiosity: no")
             else:
+                # Ensure queries route to web_search, not conversation_rag.
+                # The model often writes "search: X" or "search for X" which
+                # the router may interpret as RAG intent.
+                low = action.lower()
+                if low.startswith("search:"):
+                    action = "search the web for " + action[7:].strip()
+                elif low.startswith("search for "):
+                    action = "search the web for " + action[11:].strip()
+                elif low.startswith("look up "):
+                    action = "search the web for " + action[8:].strip()
                 print(f"   [Reflection] Curiosity: {action}")
                 result = self._locked_process_command(
                     action,
