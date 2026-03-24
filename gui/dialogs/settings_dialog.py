@@ -1086,6 +1086,35 @@ class SettingsDialog(QDialog):
 
         outer_layout.addWidget(tune_box)
 
+        # ── Proactive Outreach ────────────────────────────────────
+        out_box = QGroupBox("Proactive Outreach (Signal)")
+        out_form = QFormLayout(out_box)
+        outreach = ref.get("outreach", {})
+        self._add_check("personality.reflection.outreach.enabled", out_form,
+                        "Enabled", outreach.get("enabled", False))
+        self._add_spin("personality.reflection.outreach.start_hour", out_form,
+                       "Start Hour",
+                       outreach.get("start_hour", 9), 0, 23)
+        self._add_spin("personality.reflection.outreach.end_hour", out_form,
+                       "End Hour",
+                       outreach.get("end_hour", 18), 1, 24)
+        self._add_spin("personality.reflection.outreach.cooldown_minutes", out_form,
+                       "Cooldown (minutes)",
+                       outreach.get("cooldown_minutes", 60), 10, 480)
+        self._add_spin("personality.reflection.outreach.min_valence", out_form,
+                       "Min Valence to Share",
+                       outreach.get("min_valence", 7), 1, 10)
+        out_hint = QLabel(
+            "When enabled, Talon may send you a Signal message after "
+            "a reflection if it has something genuinely interesting "
+            "to share. Only during the configured hours, at most once "
+            "per cooldown period. Requires Signal talent to be active."
+        )
+        out_hint.setWordWrap(True)
+        out_hint.setObjectName("settings_hint")
+        out_form.addRow("", out_hint)
+        outer_layout.addWidget(out_box)
+
         # ── Valence ────────────────────────────────────────────────
         val_box = QGroupBox("Valence (Self-Rating)")
         val_form = QFormLayout(val_box)

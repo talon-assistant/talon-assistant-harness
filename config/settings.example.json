@@ -106,7 +106,15 @@
       "stagnant_token_cap": 1024,
       "temperature": 0.88,
       "seed_thoughts": 7,
-      "forced_topic_interval": 2
+      "forced_topic_interval": 2,
+      "outreach": {
+        "_note": "Proactive Signal messages when Talon has something interesting to share.",
+        "enabled": false,
+        "start_hour": 9,
+        "end_hour": 18,
+        "cooldown_minutes": 60,
+        "min_valence": 7
+      }
     },
     "valence": {
       "_note": "After each reflection Talon self-rates the thought quality (1-10). Higher-rated thoughts are preferred when seeding future reflections, creating a feedback loop of increasingly meaningful inner life.",

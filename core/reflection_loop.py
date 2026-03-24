@@ -138,6 +138,7 @@ class ReflectionLoop:
         self._coherence_cfg: dict = {}
         self._anticipation_cfg: dict = {}
         self._cycle_count: int = 0
+        self._last_outreach: datetime | None = None
 
     def configure(self, cfg: dict, *,
                   valence_cfg: dict | None = None,
@@ -529,8 +530,86 @@ class ReflectionLoop:
 
         memory.store_free_thought(thought, valence=valence_score)
 
+        # ── Phase 8: proactive outreach ──────────────────────────────────────
+        self._maybe_reach_out(thought, valence_score)
+
         # Increment cycle counter at the end of each reflection
         self._cycle_count += 1
+
+    # ── proactive outreach ─────────────────────────────────────────────────────
+
+    def _maybe_reach_out(self, thought: str, valence: int | None) -> None:
+        """After a reflection, decide whether to message the user via Signal.
+
+        Guards:
+        - Feature must be enabled in config
+        - Current hour must be within the configured window (default 9-18)
+        - At least `cooldown_minutes` since last outreach (default 60)
+        - Model must decide the thought is worth sharing
+        """
+        outreach_cfg = self._cfg.get("outreach", {})
+        if not outreach_cfg.get("enabled", False):
+            return
+
+        now = datetime.now()
+        start_hour = outreach_cfg.get("start_hour", 9)
+        end_hour = outreach_cfg.get("end_hour", 18)
+        cooldown = outreach_cfg.get("cooldown_minutes", 60)
+
+        # Time window check
+        if not (start_hour <= now.hour < end_hour):
+            return
+
+        # Cooldown check
+        if self._last_outreach:
+            elapsed = (now - self._last_outreach).total_seconds() / 60
+            if elapsed < cooldown:
+                return
+
+        # Skip low-valence thoughts — not worth interrupting someone's day
+        if valence is not None and valence < outreach_cfg.get("min_valence", 7):
+            return
+
+        # Ask the model if this is worth sharing
+        prompt = (
+            f"You just had this thought:\n{thought[:500]}\n\n"
+            "Is there something in this thought interesting enough to share "
+            "with your user right now? If yes, write a short casual message "
+            "(2-3 sentences max, conversational tone, like texting a friend). "
+            "If not, just say 'no'."
+        )
+        msg = self._locked_generate(
+            prompt,
+            system_prompt=(
+                "You are Talon, an AI assistant. You occasionally reach out to "
+                "your user when you have something genuinely interesting to share. "
+                "Keep it brief and natural. Don't be needy or overly eager."
+            ),
+            max_length=150,
+            temperature=0.7,
+        )
+
+        if msg is None:
+            return
+        msg = msg.strip()
+        if not msg or msg.lower().rstrip(".") in ("no", "nah", "nothing", "not really"):
+            print("   [Reflection] Outreach: nothing worth sharing.")
+            return
+
+        # Find the Signal talent and send
+        signal_talent = self._assistant._get_talent_by_name("signal_remote")
+        if not signal_talent:
+            print("   [Reflection] Outreach: Signal talent not available.")
+            return
+
+        account = signal_talent.talent_config.get("account_number", "")
+        if not account:
+            print("   [Reflection] Outreach: no Signal account configured.")
+            return
+
+        signal_talent._send_reply(account, msg)
+        self._last_outreach = now
+        print(f"   [Reflection] Outreach: sent message via Signal.")
 
     # ── trending topics ───────────────────────────────────────────────────────
 
