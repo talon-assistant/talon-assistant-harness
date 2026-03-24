@@ -995,6 +995,97 @@ class SettingsDialog(QDialog):
         ref_form.addRow("", ref_hint)
         outer_layout.addWidget(ref_box)
 
+        # ── Reflection Tuning ─────────────────────────────────────
+        tune_box = QGroupBox("Reflection Tuning")
+        tune_form = QFormLayout(tune_box)
+
+        self._add_dspin("personality.reflection.novelty_threshold", tune_form,
+                        "Novelty Threshold",
+                        ref.get("novelty_threshold", 0.35), 0.05, 1.0, 0.05)
+        novelty_hint = QLabel(
+            "Embedding distance below this triggers the stagnation "
+            "detector. Lower values are more tolerant of similar "
+            "thoughts. Raise if reflections feel repetitive."
+        )
+        novelty_hint.setWordWrap(True)
+        novelty_hint.setObjectName("settings_hint")
+        tune_form.addRow("", novelty_hint)
+
+        self._add_dspin("personality.reflection.base_rep_pen", tune_form,
+                        "Base Repetition Penalty",
+                        ref.get("base_rep_pen", 1.1), 1.0, 2.0, 0.05)
+        rep_hint = QLabel(
+            "Baseline repetition penalty for reflection generation. "
+            "Higher values discourage repeated words. Too high (1.4+) "
+            "causes decompensation (word salad). Default 1.1."
+        )
+        rep_hint.setWordWrap(True)
+        rep_hint.setObjectName("settings_hint")
+        tune_form.addRow("", rep_hint)
+
+        self._add_dspin("personality.reflection.stagnant_rep_pen", tune_form,
+                        "Stagnant Repetition Penalty",
+                        ref.get("stagnant_rep_pen", 1.2), 1.0, 2.0, 0.05)
+        srep_hint = QLabel(
+            "Repetition penalty applied when the novelty detector "
+            "flags stagnation. Pushes the model toward different "
+            "word choices. Keep below 1.3 to avoid incoherence."
+        )
+        srep_hint.setWordWrap(True)
+        srep_hint.setObjectName("settings_hint")
+        tune_form.addRow("", srep_hint)
+
+        self._add_spin("personality.reflection.stagnant_token_cap", tune_form,
+                       "Stagnant Token Cap",
+                       ref.get("stagnant_token_cap", 1024), 256, 8192)
+        tcap_hint = QLabel(
+            "Maximum tokens when stagnation is detected. Prevents "
+            "long decompensation spirals. Applies to both the main "
+            "thought and synthesis phases."
+        )
+        tcap_hint.setWordWrap(True)
+        tcap_hint.setObjectName("settings_hint")
+        tune_form.addRow("", tcap_hint)
+
+        self._add_dspin("personality.reflection.temperature", tune_form,
+                        "Temperature",
+                        ref.get("temperature", 0.88), 0.1, 2.0, 0.05)
+        temp_hint = QLabel(
+            "Controls randomness in reflection output. Higher values "
+            "produce more creative but less coherent thoughts. "
+            "Default 0.88 balances novelty with readability."
+        )
+        temp_hint.setWordWrap(True)
+        temp_hint.setObjectName("settings_hint")
+        tune_form.addRow("", temp_hint)
+
+        self._add_spin("personality.reflection.seed_thoughts", tune_form,
+                       "Seed Thoughts",
+                       ref.get("seed_thoughts", 7), 1, 20)
+        seed_hint = QLabel(
+            "Number of recent past thoughts injected as context for "
+            "each new reflection. More seeds provide continuity but "
+            "risk reinforcing existing themes."
+        )
+        seed_hint.setWordWrap(True)
+        seed_hint.setObjectName("settings_hint")
+        tune_form.addRow("", seed_hint)
+
+        self._add_spin("personality.reflection.forced_topic_interval", tune_form,
+                       "Forced Topic Interval",
+                       ref.get("forced_topic_interval", 2), 1, 10)
+        topic_hint = QLabel(
+            "When stagnant, inject a trending topic every N cycles. "
+            "Set to 1 to force a topic every stagnant cycle. Higher "
+            "values give the model more unsupervised runs between "
+            "topic injections."
+        )
+        topic_hint.setWordWrap(True)
+        topic_hint.setObjectName("settings_hint")
+        tune_form.addRow("", topic_hint)
+
+        outer_layout.addWidget(tune_box)
+
         # ── Valence ────────────────────────────────────────────────
         val_box = QGroupBox("Valence (Self-Rating)")
         val_form = QFormLayout(val_box)

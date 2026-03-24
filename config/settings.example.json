@@ -99,7 +99,14 @@
       "_note": "Periodic unsupervised free thought. Once per interval Talon generates one reflection with no user prompt. Stored in memory and can surface in future conversations via RAG.",
       "enabled": false,
       "interval_minutes": 60,
-      "max_tokens_per_thought": 8192
+      "max_tokens_per_thought": 8192,
+      "novelty_threshold": 0.35,
+      "base_rep_pen": 1.1,
+      "stagnant_rep_pen": 1.2,
+      "stagnant_token_cap": 1024,
+      "temperature": 0.88,
+      "seed_thoughts": 7,
+      "forced_topic_interval": 2
     },
     "valence": {
       "_note": "After each reflection Talon self-rates the thought quality (1-10). Higher-rated thoughts are preferred when seeding future reflections, creating a feedback loop of increasingly meaningful inner life.",

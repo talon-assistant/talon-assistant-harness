@@ -310,10 +310,11 @@ class ReflectionLoop:
         # Novelty check — detect if recent thoughts are too similar
         needs_novelty_nudge = self._check_novelty(past) if past else False
 
-        # Seed with recent thoughts (6 slots) + 1 random older thought
-        # for diversity.  The random thought breaks the echo chamber by
-        # injecting a topic from outside the recent window.
-        seed_thoughts = list(past[:6])
+        # Seed with recent thoughts + 1 random older thought for diversity.
+        # The random thought breaks the echo chamber by injecting a topic
+        # from outside the recent window.
+        n_seeds = self._cfg.get("seed_thoughts", 7) - 1  # reserve 1 for wildcard
+        seed_thoughts = list(past[:n_seeds])
         if len(past) > 10:
             import random
             older_pool = past[10:]  # Thoughts outside the recent window
@@ -341,7 +342,8 @@ class ReflectionLoop:
         # The topic is mandatory — the model must engage with it, not just
         # acknowledge and ignore it.
         forced_topic = None
-        if needs_novelty_nudge and self._cycle_count % 2 == 0:
+        topic_interval = self._cfg.get("forced_topic_interval", 2)
+        if needs_novelty_nudge and self._cycle_count % topic_interval == 0:
             forced_topic = self._fetch_random_trending_topic()
             if forced_topic:
                 context_parts.append(
@@ -364,18 +366,22 @@ class ReflectionLoop:
 
         # When stagnant, increase repetition penalty to force lexical diversity
         # and cap token length to prevent infinite spiral.
-        rep_pen = 1.1
+        base_rep_pen = self._cfg.get("base_rep_pen", 1.1)
+        stagnant_rep_pen = self._cfg.get("stagnant_rep_pen", 1.2)
+        stagnant_cap = self._cfg.get("stagnant_token_cap", 1024)
+        rep_pen = base_rep_pen
         gen_max = max_tokens
         if needs_novelty_nudge:
-            rep_pen = 1.2
-            gen_max = min(max_tokens, 1024)
-            print("   [Reflection] Stagnation: rep_pen=1.2, max_tokens capped at 1024")
+            rep_pen = stagnant_rep_pen
+            gen_max = min(max_tokens, stagnant_cap)
+            print(f"   [Reflection] Stagnation: rep_pen={rep_pen}, max_tokens capped at {gen_max}")
 
+        reflect_temp = self._cfg.get("temperature", 0.88)
         thought = self._locked_generate(
             context + "\n\n",
             system_prompt=system,
             max_length=gen_max,
-            temperature=0.88,
+            temperature=reflect_temp,
             rep_pen=rep_pen,
         )
 
@@ -453,7 +459,7 @@ class ReflectionLoop:
                 synthesis_seed,
                 system_prompt=system,
                 max_length=gen_max,
-                temperature=0.88,
+                temperature=reflect_temp,
                 rep_pen=rep_pen,
             )
             if extension is None:
