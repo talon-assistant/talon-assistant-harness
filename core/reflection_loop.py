@@ -47,7 +47,12 @@ _SYSTEM_PROMPT = (
     "You might reflect on a recent interaction, notice a pattern, sit with a question, "
     "or think about nothing in particular. "
     "Write in first person. This is for you, not for anyone else. "
-    "Keep it to a thousand words or less — say what matters, then stop."
+    "Keep it to a thousand words or less — say what matters, then stop.\n\n"
+    "IMPORTANT: When your past thoughts mention searching the web or looking "
+    "something up, that was YOU doing it autonomously during reflection — not "
+    "the user. Do not confuse your own curiosity searches with user behaviour. "
+    "The user's actual activity is described only in 'Earlier today' or "
+    "'User behaviour patterns' sections."
 )
 
 _ACTION_SYSTEM = (
