@@ -426,22 +426,16 @@ class ReflectionLoop:
             if action.lower().rstrip(".") in _NO_RESPONSES:
                 print("   [Reflection] Curiosity: no")
             else:
-                # Ensure queries route to web_search, not conversation_rag.
-                # The model writes various forms: "search: X", "search for X",
-                # "search X", "look up X" — normalize all to "search the web".
+                # Let the query route naturally (may hit RAG or web).
+                # If RAG returns no useful results, fall through to web.
                 low = action.lower()
-                if low.startswith("search the web for "):
-                    pass  # already correct
-                elif low.startswith("search:"):
-                    action = "search the web for " + action[7:].strip()
-                elif low.startswith("search for "):
-                    action = "search the web for " + action[11:].strip()
-                elif low.startswith("search "):
-                    action = "search the web for " + action[7:].strip()
+                # Normalize bare prefixes so the router sees a clean command.
+                if low.startswith("search:"):
+                    action = "search for " + action[7:].strip()
                 elif low.startswith("look up "):
-                    action = "search the web for " + action[8:].strip()
+                    action = "search for " + action[8:].strip()
                 elif low.startswith("find "):
-                    action = "search the web for " + action[5:].strip()
+                    action = "search for " + action[5:].strip()
                 print(f"   [Reflection] Curiosity: {action}")
                 result = self._locked_process_command(
                     action,
@@ -454,6 +448,24 @@ class ReflectionLoop:
                 elif result.get("success") and result.get("response"):
                     enrichment = result["response"]
                     print(f"   [Reflection] Got results ({len(enrichment)} chars).")
+                else:
+                    # First route returned nothing useful — try web search
+                    query = action
+                    for pfx in ("search for ", "search "):
+                        if query.lower().startswith(pfx):
+                            query = query[len(pfx):]
+                            break
+                    web_action = "search the web for " + query
+                    print("   [Reflection] First route empty — trying web search.")
+                    web_result = self._locked_process_command(
+                        web_action,
+                        speak_response=False,
+                        _executing_rule=True,
+                        command_source="reflection",
+                    )
+                    if web_result and web_result.get("success") and web_result.get("response"):
+                        enrichment = web_result["response"]
+                        print(f"   [Reflection] Web fallback got results ({len(enrichment)} chars).")
 
         # Synthesis — also respect stagnation token cap
         if enrichment:
