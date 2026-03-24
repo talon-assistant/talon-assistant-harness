@@ -2003,19 +2003,21 @@ class TalonAssistant:
                     print(f"\n{'=' * 50}\n")
                     return {"response": response or "", "talent": "", "success": True}
 
-                # Step 4: Log to memory
-                command_id = self.memory.log_command(
-                    command,
-                    success=result["success"],
-                    response=result.get("response", "")
-                )
-                for action_info in result.get("actions_taken", []):
-                    self.memory.log_action(
-                        command_id,
-                        action_info.get("action", {}),
-                        action_info.get("result", ""),
-                        action_info.get("success", True)
+                # Step 4: Log to memory (skip for reflection/rule sub-steps
+                # so autonomous searches don't pollute user behaviour patterns)
+                if not _executing_rule:
+                    command_id = self.memory.log_command(
+                        command,
+                        success=result["success"],
+                        response=result.get("response", "")
                     )
+                    for action_info in result.get("actions_taken", []):
+                        self.memory.log_action(
+                            command_id,
+                            action_info.get("action", {}),
+                            action_info.get("result", ""),
+                            action_info.get("success", True)
+                        )
 
                 # Step 5: Store successful pattern
                 if result["success"] and result.get("actions_taken"):
