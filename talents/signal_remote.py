@@ -255,11 +255,13 @@ class SignalRemoteTalent(BaseTalent):
             sent_msg = sync_msg.get("sentMessage") or {}
             text = (sent_msg.get("message") or "").strip()
             sync_dest = (sent_msg.get("destination") or sender) if text else None
+            # Extract incoming attachments (images, files)
+            incoming_attachments = sent_msg.get("attachments") or []
         except (AttributeError, TypeError):
             return
 
-        # Skip non-Note-to-Self envelopes
-        if not text:
+        # Skip non-Note-to-Self envelopes (unless there's an attachment)
+        if not text and not incoming_attachments:
             return
 
         # Prefix check (case-insensitive)
@@ -293,13 +295,30 @@ class SignalRemoteTalent(BaseTalent):
             print("   [Signal] Assistant not available, cannot process command.")
             return
 
+        # Resolve incoming image attachments to local file paths
+        image_paths = []
+        config_dir = cfg.get("config_dir", "data/signal-cli-config")
+        for att in incoming_attachments:
+            # signal-cli stores attachments with an "id" field; the file
+            # lives at <config_dir>/attachments/<id>
+            att_id = att.get("id")
+            att_type = att.get("contentType", "")
+            if att_id and att_type.startswith("image/"):
+                att_path = os.path.join(config_dir, "attachments", att_id)
+                if os.path.exists(att_path):
+                    image_paths.append(att_path)
+                    print(f"   [Signal] Received image attachment: {att_id}")
+                else:
+                    print(f"   [Signal] Attachment file missing: {att_path}")
+
         result = {}
         try:
             result = self._assistant.process_command(
-                command,
+                command or "describe this image",
                 speak_response=False,
                 _executing_rule=True,
                 command_source="signal",
+                attachments=image_paths or None,
             )
             response = (result.get("response") or "").strip()
         except Exception as e:
