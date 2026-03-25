@@ -810,7 +810,7 @@ class SettingsDialog(QDialog):
         self._add_line("memory.chroma_path", form, "ChromaDB Path",
                        mem.get("chroma_path", "data/chroma_db"))
         self._add_line("memory.embedding_model", form, "Embedding Model",
-                       mem.get("embedding_model", "all-MiniLM-L6-v2"))
+                       mem.get("embedding_model", "BAAI/bge-base-en-v1.5"))
 
         docs = self._original.get("documents", {})
         self._add_line("documents.directory", form, "Documents Directory",
@@ -1362,20 +1362,13 @@ class SettingsDialog(QDialog):
                 "Some changes require an app restart to take effect.")
             self.restart_label.setVisible(True)
 
-        # Load example defaults so we can compute the delta
-        example_path = os.path.join(
-            os.path.dirname(self._config_path), "settings.example.json")
-        defaults = {}
-        try:
-            with open(example_path, 'r') as f:
-                defaults = json.load(f)
-        except (FileNotFoundError, json.JSONDecodeError):
-            pass
-
-        # Persist only user overrides (keys that differ from defaults)
-        user_overrides = self._diff_settings(defaults, merged_settings)
+        # Write the full merged config — no delta.  The previous approach
+        # of diffing against example defaults caused repeated data loss:
+        # sections the UI didn't fully manage (llm.prompt_template, memory,
+        # embedding, etc.) were silently stripped when they matched defaults,
+        # then failed to reload because the app expected them in the file.
         with open(self._config_path, 'w') as f:
-            json.dump(user_overrides, f, indent=2)
+            json.dump(merged_settings, f, indent=2)
 
         # Emit the full merged settings for the running app
         self.settings_saved.emit(merged_settings)
