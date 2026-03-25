@@ -418,7 +418,9 @@ class ReflectionLoop:
             )
 
         # Novelty check — detect if recent thoughts are too similar
-        needs_novelty_nudge = self._check_novelty(past) if past else False
+        # Use chronological order (from memory), not valence-sorted past
+        chrono_past = memory.get_free_thoughts()  # newest first
+        needs_novelty_nudge = self._check_novelty(chrono_past) if chrono_past else False
 
         # Seed with recent thoughts + 1 random older thought for diversity.
         # The random thought breaks the echo chamber by injecting a topic
@@ -510,11 +512,24 @@ class ReflectionLoop:
         # ── Phase 2b: inline tool calls ──────────────────────────────────────
         # Scan for [MEMORY: ...], [SEARCH: ...], [GOALS] tags.
         # Execute up to max_tool_calls, inject results, and let model continue.
+        # Track seen calls to prevent the model from repeating the same query.
         tool_calls_used = 0
+        _seen_tool_calls: set[str] = set()
         for _ in range(max_tool_calls):
             tag, query = self._extract_tool_tag(thought)
             if tag is None:
                 break
+            call_key = f"{tag}:{(query or '').strip().lower()}"
+            if call_key in _seen_tool_calls:
+                print(f"   [Reflection] Skipping duplicate tool call: [{tag}: {query or ''}]")
+                # Remove the duplicate tag from text to prevent infinite loop
+                last_tag_pos = thought.rfind(f"[{tag}")
+                if last_tag_pos >= 0:
+                    end_pos = thought.find("]", last_tag_pos)
+                    if end_pos >= 0:
+                        thought = thought[:last_tag_pos] + thought[end_pos + 1:]
+                break
+            _seen_tool_calls.add(call_key)
             tool_calls_used += 1
             tool_result = self._execute_tool_tag(tag, query)
             if tool_result:

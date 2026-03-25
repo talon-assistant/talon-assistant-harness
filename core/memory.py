@@ -477,7 +477,7 @@ class MemorySystem:
                            *, valence: int | None = None) -> None:
         """Store a single free-thought reflection in talon_memory.
 
-        Keeps a rolling cap of 30 free thoughts — oldest pruned when exceeded.
+        Keeps a rolling cap of 60 free thoughts — oldest pruned when exceeded.
         They embed naturally alongside other memories and surface in ambient RAG
         when semantically relevant to a future user query.
 
@@ -492,7 +492,7 @@ class MemorySystem:
             )
             ids   = existing.get("ids", [])
             metas = existing.get("metadatas", [])
-            if len(ids) >= 30:
+            if len(ids) >= 60:
                 # When pruning, prefer dropping low-valence thoughts first.
                 paired = sorted(
                     zip(ids, metas),
