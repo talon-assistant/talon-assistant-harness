@@ -264,13 +264,19 @@ class SignalRemoteTalent(BaseTalent):
         if not text and not incoming_attachments:
             return
 
-        # Prefix check (case-insensitive)
+        # Prefix check (case-insensitive).
+        # If the message has image attachments, allow it through even
+        # without the prefix — the user sent a photo to analyse.
         prefix = cfg.get("command_prefix", "talon: ").lower()
-        if not text.lower().startswith(prefix):
+        has_images = any(
+            (a.get("contentType") or "").startswith("image/")
+            for a in incoming_attachments
+        )
+        if not text.lower().startswith(prefix) and not has_images:
             return   # normal Signal chat — ignore silently
 
-        command = text[len(prefix):].strip()
-        if not command:
+        command = text[len(prefix):].strip() if text.lower().startswith(prefix) else text.strip()
+        if not command and not has_images:
             return
 
         # Update stats
