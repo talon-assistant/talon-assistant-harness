@@ -107,6 +107,8 @@
       "temperature": 0.88,
       "seed_thoughts": 7,
       "forced_topic_interval": 2,
+      "consolidation_interval": 12,
+      "_consolidation_note": "Every N reflection cycles, run memory consolidation (dream phase). Clusters similar thoughts, merges overlapping ideas, prunes stale entries, reviews goals. Set to 0 to disable.",
       "outreach": {
         "_note": "Proactive Signal messages when Talon has something interesting to share.",
         "enabled": false,

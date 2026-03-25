@@ -193,11 +193,18 @@ class ReflectionLoop:
     def _loop(self) -> None:
         interval_s = self._cfg.get("interval_minutes", 60) * 60
         initial_wait = min(interval_s, 300)
+        consolidation_every = self._cfg.get("consolidation_interval", 12)
         print(f"   [Reflection] First thought in {initial_wait}s.")
         self._stop.wait(initial_wait)
 
         while not self._stop.is_set():
             try:
+                # Run consolidation (dream) every N cycles
+                if (consolidation_every > 0
+                        and self._cycle_count > 0
+                        and self._cycle_count % consolidation_every == 0):
+                    self._consolidate()
+
                 self._reflect()
             except Exception:
                 print(f"   [Reflection] Error:\n{traceback.format_exc()}")
@@ -766,6 +773,202 @@ class ReflectionLoop:
         signal_talent._send_reply(account, msg)
         self._last_outreach = now
         print(f"   [Reflection] Outreach: sent message via Signal.")
+
+    # ── consolidation (dream) ──────────────────────────────────────────────
+
+    def _consolidate(self) -> None:
+        """Memory consolidation — Talon's 'dream' phase.
+
+        Runs every N reflection cycles. Reviews all stored thoughts,
+        identifies clusters of similar/overlapping ideas, merges them
+        into consolidated summaries, prunes low-value entries, and
+        reviews goals for staleness.
+        """
+        memory = self._assistant.memory
+        thoughts = memory.get_free_thoughts()
+        if len(thoughts) < 6:
+            print("   [Dream] Too few thoughts to consolidate — skipping.")
+            return
+
+        print(f"   [Dream] Starting consolidation ({len(thoughts)} thoughts)...")
+
+        # ── Phase 1: Cluster similar thoughts ────────────────────────────
+        # Build a simple list of (id, timestamp, valence, preview) for the LLM
+        thought_summaries = []
+        for i, t in enumerate(thoughts):
+            ts = t.get("timestamp", "")[:16]
+            v = t.get("valence") or 5
+            preview = t["text"][:200].replace("\n", " ")
+            thought_summaries.append(
+                f"[{i}] {ts} (valence={v}): {preview}"
+            )
+
+        catalog = "\n".join(thought_summaries)
+
+        # ── Phase 2: Ask LLM to identify clusters and stale thoughts ────
+        analysis_prompt = (
+            f"You have {len(thoughts)} stored thoughts. Here they are "
+            f"(truncated to 200 chars each):\n\n{catalog}\n\n"
+            "Tasks:\n"
+            "1. CLUSTERS: Group thoughts that cover the same theme or "
+            "topic. List each cluster as: CLUSTER: [indices] — theme\n"
+            "2. STALE: List indices of thoughts that are low quality, "
+            "redundant, or contain error text. Format: STALE: [indices]\n"
+            "3. KEEP: List indices of unique, high-value thoughts that "
+            "should be preserved as-is. Format: KEEP: [indices]\n\n"
+            "Be concise. Use only the formats above."
+        )
+
+        analysis = self._locked_generate(
+            analysis_prompt,
+            system_prompt=(
+                "You are a memory curator. Your job is to organize and "
+                "clean up a collection of thoughts. Be ruthless about "
+                "identifying redundancy. Thoughts about the same topic "
+                "with minor variations are a cluster."
+            ),
+            max_length=1024,
+            temperature=0.3,
+        )
+
+        if not analysis:
+            print("   [Dream] Analysis skipped — system busy.")
+            return
+
+        print(f"   [Dream] Analysis complete.")
+
+        # ── Phase 3: Parse clusters and consolidate ──────────────────────
+        import re as _re
+
+        # Extract STALE indices
+        stale_ids = set()
+        stale_match = _re.search(r"STALE:\s*\[([^\]]*)\]", analysis)
+        if stale_match:
+            for num in _re.findall(r"\d+", stale_match.group(1)):
+                idx = int(num)
+                if 0 <= idx < len(thoughts):
+                    stale_ids.add(idx)
+
+        # Extract CLUSTER groups
+        clusters = []
+        for cmatch in _re.finditer(
+            r"CLUSTER:\s*\[([^\]]*)\]\s*[—–-]\s*(.+)", analysis
+        ):
+            indices = []
+            for num in _re.findall(r"\d+", cmatch.group(1)):
+                idx = int(num)
+                if 0 <= idx < len(thoughts):
+                    indices.append(idx)
+            theme = cmatch.group(2).strip()
+            if len(indices) >= 2:
+                clusters.append((indices, theme))
+
+        # For each cluster with 3+ thoughts, consolidate into one
+        consolidated_count = 0
+        deleted_count = 0
+
+        for indices, theme in clusters:
+            if len(indices) < 3:
+                continue
+
+            # Build full text of cluster members
+            cluster_texts = []
+            for idx in indices:
+                t = thoughts[idx]
+                ts = t.get("timestamp", "")[:16]
+                cluster_texts.append(f"[{ts}]: {t['text'][:500]}")
+
+            merge_prompt = (
+                f"These {len(indices)} thoughts all relate to: {theme}\n\n"
+                + "\n---\n".join(cluster_texts) +
+                "\n\nWrite a single consolidated thought that preserves "
+                "the best insights from all of them. Keep specific facts "
+                "and discard repetition. Under 300 words."
+            )
+
+            merged = self._locked_generate(
+                merge_prompt,
+                system_prompt=(
+                    "You are consolidating multiple related thoughts into "
+                    "one. Preserve specifics, data points, and genuine "
+                    "insights. Remove fluff and repetition."
+                ),
+                max_length=1024,
+                temperature=0.5,
+            )
+
+            if not merged or not merged.strip():
+                continue
+
+            # Find highest valence in the cluster
+            best_valence = max(
+                (thoughts[i].get("valence") or 5) for i in indices
+            )
+
+            # Store the consolidated thought
+            memory.store_free_thought(
+                f"[Consolidated — {theme}]\n{merged.strip()}",
+                valence=min(best_valence + 1, 10),  # slight boost
+            )
+            consolidated_count += 1
+
+            # Delete the originals (except the highest-valence one)
+            best_idx = max(indices, key=lambda i: thoughts[i].get("valence") or 5)
+            for idx in indices:
+                if idx != best_idx:
+                    try:
+                        memory.delete_free_thought(thoughts[idx]["id"])
+                        deleted_count += 1
+                    except Exception:
+                        pass
+
+        # ── Phase 4: Prune stale thoughts ────────────────────────────────
+        for idx in stale_ids:
+            # Don't delete if already deleted in cluster phase
+            t = thoughts[idx]
+            if (t.get("valence") or 5) <= 4:
+                try:
+                    memory.delete_free_thought(t["id"])
+                    deleted_count += 1
+                except Exception:
+                    pass
+
+        # ── Phase 5: Review goals for staleness ──────────────────────────
+        if self._goals_cfg.get("enabled", False):
+            goals = memory.get_active_goals()
+            if goals:
+                goal_list = "\n".join(
+                    f"#{g['id']}: {g['text'][:100]} "
+                    f"(created {g.get('created_at', '?')[:10]})"
+                    for g in goals
+                )
+                goal_prompt = (
+                    f"Active goals:\n{goal_list}\n\n"
+                    "Are any of these goals stale, completed, or no longer "
+                    "relevant based on recent thoughts? For each stale goal "
+                    "reply: ABANDON: #id — reason\n"
+                    "If all goals are fine, say NONE."
+                )
+                goal_review = self._locked_generate(
+                    goal_prompt,
+                    system_prompt="You are reviewing goals for relevance. Be honest.",
+                    max_length=256,
+                    temperature=0.3,
+                )
+                if goal_review:
+                    for gmatch in _re.finditer(
+                        r"ABANDON:\s*#(\d+)", goal_review
+                    ):
+                        gid = int(gmatch.group(1))
+                        try:
+                            memory.complete_goal(gid, "abandoned")
+                            print(f"   [Dream] Abandoned stale goal #{gid}")
+                        except Exception:
+                            pass
+
+        print(f"   [Dream] Consolidation complete: "
+              f"{consolidated_count} clusters merged, "
+              f"{deleted_count} thoughts pruned.")
 
     # ── trending topics ───────────────────────────────────────────────────────
 
