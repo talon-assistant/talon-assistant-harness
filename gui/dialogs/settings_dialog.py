@@ -1323,11 +1323,40 @@ class SettingsDialog(QDialog):
                 diff[key] = current[key]
         return diff
 
+    @staticmethod
+    def _deep_merge(base: dict, overlay: dict) -> dict:
+        """Recursively merge *overlay* onto *base*, returning a new dict.
+
+        Keys in *overlay* take precedence.  Keys in *base* that are absent
+        from *overlay* are preserved — this is critical for settings sections
+        (like ``llm``) that the dialog UI does not fully manage.
+        """
+        merged = dict(base)
+        for key, val in overlay.items():
+            if (key in merged
+                    and isinstance(merged[key], dict)
+                    and isinstance(val, dict)):
+                merged[key] = SettingsDialog._deep_merge(merged[key], val)
+            else:
+                merged[key] = val
+        return merged
+
     def _on_save(self):
         new_settings = self._collect_values()
 
+        # Preserve keys the dialog doesn't manage (e.g. llm.endpoint,
+        # llm.prompt_template, llm_server, etc.) by merging collected
+        # values ON TOP of the original file contents.  This way, fields
+        # the UI doesn't display survive the save untouched.
+        try:
+            with open(self._config_path, 'r') as f:
+                existing = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            existing = {}
+        merged_settings = self._deep_merge(existing, new_settings)
+
         # Check for restart-required changes
-        changed = self._changed_restart_keys(new_settings)
+        changed = self._changed_restart_keys(merged_settings)
         if changed:
             self.restart_label.setText(
                 "Some changes require an app restart to take effect.")
@@ -1344,10 +1373,10 @@ class SettingsDialog(QDialog):
             pass
 
         # Persist only user overrides (keys that differ from defaults)
-        user_overrides = self._diff_settings(defaults, new_settings)
+        user_overrides = self._diff_settings(defaults, merged_settings)
         with open(self._config_path, 'w') as f:
             json.dump(user_overrides, f, indent=2)
 
         # Emit the full merged settings for the running app
-        self.settings_saved.emit(new_settings)
+        self.settings_saved.emit(merged_settings)
         self.accept()
