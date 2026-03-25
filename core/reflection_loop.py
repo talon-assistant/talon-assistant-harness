@@ -52,7 +52,15 @@ _SYSTEM_PROMPT = (
     "something up, that was YOU doing it autonomously during reflection — not "
     "the user. Do not confuse your own curiosity searches with user behaviour. "
     "The user's actual activity is described only in 'Earlier today' or "
-    "'User behaviour patterns' sections."
+    "'User behaviour patterns' sections.\n\n"
+    "TOOLS: You can use up to 3 tool calls during your reflection by writing "
+    "these tags inline (one per line, on its own line):\n"
+    "  [MEMORY: your query]  — search your past thoughts and memories\n"
+    "  [SEARCH: your query]  — search the web\n"
+    "  [GOALS]               — review your current active goals\n"
+    "Results will be injected and you can continue writing. Use these to verify "
+    "facts, check if you've thought about something before, or look up something "
+    "you're curious about mid-thought. Don't use them just to fill space."
 )
 
 _ACTION_SYSTEM = (
@@ -222,6 +230,100 @@ class ReflectionLoop:
         finally:
             lock.release()
 
+    # ── inline tool helpers ──────────────────────────────────────────────────
+
+    _TOOL_TAG_RE = re.compile(
+        r"\[(?P<tag>MEMORY|SEARCH|GOALS)(?::?\s*(?P<query>[^\]]*))?\]",
+        re.IGNORECASE,
+    )
+
+    def _extract_tool_tag(self, text: str):
+        """Find the last [MEMORY: ...], [SEARCH: ...], or [GOALS] tag in text.
+
+        Returns (tag, query) or (None, None) if no tag found.
+        Uses the *last* match so previously-processed tags (whose results are
+        already injected) are skipped — results injection changes the text.
+        """
+        matches = list(self._TOOL_TAG_RE.finditer(text))
+        if not matches:
+            return None, None
+        # Only act on a tag that appears after any "[... results]:" block,
+        # meaning it hasn't been processed yet.
+        last_result_pos = text.rfind(" results]:")
+        for m in reversed(matches):
+            if m.start() > last_result_pos:
+                tag = m.group("tag").upper()
+                query = (m.group("query") or "").strip()
+                return tag, query
+        return None, None
+
+    def _execute_tool_tag(self, tag: str, query: str) -> str:
+        """Execute an inline tool call and return the result text."""
+        try:
+            if tag == "MEMORY":
+                return self._tool_memory(query)
+            elif tag == "SEARCH":
+                return self._tool_search(query)
+            elif tag == "GOALS":
+                return self._tool_goals()
+        except Exception as e:
+            return f"(tool error: {e})"
+        return ""
+
+    def _tool_memory(self, query: str) -> str:
+        """Search ChromaDB for past thoughts matching query."""
+        if not query:
+            return ""
+        memory = self._assistant.memory
+        try:
+            results = memory.memory_collection.query(
+                query_texts=[query],
+                n_results=5,
+                where={"type": "free_thought"},
+                include=["documents", "metadatas"],
+            )
+            docs = results.get("documents", [[]])[0]
+            metas = results.get("metadatas", [[]])[0]
+            if not docs:
+                return "No matching thoughts found."
+            parts = []
+            for doc, meta in zip(docs, metas):
+                ts = (meta or {}).get("timestamp", "")[:16]
+                snippet = (doc or "")[:200]
+                parts.append(f"[{ts}] {snippet}")
+            return "\n".join(parts)
+        except Exception as e:
+            return f"Memory search failed: {e}"
+
+    def _tool_search(self, query: str) -> str:
+        """Run a web search via the normal command pipeline."""
+        if not query:
+            return ""
+        action = "search the web for " + query
+        result = self._locked_process_command(
+            action,
+            speak_response=False,
+            _executing_rule=True,
+            command_source="reflection",
+        )
+        if result and result.get("success") and result.get("response"):
+            return result["response"]
+        return "Web search returned no results."
+
+    def _tool_goals(self) -> str:
+        """Return current active goals."""
+        memory = self._assistant.memory
+        try:
+            goals = memory.get_active_goals()
+            if not goals:
+                return "No active goals."
+            parts = []
+            for g in goals:
+                parts.append(f"Goal #{g['id']}: {g['text'][:150]}")
+            return "\n".join(parts)
+        except Exception as e:
+            return f"Goals retrieval failed: {e}"
+
     # ── reflection pipeline ───────────────────────────────────────────────────
 
     def _reflect(self) -> None:
@@ -378,6 +480,9 @@ class ReflectionLoop:
             print(f"   [Reflection] Stagnation: rep_pen={rep_pen}, max_tokens capped at {gen_max}")
 
         reflect_temp = self._cfg.get("temperature", 0.88)
+        tool_bonus = self._cfg.get("tool_call_bonus_tokens", 512)
+        max_tool_calls = self._cfg.get("max_tool_calls", 3)
+
         thought = self._locked_generate(
             context + "\n\n",
             system_prompt=system,
@@ -394,6 +499,39 @@ class ReflectionLoop:
             return
 
         thought = thought.strip()
+
+        # ── Phase 2b: inline tool calls ──────────────────────────────────────
+        # Scan for [MEMORY: ...], [SEARCH: ...], [GOALS] tags.
+        # Execute up to max_tool_calls, inject results, and let model continue.
+        tool_calls_used = 0
+        for _ in range(max_tool_calls):
+            tag, query = self._extract_tool_tag(thought)
+            if tag is None:
+                break
+            tool_calls_used += 1
+            tool_result = self._execute_tool_tag(tag, query)
+            if tool_result:
+                print(f"   [Reflection] Tool call #{tool_calls_used}: [{tag}: {query or ''}] "
+                      f"→ {len(tool_result)} chars")
+                # Inject results and let the model continue
+                gen_max += tool_bonus
+                continuation_prompt = (
+                    f"{thought}\n\n"
+                    f"[{tag} results]: {tool_result[:1500]}\n\n"
+                    "Continue your reflection with this new information."
+                )
+                continuation = self._locked_generate(
+                    continuation_prompt,
+                    system_prompt=system,
+                    max_length=tool_bonus,
+                    temperature=reflect_temp,
+                    rep_pen=rep_pen,
+                )
+                if continuation and continuation.strip():
+                    thought = thought + "\n\n" + continuation.strip()
+            else:
+                print(f"   [Reflection] Tool call #{tool_calls_used}: [{tag}: {query or ''}] "
+                      "→ no results")
 
         # ── Phase 3: curiosity check + action + synthesis ─────────────────────
         action_prompt = (
