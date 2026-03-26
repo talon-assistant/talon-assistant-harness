@@ -392,7 +392,7 @@ class TalentBuilderTalent(BaseTalent):
             raw = llm.generate(
                 user_prompt,
                 system_prompt=_EXEC_BODY_SYSTEM_PROMPT,
-                max_length=800,
+                max_length=1200,
                 temperature=0.1,
             )
             return self._extract_code_block(raw)
@@ -542,7 +542,7 @@ class TalentBuilderTalent(BaseTalent):
             f"Broken code:\n{body}\n\nFixed code:"
         )
         try:
-            raw = llm.generate(fix_prompt, max_length=800, temperature=0.0)
+            raw = llm.generate(fix_prompt, max_length=1200, temperature=0.0)
             return self._extract_code_block(raw)
         except Exception as e:
             print(f"   [TalentBuilder] Fix error: {e}")
