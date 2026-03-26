@@ -287,6 +287,69 @@ class ServerStartWorker(QThread):
             self.server_manager.on_error = original_error
 
 
+class TaskAssistPlanWorker(QThread):
+    """Executes an approved task-assist plan in the background.
+
+    Runs each step through the assistant's process_command pipeline via the
+    shared plan_executor.  Emits progress signals for the GUI and a final
+    combined output when done.
+    """
+
+    step_started = pyqtSignal(int, str)        # step_index, step_text
+    step_completed = pyqtSignal(int, str, bool) # step_index, response, success
+    execution_complete = pyqtSignal(list, str)  # step_results, combined_output
+    error = pyqtSignal(str)
+
+    def __init__(self, steps: list[str], assistant, task: str,
+                 screenshot_b64: str | None = None):
+        super().__init__()
+        self._steps = steps
+        self._assistant = assistant
+        self._task = task
+        self._screenshot_b64 = screenshot_b64
+
+    def run(self):
+        try:
+            from talents.plan_executor import execute_plan_steps
+
+            def _on_step(i, step_text, result_dict):
+                self.step_completed.emit(
+                    i,
+                    result_dict.get("response", ""),
+                    result_dict.get("success", False),
+                )
+                # Emit step_started for the NEXT step if there is one
+                if i < len(self._steps):
+                    self.step_started.emit(i + 1, self._steps[i])
+
+            # Emit step_started for the first step
+            if self._steps:
+                self.step_started.emit(1, self._steps[0])
+
+            results = execute_plan_steps(
+                steps=self._steps,
+                assistant=self._assistant,
+                speak=False,
+                command_source="task_assist",
+                on_step_complete=_on_step,
+            )
+
+            # Build combined output — use the last step's response as the
+            # primary output (it should be the drafting step), with earlier
+            # step results available as context.
+            combined_parts = []
+            for sr in results:
+                if sr.get("response"):
+                    combined_parts.append(sr["response"])
+
+            # The final step's output is the "draft" the user cares about
+            final_output = results[-1].get("response", "") if results else ""
+
+            self.execution_complete.emit(results, final_output)
+        except Exception as e:
+            self.error.emit(str(e))
+
+
 class TaskAssistReviseWorker(QThread):
     """Calls LLM to produce a revised draft based on user feedback.
 

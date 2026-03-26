@@ -60,6 +60,9 @@ class AssistantBridge(QObject):
     # Task Assist dialog — emitted when talent returns a pending_task_assist payload
     task_assist_requested = pyqtSignal(dict)  # {task, draft, screenshot_b64}
 
+    # Task Assist agentic plan — emitted when talent returns a plan for approval
+    task_assist_plan_requested = pyqtSignal(dict)  # {task, situation, plan_summary, steps, ...}
+
     # LLM server status
     server_status = pyqtSignal(str)  # stopped/starting/running/error
 
@@ -166,6 +169,12 @@ class AssistantBridge(QObject):
         if pending:
             self.compose_requested.emit(pending)
             # Don't TTS the draft preview — user is looking at compose dialog
+            return
+
+        # Task Assist agentic plan — show plan review dialog
+        task_assist_plan = result.get("pending_task_assist_plan") if result else None
+        if task_assist_plan:
+            self.task_assist_plan_requested.emit(task_assist_plan)
             return
 
         # Task Assist draft — show review dialog

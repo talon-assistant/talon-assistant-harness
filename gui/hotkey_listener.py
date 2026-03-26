@@ -21,6 +21,31 @@ import queue
 
 from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 
+# ── Window info capture ────────────────────────────────────────────────────────
+
+
+def _capture_window_info_sync() -> dict:
+    """Capture the foreground window's title and process name.
+
+    Returns dict with 'app_title' and 'process_name' keys, or empty dict
+    on failure.  Called from pynput's thread alongside screenshot capture.
+    """
+    try:
+        import win32gui
+        import win32process
+        hwnd = win32gui.GetForegroundWindow()
+        title = win32gui.GetWindowText(hwnd)
+        process_name = ""
+        try:
+            import psutil
+            _, pid = win32process.GetWindowThreadProcessId(hwnd)
+            process_name = psutil.Process(pid).name()
+        except Exception:
+            pass
+        return {"app_title": title, "process_name": process_name}
+    except Exception:
+        return {}
+
 
 def _to_pynput(hotkey: str) -> str:
     """Convert 'ctrl+alt+space' → '<ctrl>+<alt>+<space>' for pynput.
@@ -85,8 +110,8 @@ class HotkeyListener(QObject):
     thread-safe queue + QTimer poll.
     """
 
-    # Passes the pre-captured screenshot (or "" if capture failed)
-    triggered = pyqtSignal(str)
+    # Passes the pre-captured screenshot (or "") and window info dict
+    triggered = pyqtSignal(str, dict)
 
     def __init__(self, hotkey_str: str, parent=None):
         super().__init__(parent)
@@ -125,15 +150,16 @@ class HotkeyListener(QObject):
             self._listener = None
 
     def _on_activate(self):
-        """Called from pynput's thread — capture screenshot immediately then enqueue."""
+        """Called from pynput's thread — capture screenshot + window info then enqueue."""
         screenshot_b64 = _capture_screenshot_sync()
-        self._queue.put(screenshot_b64)
+        window_info = _capture_window_info_sync()
+        self._queue.put((screenshot_b64, window_info))
 
     def _drain_queue(self):
         """Called from Qt main thread every 50 ms — emit queued triggers."""
         while not self._queue.empty():
             try:
-                screenshot_b64 = self._queue.get_nowait()
-                self.triggered.emit(screenshot_b64)
+                screenshot_b64, window_info = self._queue.get_nowait()
+                self.triggered.emit(screenshot_b64, window_info)
             except queue.Empty:
                 break

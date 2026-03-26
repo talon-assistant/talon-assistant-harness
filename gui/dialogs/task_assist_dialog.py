@@ -1,6 +1,7 @@
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel,
     QLineEdit, QTextEdit, QPushButton, QSizePolicy,
+    QCheckBox, QProgressBar, QListWidget, QListWidgetItem,
 )
 from PyQt6.QtCore import pyqtSignal, Qt
 from PyQt6.QtGui import QFont, QPixmap
@@ -13,11 +14,13 @@ class TaskAssistPreDialog(QDialog):
     their task before the LLM runs.  Shows a thumbnail of the captured
     screenshot (if any) so the user can confirm the right window was grabbed.
 
+    Includes a toggle for "Agentic mode" vs "Quick draft" mode.
+
     Signals:
-        confirmed(task, screenshot_b64) — user clicked OK with a task description
+        confirmed(task, screenshot_b64, agentic) — user clicked OK
     """
 
-    confirmed = pyqtSignal(str, str)   # task_text, screenshot_b64 (may be "")
+    confirmed = pyqtSignal(str, str, bool)   # task_text, screenshot_b64, agentic
 
     def __init__(self, screenshot_b64: str = "", llm_client=None, parent=None):
         super().__init__(parent)
@@ -77,13 +80,24 @@ class TaskAssistPreDialog(QDialog):
         self._task_input.returnPressed.connect(self._on_ok)
         layout.addWidget(self._task_input)
 
+        # Mode toggle
+        self._agentic_cb = QCheckBox("Agentic mode (plan and execute multi-step)")
+        self._agentic_cb.setObjectName("task_assist_agentic_toggle")
+        self._agentic_cb.setChecked(True)  # Default to agentic
+        self._agentic_cb.setToolTip(
+            "Agentic: Talon analyzes the screen, proposes a plan, then "
+            "executes it step by step (web search, memory, drafting, etc.).\n"
+            "Quick draft: one-shot LLM call that produces a draft immediately."
+        )
+        layout.addWidget(self._agentic_cb)
+
         # Buttons
         btn_row = QHBoxLayout()
         btn_row.addStretch()
         cancel_btn = QPushButton("Cancel")
         cancel_btn.clicked.connect(self.reject)
         btn_row.addWidget(cancel_btn)
-        ok_btn = QPushButton("Generate draft")
+        ok_btn = QPushButton("Go")
         ok_btn.setDefault(True)
         ok_btn.setObjectName("task_assist_pre_ok")
         ok_btn.clicked.connect(self._on_ok)
@@ -108,8 +122,194 @@ class TaskAssistPreDialog(QDialog):
         if not task:
             self._task_input.setFocus()
             return
-        self.confirmed.emit(task, self._screenshot_b64)
+        self.confirmed.emit(task, self._screenshot_b64, self._agentic_cb.isChecked())
         self.accept()
+
+
+# ── Plan review dialog (agentic mode) ──────────────────────────────────────
+
+
+class TaskAssistPlanDialog(QDialog):
+    """Shows the LLM's situation assessment and proposed plan.
+
+    The user can review, edit steps, then approve or cancel.
+
+    Signals:
+        plan_approved(steps: list[str], task: str, screenshot_b64: str)
+    """
+
+    plan_approved = pyqtSignal(list, str, str)  # steps, task, screenshot_b64
+
+    def __init__(self, payload: dict, parent=None):
+        super().__init__(parent)
+        self._payload = payload
+        self.setWindowTitle("Talon Task Assist — Plan")
+        self.setObjectName("task_assist_plan_dialog")
+        self.setMinimumSize(560, 420)
+        self.setModal(True)
+        self._setup_ui()
+
+    def _setup_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setSpacing(10)
+        layout.setContentsMargins(16, 16, 16, 16)
+
+        # Situation assessment
+        situation = self._payload.get("situation", "")
+        if situation:
+            sit_label = QLabel(f"I see: {situation}")
+            sit_label.setWordWrap(True)
+            sit_label.setObjectName("task_assist_situation")
+            sit_label.setStyleSheet("font-style: italic; padding: 4px;")
+            layout.addWidget(sit_label)
+
+        # Plan summary
+        summary = self._payload.get("plan_summary", "")
+        if summary:
+            sum_label = QLabel(f"Plan: {summary}")
+            sum_label.setWordWrap(True)
+            sum_label.setObjectName("task_assist_plan_summary")
+            sum_label.setStyleSheet("font-weight: bold; padding: 4px;")
+            layout.addWidget(sum_label)
+
+        # Editable step list
+        layout.addWidget(QLabel("Steps (double-click to edit):"))
+        self._step_list = QListWidget()
+        self._step_list.setObjectName("task_assist_step_list")
+        self._step_list.setDragDropMode(QListWidget.DragDropMode.InternalMove)
+        for step in self._payload.get("steps", []):
+            item = QListWidgetItem(step)
+            item.setFlags(
+                item.flags()
+                | Qt.ItemFlag.ItemIsEditable
+                | Qt.ItemFlag.ItemIsDragEnabled
+            )
+            self._step_list.addItem(item)
+        layout.addWidget(self._step_list, stretch=1)
+
+        # Step management buttons
+        step_btn_row = QHBoxLayout()
+        add_btn = QPushButton("+ Add step")
+        add_btn.clicked.connect(self._add_step)
+        step_btn_row.addWidget(add_btn)
+        remove_btn = QPushButton("- Remove selected")
+        remove_btn.clicked.connect(self._remove_step)
+        step_btn_row.addWidget(remove_btn)
+        step_btn_row.addStretch()
+        layout.addLayout(step_btn_row)
+
+        # Action buttons
+        btn_row = QHBoxLayout()
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(self.reject)
+        btn_row.addWidget(cancel_btn)
+        btn_row.addStretch()
+        run_btn = QPushButton("Run Plan")
+        run_btn.setDefault(True)
+        run_btn.setObjectName("task_assist_run_plan")
+        run_btn.clicked.connect(self._on_run)
+        btn_row.addWidget(run_btn)
+        layout.addLayout(btn_row)
+
+    def _add_step(self):
+        item = QListWidgetItem("new step")
+        item.setFlags(
+            item.flags()
+            | Qt.ItemFlag.ItemIsEditable
+            | Qt.ItemFlag.ItemIsDragEnabled
+        )
+        self._step_list.addItem(item)
+        self._step_list.editItem(item)
+
+    def _remove_step(self):
+        row = self._step_list.currentRow()
+        if row >= 0:
+            self._step_list.takeItem(row)
+
+    def _on_run(self):
+        steps = []
+        for i in range(self._step_list.count()):
+            text = self._step_list.item(i).text().strip()
+            if text:
+                steps.append(text)
+        if not steps:
+            return
+        self.plan_approved.emit(
+            steps,
+            self._payload.get("task", ""),
+            self._payload.get("screenshot_b64") or "",
+        )
+        self.accept()
+
+
+# ── Plan execution progress dialog ─────────────────────────────────────────
+
+
+class TaskAssistProgressDialog(QDialog):
+    """Shows real-time progress while agentic plan steps execute.
+
+    Updated from the outside via step_started / step_completed calls.
+    When execution finishes, call show_result() to switch to review mode.
+    """
+
+    cancelled = pyqtSignal()
+
+    def __init__(self, steps: list[str], task: str, parent=None):
+        super().__init__(parent)
+        self._steps = steps
+        self._task = task
+        self.setWindowTitle("Talon Task Assist — Running")
+        self.setObjectName("task_assist_progress_dialog")
+        self.setMinimumSize(500, 350)
+        self.setModal(True)
+        self._setup_ui()
+
+    def _setup_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setSpacing(8)
+        layout.setContentsMargins(16, 16, 16, 16)
+
+        task_label = QLabel(f"Task: {self._task}")
+        task_label.setWordWrap(True)
+        task_label.setStyleSheet("font-weight: bold;")
+        layout.addWidget(task_label)
+
+        # Progress bar
+        self._progress = QProgressBar()
+        self._progress.setMaximum(len(self._steps))
+        self._progress.setValue(0)
+        layout.addWidget(self._progress)
+
+        # Step log
+        self._log = QTextEdit()
+        self._log.setReadOnly(True)
+        self._log.setObjectName("task_assist_progress_log")
+        mono = QFont("Consolas", 10)
+        mono.setStyleHint(QFont.StyleHint.Monospace)
+        self._log.setFont(mono)
+        layout.addWidget(self._log, stretch=1)
+
+        # Status
+        self._status = QLabel("Starting...")
+        self._status.setObjectName("task_assist_progress_status")
+        layout.addWidget(self._status)
+
+    def on_step_started(self, index: int, step_text: str):
+        self._status.setText(f"Step {index}/{len(self._steps)}: {step_text}")
+        self._log.append(f">> Step {index}: {step_text}")
+
+    def on_step_completed(self, index: int, response: str, success: bool):
+        icon = "OK" if success else "FAIL"
+        self._log.append(f"   [{icon}] {response[:200]}")
+        self._log.append("")
+        self._progress.setValue(index)
+
+    def on_execution_complete(self):
+        self._status.setText("Done!")
+        self._progress.setValue(len(self._steps))
+
+
+# ── Review dialog (shared by both modes) ───────────────────────────────────
 
 
 class TaskAssistDialog(QDialog):
@@ -134,11 +334,12 @@ class TaskAssistDialog(QDialog):
     declined = pyqtSignal()
 
     def __init__(self, task: str, draft: str, screenshot_b64: str | None,
-                 llm_client, parent=None):
+                 llm_client, step_results: list | None = None, parent=None):
         super().__init__(parent)
         self._task = task
         self._screenshot_b64 = screenshot_b64
         self._llm = llm_client
+        self._step_results = step_results
         self._worker = None
         self.setWindowTitle("Talon Task Assist")
         self.setObjectName("task_assist_dialog")
@@ -156,6 +357,15 @@ class TaskAssistDialog(QDialog):
         task_label.setWordWrap(True)
         task_label.setObjectName("task_assist_task_label")
         layout.addWidget(task_label)
+
+        # If we have step results from agentic mode, show a collapsible summary
+        if self._step_results:
+            steps_label = QLabel(
+                f"Plan completed ({len(self._step_results)} steps). "
+                "Result below."
+            )
+            steps_label.setStyleSheet("color: #6c9; font-style: italic;")
+            layout.addWidget(steps_label)
 
         # Draft output
         layout.addWidget(QLabel("Draft:"))

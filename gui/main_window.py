@@ -347,6 +347,7 @@ class MainWindow(QMainWindow):
 
         # Task Assist dialog (draft + review flow)
         self.bridge.task_assist_requested.connect(self._on_task_assist_requested)
+        self.bridge.task_assist_plan_requested.connect(self._on_task_assist_plan_requested)
 
         # Planner human-in-the-loop: mid-routine clarification dialog
         self.bridge.planner_input_requested.connect(self._on_planner_input_requested)
@@ -715,10 +716,14 @@ class MainWindow(QMainWindow):
             self.activateWindow()
         self._show_task_assist_pre_dialog(screenshot_b64)
 
-    def _trigger_task_assist_from_hotkey(self, screenshot_b64: str):
+    def _trigger_task_assist_from_hotkey(self, screenshot_b64: str,
+                                         window_info: dict = None):
         """Trigger Task Assist from global hotkey — screenshot already captured."""
         if self.bridge.assistant is None:
             return
+        # Stash window info for agentic mode
+        if window_info and self.bridge.assistant:
+            self.bridge.assistant._pending_task_assist_window_info = window_info
         self.show()
         self.raise_()
         self.activateWindow()
@@ -732,13 +737,15 @@ class MainWindow(QMainWindow):
         dlg.confirmed.connect(self._on_task_assist_pre_confirmed)
         dlg.exec()
 
-    def _on_task_assist_pre_confirmed(self, task: str, screenshot_b64: str):
+    def _on_task_assist_pre_confirmed(self, task: str, screenshot_b64: str,
+                                       agentic: bool = False):
         """User confirmed task description — stash both and submit command."""
         assistant = self.bridge.assistant
         if assistant is None:
             return
         assistant._pending_task_assist_screenshot = screenshot_b64 or None
         assistant._pending_task_assist_task = task
+        assistant._pending_task_assist_agentic = agentic
         self.bridge.submit_command("task assist")
 
     def _on_task_assist_requested(self, payload: dict):
@@ -763,6 +770,91 @@ class MainWindow(QMainWindow):
 
     def _on_task_assist_accepted(self, text: str):
         self.chat_view.add_system_message("Task Assist result copied to clipboard.")
+
+    # ── Agentic Task Assist (plan → execute → review) ─────────────────────
+
+    def _on_task_assist_plan_requested(self, payload: dict):
+        """Show the plan review dialog for agentic task assist."""
+        from gui.dialogs.task_assist_dialog import TaskAssistPlanDialog
+
+        if not self.isVisible():
+            self.show()
+            self.raise_()
+            self.activateWindow()
+
+        dlg = TaskAssistPlanDialog(payload=payload, parent=self)
+        dlg.plan_approved.connect(self._on_task_assist_plan_approved)
+        dlg.exec()
+
+    def _on_task_assist_plan_approved(self, steps: list, task: str,
+                                       screenshot_b64: str):
+        """User approved the plan — execute steps in background."""
+        from gui.dialogs.task_assist_dialog import TaskAssistProgressDialog
+        from gui.workers import TaskAssistPlanWorker
+
+        assistant = self.bridge.assistant
+        if not assistant:
+            return
+
+        # Show progress dialog
+        self._ta_progress_dlg = TaskAssistProgressDialog(
+            steps=steps, task=task, parent=self,
+        )
+        self._ta_progress_dlg.show()
+
+        # Launch worker
+        self._ta_plan_worker = TaskAssistPlanWorker(
+            steps=steps,
+            assistant=assistant,
+            task=task,
+            screenshot_b64=screenshot_b64,
+        )
+        self._ta_plan_worker.step_started.connect(
+            self._ta_progress_dlg.on_step_started
+        )
+        self._ta_plan_worker.step_completed.connect(
+            self._ta_progress_dlg.on_step_completed
+        )
+        self._ta_plan_worker.execution_complete.connect(
+            lambda results, output: self._on_plan_execution_complete(
+                results, output, task, screenshot_b64
+            )
+        )
+        self._ta_plan_worker.error.connect(self._on_plan_execution_error)
+        self._ta_plan_worker.start()
+
+    def _on_plan_execution_complete(self, step_results: list,
+                                     final_output: str, task: str,
+                                     screenshot_b64: str):
+        """Plan finished — close progress, show review dialog with result."""
+        if hasattr(self, "_ta_progress_dlg") and self._ta_progress_dlg:
+            self._ta_progress_dlg.on_execution_complete()
+            self._ta_progress_dlg.close()
+            self._ta_progress_dlg = None
+
+        from gui.dialogs.task_assist_dialog import TaskAssistDialog
+        dlg = TaskAssistDialog(
+            task=task,
+            draft=final_output,
+            screenshot_b64=screenshot_b64,
+            llm_client=self.bridge.assistant.llm,
+            step_results=step_results,
+            parent=self,
+        )
+        dlg.accepted_text.connect(self._on_task_assist_accepted)
+        dlg.declined.connect(
+            lambda: self.chat_view.add_system_message("Task Assist declined.")
+        )
+        dlg.exec()
+
+    def _on_plan_execution_error(self, error_msg: str):
+        """Plan execution failed."""
+        if hasattr(self, "_ta_progress_dlg") and self._ta_progress_dlg:
+            self._ta_progress_dlg.close()
+            self._ta_progress_dlg = None
+        self.chat_view.add_system_message(
+            f"Task Assist plan execution failed: {error_msg}"
+        )
 
     def _start_task_assist_hotkey(self):
         """Start the global hotkey listener for Task Assist."""

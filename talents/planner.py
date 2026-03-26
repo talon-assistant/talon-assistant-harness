@@ -147,89 +147,16 @@ If single-step:
             voice.speak(intro)
 
         # ── Step 3: Execute each step ─────────────────────────────────────────
-        step_results = []
-        all_ok = True
-        last_user_input = ""  # answer from the most recent ask_user step
-        last_result = ""      # response text from the immediately preceding step
+        from talents.plan_executor import execute_plan_steps
 
-        for i, step in enumerate(steps, 1):
-            # Substitute {user_input} with the last answer the user provided
-            if last_user_input and "{user_input}" in step:
-                step = step.replace("{user_input}", last_user_input)
-            # Substitute {last_result} with the previous step's response text
-            if last_result and "{last_result}" in step:
-                step = step.replace("{last_result}", last_result)
-
-            print(f"   [Planner] Executing step {i}/{len(steps)}: {step}")
-
-            # ── ask_user: step — pause and ask for clarification ──────────
-            if step.strip().lower().startswith("ask_user:"):
-                question = step.split(":", 1)[1].strip()
-                if notify:
-                    notify(f"Step {i}/{len(steps)}", f"Needs input: {question}")
-
-                if hasattr(assistant, "request_human_input"):
-                    last_user_input = assistant.request_human_input(question)
-                else:
-                    last_user_input = ""
-
-                step_results.append({
-                    "step": i,
-                    "command": step,
-                    "talent": "human_input",
-                    "response": f"User answered: {last_user_input}" if last_user_input else "(no answer)",
-                    "success": bool(last_user_input),
-                })
-                if not last_user_input:
-                    all_ok = False
-                continue
-
-            # Toast notification for real-time progress in the GUI
-            if notify:
-                notify(f"Step {i}/{len(steps)}", step)
-
-            try:
-                # Re-use the full process_command pipeline for each step.
-                # _executing_rule=True skips behavioral-rule matching so we
-                # don't accidentally trigger user-defined rules mid-plan.
-                result = assistant.process_command(
-                    step,
-                    speak_response=speak,
-                    _executing_rule=True,
-                    _planner_substep=True,
-                    command_source=command_source,
-                )
-
-                if result:
-                    ok = result.get("success", True)
-                    resp = result.get("response", "").strip()
-                    talent_used = result.get("talent", "conversation")
-                else:
-                    ok = False
-                    resp = "No response."
-                    talent_used = ""
-
-            except Exception as e:
-                ok = False
-                resp = f"Error: {e}"
-                talent_used = ""
-                print(f"   [Planner] Step {i} raised exception: {e}")
-
-            step_results.append({
-                "step": i,
-                "command": step,
-                "talent": talent_used,
-                "response": resp,
-                "success": ok,
-            })
-
-            # Make this step's response available to the next step
-            if resp:
-                last_result = resp
-
-            if not ok:
-                all_ok = False
-                print(f"   [Planner] Step {i} failed: {resp}")
+        step_results = execute_plan_steps(
+            steps=steps,
+            assistant=assistant,
+            speak=speak,
+            notify=notify,
+            command_source=command_source,
+        )
+        all_ok = all(sr["success"] for sr in step_results)
 
         # ── Step 4: Build summary response ────────────────────────────────────
         lines = [f"**{summary}** — {len(steps)} steps completed:\n"]
