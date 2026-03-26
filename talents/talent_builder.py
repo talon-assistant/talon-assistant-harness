@@ -201,66 +201,102 @@ class TalentBuilderTalent(BaseTalent):
             requirements["class_name"] = requirements["class_name"][:-6] + "2Talent"
             dest_path = Path("talents/user") / f"{talent_name}.py"
 
-        # ── Step 3: LLM call 2 — execute() body ──────────────────────────────
-        execute_body = self._generate_execute_body(llm, requirements)
-        if not execute_body:
-            return {
-                "success": False,
-                "response": "Code generation failed. Try rephrasing the description.",
-                "actions_taken": [],
-            }
+        # ── Step 3: generate, validate, refine loop (up to 3 attempts) ──────
+        max_attempts = 3
+        code = ""
+        valid = False
+        error = ""
+        test_error = ""
 
-        # ── Step 4: body sanity check; fix if needed ──────────────────────────
-        body_ok, body_err = self._validate_execute_body(execute_body)
-        if not body_ok:
-            print(f"   [TalentBuilder] Body issue ({body_err}), fixing...")
-            execute_body = self._fix_execute_body(llm, execute_body, body_err)
-            # Don't re-validate — assembly + py_compile will catch anything remaining
+        for attempt in range(1, max_attempts + 1):
+            print(f"   [TalentBuilder] Attempt {attempt}/{max_attempts}")
 
-        # ── Step 5: assemble the complete Python file ─────────────────────────
-        code = self._assemble_talent_file(requirements, execute_body)
+            # Generate execute body (with error context on retries)
+            if attempt == 1:
+                execute_body = self._generate_execute_body(llm, requirements)
+            else:
+                # Refine: send the previous body + error back
+                fix_context = error or test_error
+                print(f"   [TalentBuilder] Refining — error: {fix_context}")
+                execute_body = self._fix_execute_body(
+                    llm, execute_body, fix_context
+                )
 
-        # ── Step 6: syntax check + safety scan ───────────────────────────────
-        valid, error = self._validate_code(code)
+            if not execute_body:
+                error = "Empty execute body"
+                continue
 
-        # ── Step 7: one fix pass if assembled file is invalid ─────────────────
-        if not valid:
-            print(f"   [TalentBuilder] Invalid ({error}), fixing body...")
-            execute_body = self._fix_execute_body(llm, execute_body, error)
+            # Body sanity check
+            body_ok, body_err = self._validate_execute_body(execute_body)
+            if not body_ok:
+                print(f"   [TalentBuilder] Body issue: {body_err}")
+                execute_body = self._fix_execute_body(
+                    llm, execute_body, body_err
+                )
+
+            # Assemble + syntax check
             code = self._assemble_talent_file(requirements, execute_body)
             valid, error = self._validate_code(code)
 
-        # ── Step 8: write to disk ─────────────────────────────────────────────
+            if not valid:
+                print(f"   [TalentBuilder] Syntax error: {error}")
+                continue
+
+            # Self-test: write to temp, import, try can_handle + execute
+            test_ok, test_error = self._self_test(
+                code, requirements, llm, assistant
+            )
+            if test_ok:
+                print(f"   [TalentBuilder] Self-test passed on attempt {attempt}")
+                break
+            else:
+                print(f"   [TalentBuilder] Self-test failed: {test_error}")
+                # On last attempt, keep the code anyway — user can fix in manager
+                if attempt < max_attempts:
+                    valid = True  # Code compiles, just test failed
+
+        # ── Write to disk ───────────────────────────────────────────────────
         dest_path.parent.mkdir(parents=True, exist_ok=True)
         dest_path.write_text(code, encoding="utf-8")
         print(f"   [TalentBuilder] Written to {dest_path}")
 
-        # ── Step 9: hot-load ──────────────────────────────────────────────────
+        # ── Hot-load ────────────────────────────────────────────────────────
         if valid and assistant and hasattr(assistant, "load_user_talent"):
             load_result = assistant.load_user_talent(str(dest_path))
             if load_result.get("success"):
-                return self._success_response(load_result, requirements, dest_path)
+                resp = self._success_response(
+                    load_result, requirements, dest_path
+                )
+                if test_error:
+                    resp["response"] += (
+                        f"\n\nNote: self-test had an issue: {test_error}\n"
+                        "You can edit it in Tools > Talent Manager."
+                    )
+                return resp
             return {
                 "success": True,
                 "response": (
-                    f"Wrote '{talent_name}' to {dest_path} but couldn't load it: "
-                    f"{load_result.get('error', 'unknown error')}. "
-                    "Try restarting Talon."
+                    f"Wrote '{talent_name}' to {dest_path} but couldn't "
+                    f"load it: {load_result.get('error', 'unknown')}. "
+                    "Open Tools > Talent Manager to edit and reload."
                 ),
                 "actions_taken": [
-                    {"action": "write_talent", "result": str(dest_path), "success": True}
+                    {"action": "write_talent", "result": str(dest_path),
+                     "success": True}
                 ],
             }
 
         if not valid:
             return {
-                "success": True,   # Saved — user can fix manually
+                "success": True,
                 "response": (
-                    f"Saved '{talent_name}' to {dest_path} but validation failed: {error}\n"
-                    "Review and fix it manually, then restart Talon."
+                    f"Saved '{talent_name}' to {dest_path} but validation "
+                    f"failed: {error}\n"
+                    "Open Tools > Talent Manager to edit and fix it."
                 ),
                 "actions_taken": [
-                    {"action": "write_talent", "result": str(dest_path), "success": False}
+                    {"action": "write_talent", "result": str(dest_path),
+                     "success": False}
                 ],
             }
 
@@ -268,10 +304,11 @@ class TalentBuilderTalent(BaseTalent):
             "success": True,
             "response": (
                 f"Created '{talent_name}' and saved to {dest_path}. "
-                "Restart Talon to activate it."
+                "Restart Talon to activate it, or use Tools > Talent Manager."
             ),
             "actions_taken": [
-                {"action": "write_talent", "result": str(dest_path), "success": True}
+                {"action": "write_talent", "result": str(dest_path),
+                 "success": True}
             ],
         }
 
@@ -355,7 +392,7 @@ class TalentBuilderTalent(BaseTalent):
             raw = llm.generate(
                 user_prompt,
                 system_prompt=_EXEC_BODY_SYSTEM_PROMPT,
-                max_length=500,
+                max_length=800,
                 temperature=0.1,
             )
             return self._extract_code_block(raw)
@@ -505,11 +542,94 @@ class TalentBuilderTalent(BaseTalent):
             f"Broken code:\n{body}\n\nFixed code:"
         )
         try:
-            raw = llm.generate(fix_prompt, max_length=500, temperature=0.0)
+            raw = llm.generate(fix_prompt, max_length=800, temperature=0.0)
             return self._extract_code_block(raw)
         except Exception as e:
             print(f"   [TalentBuilder] Fix error: {e}")
             return body
+
+    def _self_test(self, code: str, requirements: dict,
+                   llm, assistant) -> tuple[bool, str]:
+        """Import the assembled code in isolation and run a basic smoke test.
+
+        Returns (success, error_message).
+        """
+        import importlib
+        import sys
+
+        tmp = None
+        module_name = f"_talent_test_{requirements['name']}"
+
+        try:
+            # Write to temp file
+            with tempfile.NamedTemporaryFile(
+                suffix=".py", mode="w", delete=False, encoding="utf-8",
+                dir=str(Path("talents/user")),
+            ) as f:
+                f.write(code)
+                tmp = f.name
+
+            # Import the module
+            spec = importlib.util.spec_from_file_location(module_name, tmp)
+            if not spec or not spec.loader:
+                return False, "Could not create module spec"
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[module_name] = module
+            spec.loader.exec_module(module)
+
+            # Find the BaseTalent subclass
+            talent_cls = None
+            for attr_name in dir(module):
+                obj = getattr(module, attr_name)
+                if (isinstance(obj, type) and issubclass(obj, BaseTalent)
+                        and obj is not BaseTalent):
+                    talent_cls = obj
+                    break
+
+            if not talent_cls:
+                return False, "No BaseTalent subclass found in generated code"
+
+            # Instantiate
+            talent = talent_cls()
+            talent.initialize({})
+
+            # Test can_handle with first example
+            examples = requirements.get("examples", [])
+            if examples:
+                test_cmd = examples[0]
+                if not talent.can_handle(test_cmd):
+                    return False, (
+                        f"can_handle('{test_cmd}') returned False — "
+                        "keywords may not match examples"
+                    )
+
+            # Test execute with a simple command (skip if no assistant/llm)
+            if llm and examples:
+                context = {
+                    "llm": llm,
+                    "config": assistant.config if assistant else {},
+                    "assistant": assistant,
+                    "speak_response": False,
+                    "command_source": "test",
+                }
+                result = talent.execute(examples[0], context)
+                if not result.get("success"):
+                    resp = result.get("response", "unknown error")
+                    return False, f"execute() failed: {resp}"
+
+            return True, ""
+
+        except Exception as e:
+            return False, str(e)
+        finally:
+            # Cleanup
+            if module_name in sys.modules:
+                del sys.modules[module_name]
+            if tmp and os.path.exists(tmp):
+                try:
+                    os.unlink(tmp)
+                except Exception:
+                    pass
 
     @staticmethod
     def _success_response(load_result: dict, requirements: dict, dest_path: Path) -> dict:

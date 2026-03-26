@@ -182,6 +182,11 @@ class MainWindow(QMainWindow):
         thoughts_action.triggered.connect(self._open_free_thoughts)
         tools_menu.addAction(thoughts_action)
 
+        talent_mgr_action = QAction("Talent Manager...", self)
+        talent_mgr_action.setToolTip("View, edit, test, and manage user-created talents")
+        talent_mgr_action.triggered.connect(self._open_talent_manager)
+        tools_menu.addAction(talent_mgr_action)
+
         # ── Help menu ─────────────────────────────────────────
         help_menu = menubar.addMenu("Help")
 
@@ -623,6 +628,17 @@ class MainWindow(QMainWindow):
         memory = self.bridge.assistant.memory
         dialog = FreeThoughtsDialog(memory, parent=self)
         dialog.exec()
+
+    def _open_talent_manager(self):
+        if self.bridge.assistant is None:
+            return
+        from gui.dialogs.talent_manager_dialog import TalentManagerDialog
+        dlg = TalentManagerDialog(
+            assistant=self.bridge.assistant,
+            bridge=self.bridge,
+            parent=self,
+        )
+        dlg.show()
 
     # ── Notifications ────────────────────────────────────────
 
