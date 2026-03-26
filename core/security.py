@@ -207,6 +207,9 @@ class SecurityFilter:
     def check_input(self, text: str) -> tuple[bool, Optional[SecurityAlert]]:
         """Scan command text for injection patterns.
 
+        Applies input normalization before pattern matching to catch
+        obfuscated injections (zero-width chars, homoglyphs, encoding).
+
         Returns:
             (should_block, alert_or_None)
             should_block is always False when the control is disabled (fail open).
@@ -217,17 +220,30 @@ class SecurityFilter:
 
         action = cfg.get("action", "log")
 
-        for pattern_cfg, rx in self._compiled_input:
-            if rx.search(text):
-                alert = self._make_alert(
-                    "input_filter",
-                    pattern_cfg.get("id", "unknown"),
-                    pattern_cfg.get("label", pattern_cfg.get("id", "unknown")),
-                    text[:300],
-                    action,
-                )
-                self._record_alert(alert)
-                return action == "block", alert
+        # Normalize text to defeat obfuscation before pattern matching
+        from core.input_normalizer import normalize_text, decode_obfuscated
+        normalized = normalize_text(text)
+
+        # Check both original and normalized text against patterns
+        texts_to_check = [text, normalized]
+
+        # Also decode any obfuscated payloads and check those
+        for decoded in decode_obfuscated(text):
+            texts_to_check.append(decoded)
+            texts_to_check.append(normalize_text(decoded))
+
+        for check_text in texts_to_check:
+            for pattern_cfg, rx in self._compiled_input:
+                if rx.search(check_text):
+                    alert = self._make_alert(
+                        "input_filter",
+                        pattern_cfg.get("id", "unknown"),
+                        pattern_cfg.get("label", pattern_cfg.get("id", "unknown")),
+                        text[:300],
+                        action,
+                    )
+                    self._record_alert(alert)
+                    return action == "block", alert
 
         return False, None
 
@@ -478,6 +494,10 @@ class SecurityFilter:
         web/news results, incoming Signal commands) to catch injection attempts
         before they can influence the model.
 
+        Applies input normalization first to strip obfuscation, then runs
+        the semantic classifier on both the normalized text and any decoded
+        obfuscated payloads.
+
         Args:
             text:   The external content text.
             source: Origin label — "email" | "web" | "signal_in".
@@ -487,7 +507,22 @@ class SecurityFilter:
             (should_block, alert_or_None)
             Fails open when the classifier is unavailable.
         """
-        # Delegate to check_semantic — same model, different artifact_type namespace
+        from core.input_normalizer import normalize_text, decode_obfuscated
+
+        # Check normalized version
+        normalized = normalize_text(text)
+        blocked, alert = self.check_semantic(normalized, source)
+        if blocked:
+            return blocked, alert
+
+        # Check decoded obfuscated payloads
+        for decoded in decode_obfuscated(text):
+            clean = normalize_text(decoded)
+            blocked, alert = self.check_semantic(clean, source)
+            if blocked:
+                return blocked, alert
+
+        # Fall through to original text check
         return self.check_semantic(text, source)
 
     # ── Reporting ─────────────────────────────────────────────────────────────
