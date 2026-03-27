@@ -17,10 +17,14 @@ import logging
 import numpy as np
 from typing import TYPE_CHECKING
 
+from core import embeddings as _emb
+
 if TYPE_CHECKING:
     from talents.base import BaseTalent
 
 logger = logging.getLogger(__name__)
+
+_MODEL_NAME = "BAAI/bge-base-en-v1.5"
 
 # These talent names are always included in the routing roster regardless of
 # query similarity — they are the meta-handlers that need to be available
@@ -37,24 +41,9 @@ class SkillRouter:
 
     def __init__(self, top_k: int = DEFAULT_TOP_K):
         self.top_k = top_k
-        self._model = None
         self._embeddings: dict[str, np.ndarray] = {}   # talent_name -> embedding
         self._talent_map: dict[str, BaseTalent] = {}   # talent_name -> talent
         self._ready = False
-
-    # ------------------------------------------------------------------
-    # Setup
-    # ------------------------------------------------------------------
-
-    def _load_model(self):
-        if self._model is not None:
-            return
-        try:
-            from sentence_transformers import SentenceTransformer
-            self._model = SentenceTransformer("BAAI/bge-small-en-v1.5")
-            logger.debug("[SkillRouter] BGE model loaded")
-        except Exception as exc:
-            logger.warning("[SkillRouter] Could not load BGE model: %s", exc)
 
     def _talent_text(self, talent: "BaseTalent") -> str:
         """Build the text to embed for a talent."""
@@ -66,12 +55,11 @@ class SkillRouter:
         return " ".join(parts)
 
     def build(self, talents: list["BaseTalent"]):
-        """Embed all on-demand talents. Call once after talents are loaded."""
-        self._load_model()
-        if self._model is None:
-            self._ready = False
-            return
+        """Embed all on-demand talents. Call once after talents are loaded.
 
+        Reuses the shared BGE model from core.embeddings — no duplicate
+        model load at startup.
+        """
         on_demand = [
             t for t in talents
             if t.enabled and t.routing_available and t.name not in CORE_TALENT_NAMES
@@ -83,9 +71,9 @@ class SkillRouter:
 
         texts = [self._talent_text(t) for t in on_demand]
         try:
-            vecs = self._model.encode(texts, normalize_embeddings=True)
+            vecs = _emb.embed_documents(texts, _MODEL_NAME)
             for talent, vec in zip(on_demand, vecs):
-                self._embeddings[talent.name] = vec
+                self._embeddings[talent.name] = np.array(vec)
                 self._talent_map[talent.name] = talent
             self._ready = True
             logger.debug("[SkillRouter] Embedded %d on-demand talents", len(on_demand))
@@ -106,12 +94,12 @@ class SkillRouter:
 
     def top_talents(self, query: str) -> list["BaseTalent"]:
         """Return the top-K on-demand talents most relevant to *query*."""
-        if not self._ready or not self._embeddings or self._model is None:
+        if not self._ready or not self._embeddings:
             # Fallback: return all on-demand talents
             return list(self._talent_map.values())
 
         try:
-            q_vec = self._model.encode([query], normalize_embeddings=True)[0]
+            q_vec = np.array(_emb.embed_queries([query], _MODEL_NAME)[0])
             names = list(self._embeddings.keys())
             matrix = np.stack([self._embeddings[n] for n in names])
             scores = matrix @ q_vec          # cosine sim (vecs are normalised)
