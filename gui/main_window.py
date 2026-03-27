@@ -399,11 +399,26 @@ class MainWindow(QMainWindow):
     def _open_settings(self):
         from gui.dialogs.settings_dialog import SettingsDialog
         config_path = os.path.join(self.config_dir, "settings.json")
+        example_path = os.path.join(self.config_dir, "settings.example.json")
+
+        # Load defaults from the example file first, then overlay user values.
+        # This prevents the dialog from showing blank fields for settings the
+        # user hasn't explicitly overridden (e.g. prompt_template, stop_sequences),
+        # which previously caused those values to be clobbered on save.
+        defaults = {}
+        try:
+            with open(example_path, 'r') as f:
+                defaults = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            pass
+
         try:
             with open(config_path, 'r') as f:
-                current = json.load(f)
+                user = json.load(f)
         except (FileNotFoundError, json.JSONDecodeError):
-            current = {}
+            user = {}
+
+        current = SettingsDialog._deep_merge(defaults, user)
 
         dialog = SettingsDialog(current, config_path, self)
         dialog.settings_saved.connect(self.bridge.update_settings)
