@@ -254,26 +254,31 @@ class SignalRemoteTalent(BaseTalent):
             sync_msg = inner.get("syncMessage") or {}
             sent_msg = sync_msg.get("sentMessage") or {}
             text = (sent_msg.get("message") or "").strip()
-            sync_dest = (sent_msg.get("destination") or sender) if text else None
+            sync_dest = sent_msg.get("destination") or sender
             # Extract incoming attachments (images, files)
             incoming_attachments = sent_msg.get("attachments") or []
         except (AttributeError, TypeError):
             return
 
-        # Skip non-Note-to-Self envelopes (unless there's an attachment)
+        # Skip empty envelopes
         if not text and not incoming_attachments:
             return
 
+        # Only process Note-to-Self: destination matches sender
+        if not sync_dest or sync_dest != sender:
+            return
+
         # Prefix check (case-insensitive).
-        # If the message has image attachments, allow it through even
-        # without the prefix — the user sent a photo to analyse.
         prefix = cfg.get("command_prefix", "talon: ").lower()
+        has_prefix = text.lower().startswith(prefix)
+
+        # Images in Note-to-Self are allowed without prefix
         has_images = any(
             (a.get("contentType") or "").startswith("image/")
             for a in incoming_attachments
         )
-        if not text.lower().startswith(prefix) and not has_images:
-            return   # normal Signal chat — ignore silently
+        if not has_prefix and not has_images:
+            return
 
         command = text[len(prefix):].strip() if text.lower().startswith(prefix) else text.strip()
         if not command and not has_images:
