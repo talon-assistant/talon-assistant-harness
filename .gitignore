@@ -32,6 +32,7 @@ config/settings.json
 config/hue_config.json
 config/talents.json
 config/backups/
+config/linkedin_auth.json
 
 # User-installed talents
 talents/user/*.py

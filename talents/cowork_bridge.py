@@ -13,6 +13,7 @@ Processed task files are moved to:
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 from datetime import datetime
@@ -128,9 +129,78 @@ def _handle_scrape_url(task_id: str, payload: dict) -> None:
         )
 
 
+def _handle_browser_fetch(task_id: str, payload: dict) -> None:
+    """Fetch a page using Playwright with optional saved auth state."""
+    try:
+        from playwright.sync_api import sync_playwright
+        from playwright.sync_api import TimeoutError as PWTimeout
+    except ImportError:
+        _write_result(task_id, "error", None,
+                      "playwright is not installed — run: "
+                      "pip install playwright && playwright install chromium")
+        return
+
+    url      = payload.get("url", "").strip()
+    wait_for = payload.get("wait_for")
+    extract  = payload.get("extract", "text")
+    auth_file = payload.get("auth_state", "config/linkedin_auth.json")
+
+    if not url:
+        _write_result(task_id, "error", None, "No URL provided")
+        return
+
+    print(f"   [CoworkBridge] browser_fetch: {url}")
+
+    try:
+        with sync_playwright() as p:
+            context_kwargs = {}
+            if os.path.exists(auth_file):
+                context_kwargs["storage_state"] = auth_file
+                print(f"   [CoworkBridge] Using auth state: {auth_file}")
+
+            browser = p.chromium.launch(headless=True)
+            context = browser.new_context(**context_kwargs)
+            page    = context.new_page()
+
+            page.goto(url, wait_until="domcontentloaded", timeout=30_000)
+
+            if wait_for:
+                try:
+                    page.wait_for_selector(wait_for, timeout=15_000)
+                except PWTimeout:
+                    print(f"   [CoworkBridge] Selector '{wait_for}' not found, "
+                          "continuing with available content")
+
+            if extract == "html":
+                content = page.content()
+            elif extract == "links":
+                links = page.eval_on_selector_all(
+                    "a[href]",
+                    "els => els.map(e => ({text: e.innerText.trim(), href: e.href}))"
+                )
+                content = json.dumps(links, indent=2)
+            else:
+                content = page.inner_text("body")
+
+            browser.close()
+
+            if content:
+                _write_result(task_id, "success",
+                              {"content": content[:MAX_CHARS], "url": url}, None)
+            else:
+                _write_result(task_id, "error", None,
+                              "Page loaded but no content extracted")
+
+    except PWTimeout:
+        _write_result(task_id, "error", None, f"Timeout loading {url}")
+    except Exception as exc:
+        _write_result(task_id, "error", None, str(exc))
+
+
 _HANDLERS = {
-    "ping":       _handle_ping,
-    "scrape_url": _handle_scrape_url,
+    "ping":          _handle_ping,
+    "scrape_url":    _handle_scrape_url,
+    "browser_fetch": _handle_browser_fetch,
 }
 
 

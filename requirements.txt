@@ -45,5 +45,8 @@ plyer
 trl
 datasets
 
+# Optional — Cowork Bridge browser_fetch (authenticated page scraping)
+playwright>=1.40.0
+
 # Optional — scheduler talent cron support
 croniter
