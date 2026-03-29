@@ -24,8 +24,9 @@ except ImportError:
 _SERVICE = "talon_assistant"
 
 # Windows Credential Manager has a ~2560-byte limit per entry.
-# Use 2000 to leave headroom for key name overhead.
-_CHUNK_MAX = 2000
+# Strings are stored as UTF-16 (2 bytes/char), so max ~1280 chars.
+# Use 1200 to leave headroom.
+_CHUNK_MAX = 1200
 
 
 class CredentialStore:
