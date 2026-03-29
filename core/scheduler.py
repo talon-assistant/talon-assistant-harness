@@ -331,6 +331,14 @@ class Scheduler:
                 with open(_TASKS_FILE, "r", encoding="utf-8") as f:
                     data = json.load(f)
                 tasks = data if isinstance(data, list) else []
+                # Auto-initialize interval tasks with null/empty next_run
+                # so they fire on the first tick after startup.
+                now_iso = datetime.now().isoformat()
+                for t in tasks:
+                    if (t.get("task_type") == "interval"
+                            and not t.get("next_run")):
+                        t["next_run"] = now_iso
+
                 with self._lock:
                     self._tasks = tasks
                 print(f"[Scheduler] Loaded {len(tasks)} persisted task(s)")
