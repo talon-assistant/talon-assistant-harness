@@ -708,6 +708,14 @@ class TalonAssistant:
                 print("   [Router] Multi-step chain detected — routing to planner")
                 return planner
 
+        # Pre-router: keyword match for internal talents (routing_available=False).
+        # These are scheduler-only talents that never appear in the LLM roster
+        # but still need to be reachable by their exact trigger phrases.
+        for talent in self.talents:
+            if talent.enabled and not talent.routing_available and talent.can_handle(command):
+                print(f"   [Router] Internal talent keyword match: {talent.name}")
+                return talent
+
         result = self._route_with_llm(command)
 
         # If we're inside a planner sub-step and the LLM still chose the
