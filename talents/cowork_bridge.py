@@ -132,12 +132,15 @@ def _handle_scrape_url(task_id: str, payload: dict) -> None:
 def _load_auth_state(key: str = "default") -> dict | None:
     """Load Playwright auth state from the OS keyring.
 
+    Auth state is stored compressed + chunked via CredentialStore.store_blob()
+    to work within Windows Credential Manager size limits.
+
     Returns parsed dict suitable for Playwright's storage_state parameter,
     or None if no auth state is stored.
     """
     from core.credential_store import CredentialStore
     store = CredentialStore()
-    raw = store.get_secret("cowork_bridge", f"auth_state.{key}")
+    raw = store.get_blob("cowork_bridge", f"auth_state.{key}")
     if not raw:
         return None
     try:

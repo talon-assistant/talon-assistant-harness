@@ -43,14 +43,14 @@ with sync_playwright() as p:
     state = context.storage_state()
     browser.close()
 
-# Serialize and store in OS keyring
+# Serialize and store in OS keyring (compressed + chunked for large auth state)
 state_json = json.dumps(state)
 field_key = f"auth_state.{KEY}"
 
-if store.store_secret("cowork_bridge", field_key, state_json):
+if store.store_blob("cowork_bridge", field_key, state_json):
     print(f"Auth state saved to OS keyring: talon_assistant / "
           f"cowork_bridge.{field_key}")
-    print(f"Size: {len(state_json):,} chars")
+    print(f"Original size: {len(state_json):,} chars (compressed + chunked)")
 else:
     print("ERROR: Failed to store auth state in keyring.")
     sys.exit(1)
