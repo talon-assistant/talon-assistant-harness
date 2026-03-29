@@ -129,8 +129,26 @@ def _handle_scrape_url(task_id: str, payload: dict) -> None:
         )
 
 
+def _load_auth_state(key: str = "default") -> dict | None:
+    """Load Playwright auth state from the OS keyring.
+
+    Returns parsed dict suitable for Playwright's storage_state parameter,
+    or None if no auth state is stored.
+    """
+    from core.credential_store import CredentialStore
+    store = CredentialStore()
+    raw = store.get_secret("cowork_bridge", f"auth_state.{key}")
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        print(f"   [CoworkBridge] Corrupt auth state in keyring for key '{key}'")
+        return None
+
+
 def _handle_browser_fetch(task_id: str, payload: dict) -> None:
-    """Fetch a page using Playwright with optional saved auth state."""
+    """Fetch a page using Playwright with auth state from OS keyring."""
     try:
         from playwright.sync_api import sync_playwright
         from playwright.sync_api import TimeoutError as PWTimeout
@@ -143,7 +161,7 @@ def _handle_browser_fetch(task_id: str, payload: dict) -> None:
     url      = payload.get("url", "").strip()
     wait_for = payload.get("wait_for")
     extract  = payload.get("extract", "text")
-    auth_file = payload.get("auth_state", "config/linkedin_auth.json")
+    auth_key = payload.get("auth_key", "default")
 
     if not url:
         _write_result(task_id, "error", None, "No URL provided")
@@ -151,12 +169,19 @@ def _handle_browser_fetch(task_id: str, payload: dict) -> None:
 
     print(f"   [CoworkBridge] browser_fetch: {url}")
 
+    # Load auth state from OS keyring (not a plaintext file)
+    auth_state = _load_auth_state(auth_key)
+
     try:
         with sync_playwright() as p:
             context_kwargs = {}
-            if os.path.exists(auth_file):
-                context_kwargs["storage_state"] = auth_file
-                print(f"   [CoworkBridge] Using auth state: {auth_file}")
+            if auth_state:
+                context_kwargs["storage_state"] = auth_state
+                print(f"   [CoworkBridge] Using auth state from keyring "
+                      f"(key='{auth_key}')")
+            else:
+                print(f"   [CoworkBridge] No auth state found for key "
+                      f"'{auth_key}' — running unauthenticated")
 
             browser = p.chromium.launch(headless=True)
             context = browser.new_context(**context_kwargs)
