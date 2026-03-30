@@ -199,6 +199,18 @@ def _handle_browser_fetch(task_id: str, payload: dict) -> None:
                     print(f"   [CoworkBridge] Selector '{wait_for}' not found, "
                           "continuing with available content")
 
+            # Run optional JS snippet before text extraction
+            js_result = None
+            js_snippet = payload.get("js_snippet")
+            if js_snippet:
+                try:
+                    js_result = page.evaluate(js_snippet)
+                    print(f"   [CoworkBridge] js_snippet returned "
+                          f"{type(js_result).__name__}: "
+                          f"{str(js_result)[:200]}")
+                except Exception as js_exc:
+                    print(f"   [CoworkBridge] js_snippet error: {js_exc}")
+
             if extract == "html":
                 content = page.content()
             elif extract == "links":
@@ -213,8 +225,10 @@ def _handle_browser_fetch(task_id: str, payload: dict) -> None:
             browser.close()
 
             if content:
-                _write_result(task_id, "success",
-                              {"content": content[:MAX_CHARS], "url": url}, None)
+                data = {"content": content[:MAX_CHARS], "url": url}
+                if js_result is not None:
+                    data["js_result"] = js_result
+                _write_result(task_id, "success", data, None)
             else:
                 _write_result(task_id, "error", None,
                               "Page loaded but no content extracted")
