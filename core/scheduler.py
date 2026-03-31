@@ -300,6 +300,11 @@ class Scheduler:
         # Fire each task in its own daemon thread
         for task in to_fire:
             command   = task.get("command", "").strip()
+
+            # Skip if the target talent is disabled — avoids log spam
+            if not self._is_command_talent_enabled(command):
+                continue
+
             output    = task.get("output", "gui")
             speak_tts = output in ("tts", "both")
             label     = task.get("label", command)
@@ -310,6 +315,20 @@ class Scheduler:
                 daemon=True,
                 name=f"Scheduler-{task.get('id', 'task')}",
             ).start()
+
+    def _is_command_talent_enabled(self, command: str) -> bool:
+        """Check if the talent that handles this command is enabled.
+
+        Only checks internal (non-routed) talents — LLM-routed talents
+        are always allowed through since the router handles them.
+        Returns True if no matching internal talent found (let it fire).
+        """
+        if not self._assistant:
+            return True
+        for talent in getattr(self._assistant, "talents", []):
+            if not talent.routing_available and talent.can_handle(command):
+                return talent.enabled
+        return True
 
     def _run_command(self, command: str, speak_tts: bool) -> None:
         try:

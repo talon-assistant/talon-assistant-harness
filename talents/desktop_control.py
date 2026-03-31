@@ -561,11 +561,15 @@ Respond ONLY with valid JSON, no additional text."""
                             pyautogui.press('divide')
                         elif char == '=':
                             pyautogui.press('equals')
+                        elif char == '.':
+                            pyautogui.press('decimal')
                         elif char == ' ':
                             pass  # skip spaces for calculator input
                         else:
-                            pyautogui.write(char, interval=0.05)
-                        time.sleep(0.1)
+                            # Use press() not write() — UWP Calculator
+                            # drops keystrokes from write() reliably
+                            pyautogui.press(char)
+                        time.sleep(0.15)
                 else:
                     # Normal text mode: paste via clipboard for reliability
                     # pyautogui.write() drops spaces and non-ASCII chars
