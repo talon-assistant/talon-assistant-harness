@@ -9,6 +9,10 @@ and writes results to:
 
 Processed task files are moved to:
     ~/OneDrive/Documents/cowork_bridge/logs/{task_id}.json
+
+After processing, if any tasks completed, the talent notifies Cowork via
+the Claude CLI (``claude -p ...``) so Cowork can read and act on results
+without manual prompting.
 """
 from __future__ import annotations
 
@@ -16,6 +20,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 from datetime import datetime
 from pathlib import Path
 
@@ -246,6 +251,60 @@ _HANDLERS = {
 }
 
 
+# ── Claude CLI notification ───────────────────────────────────────────────────
+
+def _notify_cowork(completed_ids: list[str], error_ids: list[str],
+                   project: str = "") -> None:
+    """Notify Cowork via Claude CLI that bridge results are ready.
+
+    Runs ``claude -p <message>`` in a subprocess. If the CLI is not
+    installed or the call fails, logs a warning and continues silently.
+    """
+    if not completed_ids and not error_ids:
+        return
+
+    # Build a concise notification message
+    parts = []
+    if completed_ids:
+        parts.append(f"{len(completed_ids)} task(s) completed successfully: "
+                     f"{', '.join(completed_ids)}")
+    if error_ids:
+        parts.append(f"{len(error_ids)} task(s) failed: {', '.join(error_ids)}")
+
+    message = (
+        f"Talon bridge results are ready. {' '.join(parts)}. "
+        f"Results are in {_RESULTS_DIR}. "
+        f"Read the result files and process them."
+    )
+
+    cmd = ["claude", "-p", message, "--no-input"]
+    if project:
+        cmd.extend(["--project", project])
+
+    try:
+        print(f"   [CoworkBridge] Notifying Cowork via CLI...")
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=120,
+            cwd=str(_BRIDGE_ROOT),
+        )
+        if result.returncode == 0:
+            print(f"   [CoworkBridge] Cowork notified successfully")
+            if result.stdout.strip():
+                # Log first 200 chars of Cowork's response
+                print(f"   [CoworkBridge] Cowork response: "
+                      f"{result.stdout.strip()[:200]}")
+        else:
+            print(f"   [CoworkBridge] CLI returned code {result.returncode}: "
+                  f"{result.stderr.strip()[:200]}")
+    except FileNotFoundError:
+        print("   [CoworkBridge] Claude CLI not found — skipping notification. "
+              "Install: npm install -g @anthropic-ai/claude-code")
+    except subprocess.TimeoutExpired:
+        print("   [CoworkBridge] CLI notification timed out (120s)")
+    except Exception as exc:
+        print(f"   [CoworkBridge] CLI notification failed: {exc}")
+
+
 # ── talent ────────────────────────────────────────────────────────────────────
 
 class CoworkBridgeTalent(BaseTalent):
@@ -263,6 +322,15 @@ class CoworkBridgeTalent(BaseTalent):
     def routing_available(self) -> bool:
         # Scheduler-only — never appear in LLM routing roster
         return False
+
+    def get_config_schema(self) -> dict:
+        return {
+            "fields": [
+                {"key": "cli_project", "label": "Claude CLI Project",
+                 "type": "string", "default": "",
+                 "description": "Optional --project name for Claude CLI notifications"},
+            ]
+        }
 
     def initialize(self, config: dict) -> None:
         _ensure_dirs()
@@ -282,6 +350,8 @@ class CoworkBridgeTalent(BaseTalent):
 
         processed = 0
         errors    = 0
+        completed_ids: list[str] = []
+        error_ids:     list[str] = []
 
         for task_path in task_files:
             try:
@@ -308,16 +378,24 @@ class CoworkBridgeTalent(BaseTalent):
                 try:
                     handler(task_id, payload)
                     processed += 1
+                    completed_ids.append(task_id)
                 except Exception as exc:
                     print(f"   [CoworkBridge] Handler error for {task_id}: {exc}")
                     _write_result(task_id, "error", None, str(exc))
                     errors += 1
+                    error_ids.append(task_id)
             else:
                 _write_result(task_id, "error", None,
                               f"Unknown task type: {task_type!r}")
                 errors += 1
+                error_ids.append(task_id)
 
             _archive_task(task_path)
+
+        # Notify Cowork via Claude CLI that results are ready
+        if completed_ids or error_ids:
+            cli_project = self._config.get("cli_project", "")
+            _notify_cowork(completed_ids, error_ids, project=cli_project)
 
         summary = f"Cowork bridge: {processed} task(s) processed"
         if errors:
