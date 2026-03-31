@@ -296,9 +296,15 @@ class DesktopControlTalent(BaseTalent):
                 "spoken": False,
             }
 
-        # Confirmation gate: destructive_file_ops fires for any subprocess action
-        has_subprocess = any(a.get("action") == "open_application" for a in actions)
-        if has_subprocess:
+        # Confirmation gate: only for shell/terminal launches, not simple apps
+        _GATED_APPS = {"cmd", "powershell", "terminal", "wt", "bash",
+                       "command prompt", "windows terminal"}
+        has_shell = any(
+            a.get("action") == "open_application"
+            and a.get("application", "").lower().strip() in _GATED_APPS
+            for a in actions
+        )
+        if has_shell:
             from core.security import get_security_filter as _gsf
             _sf = _gsf()
             if _sf and _sf.gate_required("destructive_file_ops"):
