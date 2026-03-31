@@ -267,7 +267,8 @@ class DesktopControlTalent(BaseTalent):
         prompt = self._append_action_schema(prompt)
 
         response = llm.generate(
-            prompt, use_vision=needs_vision, screenshot_b64=screenshot_b64)
+            prompt, use_vision=needs_vision, screenshot_b64=screenshot_b64,
+            max_length=1024, temperature=0.3)
 
         # Debug: log raw LLM response for troubleshooting
         print(f"   [desktop_control] Raw LLM response ({len(response or '')} chars): "
@@ -466,27 +467,6 @@ Example — calculator with result (compute AND read the answer):
   ]
 }
 
-Example — typing text in notepad:
-{
-  "explanation": "Opening notepad and writing a message",
-  "actions": [
-    {"action": "open_application", "application": "notepad"},
-    {"action": "type", "text": "Hello World! This is a test."}
-  ]
-}
-
-Example — creating a file via command prompt:
-{
-  "explanation": "Creating plain.txt in C:\\Users\\you",
-  "actions": [
-    {"action": "open_application", "application": "cmd"},
-    {"action": "type", "text": "echo. > \"C:\\Users\\you\\plain.txt\""},
-    {"action": "press_key", "key": "enter"},
-    {"action": "type", "text": "exit"},
-    {"action": "press_key", "key": "enter"}
-  ]
-}
-
 Respond ONLY with valid JSON, no additional text."""
         return prompt
 
@@ -510,6 +490,9 @@ Respond ONLY with valid JSON, no additional text."""
                 if json_match:
                     response_clean = json_match.group(0)
 
+            if response_clean.count('{') != response_clean.count('}'):
+                print("   [desktop_control] Response appears truncated (unbalanced braces)")
+                return None
             return json.loads(response_clean)
         except (json.JSONDecodeError, AttributeError):
             return None

@@ -374,7 +374,7 @@ class SignalRemoteTalent(BaseTalent):
 
         if attachments:
             for att in attachments:
-                base_args += ["-a", att]
+                base_args += ["--attachment", att]
 
         cmd = self._build_cmd(cli, base_args)
         try:
