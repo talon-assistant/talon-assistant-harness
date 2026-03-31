@@ -269,6 +269,10 @@ class DesktopControlTalent(BaseTalent):
         response = llm.generate(
             prompt, use_vision=needs_vision, screenshot_b64=screenshot_b64)
 
+        # Debug: log raw LLM response for troubleshooting
+        print(f"   [desktop_control] Raw LLM response ({len(response or '')} chars): "
+              f"{(response or '')[:300]}")
+
         # Parse JSON
         action_plan = self._parse_action_json(response)
         if action_plan is None:
@@ -332,6 +336,16 @@ class DesktopControlTalent(BaseTalent):
         """Run a parsed action plan dict, returning the standard result dict."""
         explanation = action_plan.get("explanation", "Executing...")
         actions = action_plan.get("actions", [])
+
+        # Guard: empty actions array means LLM didn't generate anything useful
+        if not actions:
+            print("   [desktop_control] Action plan has no actions — nothing to execute")
+            return {
+                "success": False,
+                "response": "I understood what you want, but couldn't generate the steps to do it. Try again?",
+                "actions_taken": [],
+                "spoken": False,
+            }
 
         # Speak explanation before executing
         if speak_response and voice:
