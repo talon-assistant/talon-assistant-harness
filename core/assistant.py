@@ -93,6 +93,7 @@ class TalonAssistant:
 
     _CONVERSATION = object()       # Sentinel: LLM explicitly chose conversation
     _CONVERSATION_RAG = object()   # Sentinel: LLM chose conversation, explicit RAG intent
+    _CONVERSATION_SKIP = object()  # Sentinel: silently drop (disabled internal talent)
 
     _RULE_DETECTION_SYSTEM_PROMPT = (
         "You are a rule-detection assistant. The user just said something to a "
@@ -711,10 +712,16 @@ class TalonAssistant:
         # Pre-router: keyword match for internal talents (routing_available=False).
         # These are scheduler-only talents that never appear in the LLM roster
         # but still need to be reachable by their exact trigger phrases.
+        # If the talent is disabled, return a sentinel so the command is silently
+        # dropped rather than falling through to conversation and hallucinating.
         for talent in self.talents:
-            if talent.enabled and not talent.routing_available and talent.can_handle(command):
-                print(f"   [Router] Internal talent keyword match: {talent.name}")
-                return talent
+            if not talent.routing_available and talent.can_handle(command):
+                if talent.enabled:
+                    print(f"   [Router] Internal talent keyword match: {talent.name}")
+                    return talent
+                else:
+                    print(f"   [Router] Internal talent '{talent.name}' matched but disabled — dropping")
+                    return self._CONVERSATION_SKIP
 
         result = self._route_with_llm(command)
 
@@ -1942,6 +1949,10 @@ class TalonAssistant:
             # Normalise to None so the conversation fallback is reached correctly.
             # Re-entrant rule sub-steps (_executing_rule=True) never return this
             # sentinel, so rag_explicit stays False for planner sub-steps.
+            # Disabled internal talent — silently drop the command
+            if talent is self._CONVERSATION_SKIP:
+                return
+
             rag_explicit = (talent is self._CONVERSATION_RAG)
             if rag_explicit:
                 # Before falling to conversation/RAG, check whether the user is
