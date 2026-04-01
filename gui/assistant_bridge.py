@@ -3,7 +3,7 @@ import json
 import shutil
 import inspect
 import importlib
-from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import QObject, QTimer, pyqtSignal, pyqtSlot
 from gui.workers import CommandWorker, TTSWorker, VoiceListenWorker, EmailSendWorker
 from talents.base import BaseTalent
 from core.credential_store import CredentialStore
@@ -158,11 +158,12 @@ class AssistantBridge(QObject):
 
     def _on_command_done(self, command, response, talent_name, success, result):
         """Called when process_command() completes."""
-        if talent_name:
-            self.talent_activated.emit(talent_name)
-
         self.command_response.emit(command, response)
         self.activity.emit("idle")
+
+        # Defer talent highlight to avoid GIL/heap crash on fast talents
+        if talent_name:
+            QTimer.singleShot(100, lambda tn=talent_name: self.talent_activated.emit(tn))
 
         # Draft + confirm flow: talent returned a pending email — show compose dialog
         pending = result.get("pending_email") if result else None
