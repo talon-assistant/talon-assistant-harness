@@ -420,6 +420,8 @@ class JobTrackerTalent(BaseTalent):
         cmd = command.lower()
 
         # Determine intent from keywords in the command
+        if "import" in cmd and ("spreadsheet" in cmd or "xlsx" in cmd or "excel" in cmd):
+            return self._handle_import(command, context)
         if self._is_export(cmd):
             return self._handle_export(context)
         if self._is_follow_up(cmd):
@@ -796,11 +798,132 @@ class JobTrackerTalent(BaseTalent):
 
     # ── Export ────────────────────────────────────────────────────────────────
 
-    def _handle_export(self, context: dict) -> dict:
-        """Export all non-archived applications to an XLSX file."""
+    def _handle_import(self, command: str, context: dict) -> dict:
+        """Import applications from an existing XLSX file.
+
+        Matches the 2026-JobSearch.xlsx format:
+          Sheet 1 columns: Company, title, date applied, found on,
+                           applied through, Status, Notes
+        """
         try:
             import openpyxl
-            from openpyxl.styles import Font, Alignment, Border, Side
+        except ImportError:
+            return self._fail("openpyxl is not installed. Run: pip install openpyxl")
+
+        # Try to find the file path from the command or use default
+        llm = context.get("llm")
+        file_path = None
+
+        # Check for common locations
+        candidates = [
+            os.path.expanduser("~/OneDrive/Documents/2026-JobSearch.xlsx"),
+            os.path.expanduser("~/Documents/2026-JobSearch.xlsx"),
+            os.path.expanduser("~/Desktop/2026-JobSearch.xlsx"),
+        ]
+        for c in candidates:
+            if os.path.exists(c):
+                file_path = c
+                break
+
+        if not file_path:
+            return self._fail(
+                "Could not find 2026-JobSearch.xlsx. "
+                "Checked ~/OneDrive/Documents, ~/Documents, ~/Desktop."
+            )
+
+        try:
+            wb = openpyxl.load_workbook(file_path, read_only=True)
+            ws = wb["Jobs Applied For"] if "Jobs Applied For" in wb.sheetnames else wb.active
+
+            imported = 0
+            skipped = 0
+            for row in ws.iter_rows(min_row=2, values_only=True):
+                if not row or not row[0]:
+                    continue
+
+                company = str(row[0]).strip() if row[0] else ""
+                position = str(row[1]).strip() if len(row) > 1 and row[1] else ""
+                if not company or not position:
+                    skipped += 1
+                    continue
+
+                # Parse date
+                date_applied = ""
+                if len(row) > 2 and row[2]:
+                    if hasattr(row[2], 'isoformat'):
+                        date_applied = row[2].strftime("%Y-%m-%d")
+                    else:
+                        date_applied = str(row[2])[:10]
+
+                source = str(row[3]).strip().lower() if len(row) > 3 and row[3] else ""
+                method = str(row[4]).strip().lower() if len(row) > 4 and row[4] else "direct"
+
+                # Status mapping from spreadsheet to internal
+                raw_status = str(row[5]).strip().lower() if len(row) > 5 and row[5] else ""
+                status = "applied"  # default
+                if "reject" in raw_status:
+                    status = "rejected"
+                elif "interview" in raw_status or "screen" in raw_status:
+                    status = "interviewing"
+                elif "offer" in raw_status:
+                    status = "offered"
+                elif "withdraw" in raw_status:
+                    status = "withdrawn"
+
+                notes = str(row[6]).strip() if len(row) > 6 and row[6] else ""
+                # The Status column often contains interview notes
+                if raw_status and status == "interviewing":
+                    notes = raw_status + (f"; {notes}" if notes else "")
+
+                # Check for duplicate
+                existing = self._db.search(company)
+                dupe = any(
+                    _normalize_company(e["company"]) == _normalize_company(company)
+                    and e["position"].lower() == position.lower()
+                    for e in existing
+                )
+                if dupe:
+                    skipped += 1
+                    continue
+
+                self._db.add(
+                    company=company,
+                    position=position,
+                    source=source,
+                    method=method,
+                    status=status,
+                    date_applied=date_applied,
+                    date_found=date_applied,
+                    notes=notes,
+                )
+                imported += 1
+
+            wb.close()
+            return {
+                "success": True,
+                "response": (
+                    f"Imported {imported} application(s) from {os.path.basename(file_path)}. "
+                    f"{skipped} skipped (duplicates or incomplete rows)."
+                ),
+                "actions_taken": [{"action": "job_import", "path": file_path,
+                                   "imported": imported, "skipped": skipped}],
+                "spoken": False,
+            }
+        except Exception as e:
+            return self._fail(f"Import failed: {e}")
+
+    def _handle_export(self, context: dict) -> dict:
+        """Export applications to XLSX matching the unemployment reporting format.
+
+        Matches the user's existing 2026-JobSearch.xlsx layout:
+          Sheet 1 "Jobs Applied For": Company, title, date applied, found on,
+                                       applied through, Status, Notes
+          Sheet 2 "Recruitment Sites Submitted": Firm, Date, Contact?
+        """
+        try:
+            import openpyxl
+            from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
+            from openpyxl.utils import get_column_letter
         except ImportError:
             return self._fail(
                 "openpyxl is not installed. Run: pip install openpyxl"
@@ -811,49 +934,96 @@ class JobTrackerTalent(BaseTalent):
             return self._fail("No applications to export.")
 
         wb = openpyxl.Workbook()
+
+        # ── Sheet 1: Jobs Applied For ─────────────────────────────────
         ws = wb.active
-        ws.title = "Job Applications"
+        ws.title = "Jobs Applied For"
 
-        # Column definitions: (header, dict key, width)
-        columns = [
-            ("ID", "id", 6),
-            ("Company", "company", 22),
-            ("Position", "position", 28),
-            ("Status", "status", 14),
-            ("Date Found", "date_found", 14),
-            ("Date Applied", "date_applied", 14),
-            ("Last Updated", "date_updated", 14),
-            ("Location", "location", 18),
-            ("Source", "source", 12),
-            ("Method", "method", 12),
-            ("Contact Name", "contact_name", 18),
-            ("Contact Email", "contact_email", 24),
-            ("Salary Range", "salary_range", 16),
-            ("Resume Version", "resume_version", 16),
-            ("Cover Letter", "cover_letter", 14),
-            ("Notes", "notes", 30),
-            ("Job URL", "job_url", 30),
-        ]
+        headers = ["Company", "title", "date applied", "found on",
+                    "applied through", "Status", "Notes"]
+        widths = [22, 40, 14, 14, 16, 20, 40]
 
-        # Header row
         header_font = Font(bold=True)
-        thin_border = Border(
-            bottom=Side(style="thin"),
-        )
-        for col_idx, (header, _, width) in enumerate(columns, 1):
+        header_fill = PatternFill(start_color="D9E1F2", end_color="D9E1F2",
+                                   fill_type="solid")
+        thin_border = Border(bottom=Side(style="thin"))
+
+        for col_idx, (header, width) in enumerate(zip(headers, widths), 1):
             cell = ws.cell(row=1, column=col_idx, value=header)
             cell.font = header_font
+            cell.fill = header_fill
             cell.border = thin_border
             cell.alignment = Alignment(horizontal="center")
-            ws.column_dimensions[cell.column_letter].width = width
+            ws.column_dimensions[get_column_letter(col_idx)].width = width
 
-        # Data rows
         for row_idx, app in enumerate(apps, 2):
-            for col_idx, (_, key, _) in enumerate(columns, 1):
-                value = app.get(key, "")
-                if key == "cover_letter":
-                    value = "Yes" if value else "No"
-                ws.cell(row=row_idx, column=col_idx, value=value)
+            ws.cell(row=row_idx, column=1, value=app.get("company", ""))
+            ws.cell(row=row_idx, column=2, value=app.get("position", ""))
+            # Date as datetime for Excel formatting
+            date_val = app.get("date_applied") or app.get("date_found", "")
+            if date_val:
+                try:
+                    date_val = datetime.fromisoformat(date_val)
+                except (ValueError, TypeError):
+                    pass
+            ws.cell(row=row_idx, column=3, value=date_val)
+            ws.cell(row=row_idx, column=4, value=app.get("source", ""))
+            ws.cell(row=row_idx, column=5, value=app.get("method", "direct"))
+            # Status — map internal values to display
+            status = app.get("status", "")
+            status_display = {
+                "new": "", "applied": "", "interviewing": "",
+                "offered": "Offer", "rejected": "Rejection",
+                "withdrawn": "Withdrawn",
+            }.get(status, status)
+            # Include contact/interview notes in status if present
+            if status == "interviewing" and app.get("notes"):
+                status_display = app["notes"]
+            elif status == "rejected":
+                status_display = "Rejection"
+            ws.cell(row=row_idx, column=6, value=status_display)
+            ws.cell(row=row_idx, column=7, value=app.get("notes", ""))
+
+        # Freeze header row
+        ws.freeze_panes = "A2"
+
+        # ── Sheet 2: Recruitment Sites Submitted ──────────────────────
+        ws2 = wb.create_sheet("Recruitment Sites Submitted")
+        rec_headers = ["Firm", "Date", "Contact?"]
+        rec_widths = [25, 14, 14]
+
+        for col_idx, (header, width) in enumerate(zip(rec_headers, rec_widths), 1):
+            cell = ws2.cell(row=1, column=col_idx, value=header)
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.border = thin_border
+            ws2.column_dimensions[get_column_letter(col_idx)].width = width
+
+        # Populate from applications sourced via recruiters
+        recruiter_apps = [a for a in apps
+                          if (a.get("source", "").lower() in
+                              ("recruiter", "staffing", "headhunter")
+                              or a.get("method", "").lower() == "recruiter")]
+        seen_firms = set()
+        rec_row = 2
+        for app in recruiter_apps:
+            firm = app.get("company", "")
+            if firm.lower() in seen_firms:
+                continue
+            seen_firms.add(firm.lower())
+            ws2.cell(row=rec_row, column=1, value=firm)
+            date_val = app.get("date_applied") or app.get("date_found", "")
+            if date_val:
+                try:
+                    date_val = datetime.fromisoformat(date_val)
+                except (ValueError, TypeError):
+                    pass
+            ws2.cell(row=rec_row, column=2, value=date_val)
+            ws2.cell(row=rec_row, column=3,
+                     value=app.get("contact_name", ""))
+            rec_row += 1
+
+        ws2.freeze_panes = "A2"
 
         # Save
         filename = f"job_tracker_export_{_today_iso()}.xlsx"
@@ -863,7 +1033,8 @@ class JobTrackerTalent(BaseTalent):
         return {
             "success": True,
             "response": (
-                f"Exported {len(apps)} application(s) to:\n`{filepath}`"
+                f"Exported {len(apps)} application(s) to:\n`{filepath}`\n"
+                f"Matches your unemployment reporting format (2 sheets)."
             ),
             "actions_taken": [{"action": "job_export", "path": filepath,
                                "count": len(apps)}],
