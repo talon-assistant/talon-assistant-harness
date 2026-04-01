@@ -308,7 +308,7 @@ class TalonAssistant:
 
     def _load_config(self, config_dir):
         """Load settings.json merged on top of settings.example.json defaults."""
-        from main import _deep_merge
+        from core.config import deep_merge
 
         # Defaults from settings.example.json
         defaults = {}
@@ -328,7 +328,7 @@ class TalonAssistant:
         except (FileNotFoundError, json.JSONDecodeError):
             pass
 
-        config = _deep_merge(defaults, user_settings)
+        config = deep_merge(defaults, user_settings)
 
         # news_digest.json — dedicated feed config; overrides any inline section
         nd_path = os.path.join(config_dir, "news_digest.json")
