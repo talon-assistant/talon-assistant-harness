@@ -12,6 +12,9 @@ Upgrade to bge-reranker-large for better quality at higher latency cost.
 """
 from __future__ import annotations
 
+import logging
+log = logging.getLogger(__name__)
+
 _model = None
 _model_name: str | None = None
 
@@ -23,7 +26,7 @@ def _get_model(model_name: str):
         # CPU to avoid competing with KoboldCpp VRAM.
         _model = CrossEncoder(model_name, device="cpu")
         _model_name = model_name
-        print(f"   [Reranker] Loaded {model_name} on cpu")
+        log.info(f"[Reranker] Loaded {model_name} on cpu")
     return _model
 
 

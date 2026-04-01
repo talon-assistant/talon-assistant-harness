@@ -6,6 +6,9 @@ import pyautogui
 from talents.base import BaseTalent
 from core.llm_client import LLMError
 
+import logging
+log = logging.getLogger(__name__)
+
 
 class DesktopControlTalent(BaseTalent):
     name = "desktop_control"
@@ -201,7 +204,7 @@ class DesktopControlTalent(BaseTalent):
 
         No keyboard/mouse actions — purely visual analysis.
         """
-        print("   [desktop_control] Vision query detected — capturing screenshot")
+        log.info("[desktop_control] Vision query detected — capturing screenshot")
         screenshot_b64 = vision.capture_screenshot()
 
         if not screenshot_b64:
@@ -241,7 +244,7 @@ class DesktopControlTalent(BaseTalent):
             voice.speak(description)
             spoken = True
         else:
-            print(f"\n{description}")
+            log.info(f"{description}")
             spoken = False
 
         return {
@@ -278,7 +281,7 @@ class DesktopControlTalent(BaseTalent):
             return {"success": False, "response": f"LLM unavailable: {e}", "actions_taken": [], "spoken": False}
 
         # Debug: log raw LLM response for troubleshooting
-        print(f"   [desktop_control] Raw LLM response ({len(response or '')} chars): "
+        log.debug(f"[desktop_control] Raw LLM response ({len(response or '')} chars): "
               f"{(response or '')[:300]}")
 
         # Parse JSON
@@ -347,7 +350,7 @@ class DesktopControlTalent(BaseTalent):
 
         # Guard: empty actions array means LLM didn't generate anything useful
         if not actions:
-            print("   [desktop_control] Action plan has no actions — nothing to execute")
+            log.info("[desktop_control] Action plan has no actions — nothing to execute")
             return {
                 "success": False,
                 "response": "I understood what you want, but couldn't generate the steps to do it. Try again?",
@@ -359,7 +362,7 @@ class DesktopControlTalent(BaseTalent):
         if speak_response and voice:
             voice.speak(explanation)
         else:
-            print(f"\n{explanation}")
+            log.info(f"{explanation}")
 
         results = []
         all_successful = True
@@ -374,7 +377,7 @@ class DesktopControlTalent(BaseTalent):
             # Capture clipboard content from read_clipboard action
             if action.get("action") == "read_clipboard" and success:
                 clipboard_text = result.replace("Clipboard: ", "", 1)
-            print(f"  -> {result}")
+            log.debug(f"{result}")
             time.sleep(self.action_delay)
 
         # Build response — include clipboard content if we read it
@@ -408,7 +411,7 @@ class DesktopControlTalent(BaseTalent):
             for text in candidates:
                 for pattern, label in self._ACTION_BLOCKLIST:
                     if pattern.search(text):
-                        print(f"   [desktop_control] Blocked — matched '{label}' in: {text!r}")
+                        log.info(f"[desktop_control] Blocked — matched '{label}' in: {text!r}")
                         return label
         return None
 
@@ -498,7 +501,7 @@ Respond ONLY with valid JSON, no additional text."""
                     response_clean = json_match.group(0)
 
             if response_clean.count('{') != response_clean.count('}'):
-                print("   [desktop_control] Response appears truncated (unbalanced braces)")
+                log.info("[desktop_control] Response appears truncated (unbalanced braces)")
                 return None
             return json.loads(response_clean)
         except (json.JSONDecodeError, AttributeError):
@@ -511,7 +514,7 @@ Respond ONLY with valid JSON, no additional text."""
 
             if action_type == "open_application":
                 app_name = action_data.get("application")
-                print(f"   -> Opening {app_name}...")
+                log.debug(f"-> Opening {app_name}...")
 
                 cmd = self.APP_COMMANDS.get(app_name.lower(), app_name)
                 subprocess.Popen(cmd, shell=True)
@@ -522,7 +525,7 @@ Respond ONLY with valid JSON, no additional text."""
                 url = action_data.get("url", "")
                 if not url.startswith(("http://", "https://")):
                     url = f"https://{url}"
-                print(f"   -> Opening URL: {url}")
+                log.debug(f"-> Opening URL: {url}")
                 import webbrowser
                 webbrowser.open(url)
                 time.sleep(self.app_launch_delay)

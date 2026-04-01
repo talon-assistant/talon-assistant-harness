@@ -6,6 +6,9 @@ Used by both PlannerTalent (multi-step routines) and TaskAssistTalent
 
 from typing import Callable
 
+import logging
+log = logging.getLogger(__name__)
+
 
 def execute_plan_steps(
     steps: list[str],
@@ -48,7 +51,7 @@ def execute_plan_steps(
         if last_result and "{last_result}" in step:
             step = step.replace("{last_result}", last_result)
 
-        print(f"   [PlanExecutor] Step {i}/{len(steps)}: {step}")
+        log.info(f"[PlanExecutor] Step {i}/{len(steps)}: {step}")
 
         # ── ask_user: step ─────────────────────────────────────────────
         if step.strip().lower().startswith("ask_user:"):
@@ -98,7 +101,7 @@ def execute_plan_steps(
             ok = False
             resp = f"Error: {e}"
             talent_used = ""
-            print(f"   [PlanExecutor] Step {i} raised exception: {e}")
+            log.info(f"[PlanExecutor] Step {i} raised exception: {e}")
 
         result_dict = {
             "step": i,
@@ -112,7 +115,7 @@ def execute_plan_steps(
         if resp:
             last_result = resp
         if not ok:
-            print(f"   [PlanExecutor] Step {i} failed: {resp}")
+            log.error(f"[PlanExecutor] Step {i} failed: {resp}")
 
         if on_step_complete:
             on_step_complete(i, step, result_dict)

@@ -26,6 +26,9 @@ from pathlib import Path
 
 from talents.base import BaseTalent
 
+import logging
+log = logging.getLogger(__name__)
+
 # ── paths ─────────────────────────────────────────────────────────────────────
 
 _BRIDGE_ROOT = Path.home() / "OneDrive" / "Documents" / "cowork_bridge"
@@ -53,7 +56,7 @@ def _write_result(task_id: str, status: str, data: dict | None,
     out_path = _RESULTS_DIR / f"{task_id}.json"
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(result, f, indent=2)
-    print(f"   [CoworkBridge] Result written: {out_path.name}")
+    log.info(f"[CoworkBridge] Result written: {out_path.name}")
 
 
 def _archive_task(task_path: Path) -> None:
@@ -83,7 +86,7 @@ def _fetch_url(url: str) -> str | None:
         resp.raise_for_status()
         html = resp.text
     except Exception as exc:
-        print(f"   [CoworkBridge] HTTP error for {url}: {exc}")
+        log.error(f"[CoworkBridge] HTTP error for {url}: {exc}")
         return None
 
     try:
@@ -104,7 +107,7 @@ def _fetch_url(url: str) -> str | None:
         text = re.sub(r'\n{3,}', '\n\n', text)
         return text[:MAX_CHARS]
     except Exception as exc:
-        print(f"   [CoworkBridge] BS4 error: {exc}")
+        log.error(f"[CoworkBridge] BS4 error: {exc}")
 
     return None
 
@@ -122,7 +125,7 @@ def _handle_scrape_url(task_id: str, payload: dict) -> None:
         _write_result(task_id, "error", None, "No URL provided in payload")
         return
 
-    print(f"   [CoworkBridge] Scraping: {url}")
+    log.info(f"[CoworkBridge] Scraping: {url}")
     content = _fetch_url(url)
     if content:
         _write_result(task_id, "success", {"content": content, "url": url}, None)
@@ -151,7 +154,7 @@ def _load_auth_state(key: str = "default") -> dict | None:
     try:
         return json.loads(raw)
     except (json.JSONDecodeError, TypeError):
-        print(f"   [CoworkBridge] Corrupt auth state in keyring for key '{key}'")
+        log.info(f"[CoworkBridge] Corrupt auth state in keyring for key '{key}'")
         return None
 
 
@@ -175,7 +178,7 @@ def _handle_browser_fetch(task_id: str, payload: dict) -> None:
         _write_result(task_id, "error", None, "No URL provided")
         return
 
-    print(f"   [CoworkBridge] browser_fetch: {url}")
+    log.info(f"[CoworkBridge] browser_fetch: {url}")
 
     # Load auth state from OS keyring (not a plaintext file)
     auth_state = _load_auth_state(auth_key)
@@ -185,10 +188,10 @@ def _handle_browser_fetch(task_id: str, payload: dict) -> None:
             context_kwargs = {}
             if auth_state:
                 context_kwargs["storage_state"] = auth_state
-                print(f"   [CoworkBridge] Using auth state from keyring "
+                log.info(f"[CoworkBridge] Using auth state from keyring "
                       f"(key='{auth_key}')")
             else:
-                print(f"   [CoworkBridge] No auth state found for key "
+                log.info(f"[CoworkBridge] No auth state found for key "
                       f"'{auth_key}' — running unauthenticated")
 
             browser = p.chromium.launch(headless=True)
@@ -201,7 +204,7 @@ def _handle_browser_fetch(task_id: str, payload: dict) -> None:
                 try:
                     page.wait_for_selector(wait_for, timeout=15_000)
                 except PWTimeout:
-                    print(f"   [CoworkBridge] Selector '{wait_for}' not found, "
+                    log.warning(f"[CoworkBridge] Selector '{wait_for}' not found, "
                           "continuing with available content")
 
             # Run optional JS snippet before text extraction
@@ -210,11 +213,11 @@ def _handle_browser_fetch(task_id: str, payload: dict) -> None:
             if js_snippet:
                 try:
                     js_result = page.evaluate(js_snippet)
-                    print(f"   [CoworkBridge] js_snippet returned "
+                    log.info(f"[CoworkBridge] js_snippet returned "
                           f"{type(js_result).__name__}: "
                           f"{str(js_result)[:200]}")
                 except Exception as js_exc:
-                    print(f"   [CoworkBridge] js_snippet error: {js_exc}")
+                    log.error(f"[CoworkBridge] js_snippet error: {js_exc}")
 
             if extract == "html":
                 content = page.content()
@@ -282,27 +285,27 @@ def _notify_cowork(completed_ids: list[str], error_ids: list[str],
         cmd.extend(["--project", project])
 
     try:
-        print(f"   [CoworkBridge] Notifying Cowork via CLI...")
+        log.info(f"[CoworkBridge] Notifying Cowork via CLI...")
         result = subprocess.run(
             cmd, capture_output=True, text=True, timeout=120,
             cwd=str(_BRIDGE_ROOT),
         )
         if result.returncode == 0:
-            print(f"   [CoworkBridge] Cowork notified successfully")
+            log.info(f"[CoworkBridge] Cowork notified successfully")
             if result.stdout.strip():
                 # Log first 200 chars of Cowork's response
-                print(f"   [CoworkBridge] Cowork response: "
+                log.info(f"[CoworkBridge] Cowork response: "
                       f"{result.stdout.strip()[:200]}")
         else:
-            print(f"   [CoworkBridge] CLI returned code {result.returncode}: "
+            log.info(f"[CoworkBridge] CLI returned code {result.returncode}: "
                   f"{result.stderr.strip()[:200]}")
     except FileNotFoundError:
-        print("   [CoworkBridge] Claude CLI not found — skipping notification. "
+        log.warning("[CoworkBridge] Claude CLI not found — skipping notification. "
               "Install: npm install -g @anthropic-ai/claude-code")
     except subprocess.TimeoutExpired:
-        print("   [CoworkBridge] CLI notification timed out (120s)")
+        log.info("[CoworkBridge] CLI notification timed out (120s)")
     except Exception as exc:
-        print(f"   [CoworkBridge] CLI notification failed: {exc}")
+        log.error(f"[CoworkBridge] CLI notification failed: {exc}")
 
 
 # ── talent ────────────────────────────────────────────────────────────────────
@@ -334,7 +337,7 @@ class CoworkBridgeTalent(BaseTalent):
 
     def initialize(self, config: dict) -> None:
         _ensure_dirs()
-        print(f"   [CoworkBridge] Bridge initialized. Watching: {_TASKS_DIR}")
+        log.info(f"[CoworkBridge] Bridge initialized. Watching: {_TASKS_DIR}")
 
     def execute(self, command: str, context: dict) -> dict:
         _ensure_dirs()
@@ -358,14 +361,14 @@ class CoworkBridgeTalent(BaseTalent):
                 with open(task_path, "r", encoding="utf-8") as f:
                     task = json.load(f)
             except (json.JSONDecodeError, OSError) as exc:
-                print(f"   [CoworkBridge] Could not read {task_path.name}: {exc}")
+                log.error(f"[CoworkBridge] Could not read {task_path.name}: {exc}")
                 continue
 
             task_id   = task.get("task_id", task_path.stem)
             task_type = task.get("type", "unknown")
             payload   = task.get("payload", {})
 
-            print(f"   [CoworkBridge] Processing task {task_id} (type={task_type})")
+            log.info(f"[CoworkBridge] Processing task {task_id} (type={task_type})")
 
             # Skip if result already exists (duplicate delivery guard)
             result_path = _RESULTS_DIR / f"{task_id}.json"
@@ -380,7 +383,7 @@ class CoworkBridgeTalent(BaseTalent):
                     processed += 1
                     completed_ids.append(task_id)
                 except Exception as exc:
-                    print(f"   [CoworkBridge] Handler error for {task_id}: {exc}")
+                    log.error(f"[CoworkBridge] Handler error for {task_id}: {exc}")
                     _write_result(task_id, "error", None, str(exc))
                     errors += 1
                     error_ids.append(task_id)

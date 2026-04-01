@@ -20,6 +20,9 @@ import sqlite3
 from dataclasses import dataclass, field
 from typing import Optional, TYPE_CHECKING
 
+import logging
+log = logging.getLogger(__name__)
+
 if TYPE_CHECKING:
     from core.security_classifier import SecurityClassifier
 
@@ -210,7 +213,7 @@ class SecurityFilter:
         self._config = config
         self._request_times.clear()
         self._compile_input_patterns()
-        print("   [Security] Config reloaded")
+        log.info("[Security] Config reloaded")
 
     def _compile_input_patterns(self) -> None:
         """Compile all enabled input patterns into re.Pattern objects."""
@@ -223,7 +226,7 @@ class SecurityFilter:
             try:
                 compiled.append((p, re.compile(p["pattern"])))
             except re.error as e:
-                print(f"   [Security] Bad input pattern '{p.get('id', '?')}': {e}")
+                log.info(f"[Security] Bad input pattern '{p.get('id', '?')}': {e}")
         self._compiled_input = compiled
 
     def set_system_prompt_phrases(self, phrases: list[str]) -> None:
@@ -418,7 +421,7 @@ class SecurityFilter:
                 from core.security_classifier import get_classifier
                 self._classifier = get_classifier(threshold=threshold)
             except Exception as exc:
-                print(f"   [Security] Semantic classifier unavailable: {exc}")
+                log.warning(f"[Security] Semantic classifier unavailable: {exc}")
                 return False, None
         else:
             # Allow threshold to be updated via config hot-reload
@@ -486,11 +489,9 @@ class SecurityFilter:
         if len(self._recent_alerts) > 500:
             self._recent_alerts = self._recent_alerts[-500:]
 
-        print(
-            f"   [Security] {alert.control}/{alert.pattern_id} "
+        log.debug(f"[Security] {alert.control}/{alert.pattern_id} "
             f"- {alert.label} -> {alert.action_taken} | "
-            f"{alert.content[:60]!r}"
-        )
+            f"{alert.content[:60]!r}")
         self._write_audit_log(alert)
 
     def _write_audit_log(self, alert: SecurityAlert) -> None:
@@ -516,7 +517,7 @@ class SecurityFilter:
                     ),
                 )
         except Exception as e:
-            print(f"   [Security] Audit log write failed: {e}")
+            log.error(f"[Security] Audit log write failed: {e}")
 
     # ── Pre-LLM input semantic check ───────────────────────────────────────────
 

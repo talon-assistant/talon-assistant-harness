@@ -24,6 +24,9 @@ import threading
 
 from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 
+import logging
+log = logging.getLogger(__name__)
+
 # ── Window info capture ────────────────────────────────────────────────────────
 
 
@@ -118,7 +121,7 @@ def _parse_hotkey(hotkey_str: str):
         elif len(part) == 1 and part.isalnum():
             vk = ord(part.upper())
         else:
-            print(f"   [Hotkey] Unknown key: {part!r}")
+            log.info(f"[Hotkey] Unknown key: {part!r}")
     return modifiers, vk
 
 
@@ -151,7 +154,7 @@ class HotkeyListener(QObject):
 
     def start(self):
         if not self._vk:
-            print(f"   [Hotkey] Could not parse hotkey: {self._raw!r}")
+            log.error(f"[Hotkey] Could not parse hotkey: {self._raw!r}")
             return
 
         user32 = ctypes.windll.user32
@@ -170,7 +173,7 @@ class HotkeyListener(QObject):
             id_holder[0] = kernel32.GetCurrentThreadId()
             ready.set()
             if not user32.RegisterHotKey(None, hotkey_id, modifiers, vk):
-                print(f"   [Hotkey] RegisterHotKey failed for {self._raw!r} "
+                log.error(f"[Hotkey] RegisterHotKey failed for {self._raw!r} "
                       f"(may already be in use).")
                 return
             msg = ctypes.wintypes.MSG()
@@ -190,7 +193,7 @@ class HotkeyListener(QObject):
         self._listener_thread = t
         self._listener_thread_id = id_holder[0]
         self._poll_timer.start()
-        print(f"   [Hotkey] Task Assist hotkey registered: {self._raw}")
+        log.info(f"[Hotkey] Task Assist hotkey registered: {self._raw}")
 
     def stop(self):
         self._poll_timer.stop()

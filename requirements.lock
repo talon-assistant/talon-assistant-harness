@@ -1,0 +1,55 @@
+# Pinned dependency versions for reproducible installs.
+# Generated from a working Python 3.10.6 + CUDA 12 environment.
+# Install with: pip install -r requirements.lock
+#
+# Requires Python >=3.10, <3.14
+
+# Core
+PyQt6==6.10.2
+numpy==1.26.4
+requests==2.32.5
+
+# Voice / Audio
+faster-whisper==1.2.1
+edge-tts==7.2.7
+sounddevice==0.5.5
+soundfile==0.13.1
+
+# AI / Memory
+chromadb==1.5.0
+sentence-transformers==5.2.2
+
+# Talents
+phue==1.1
+ddgs==9.10.0
+PyAutoGUI==0.9.54
+pyperclip==1.11.0
+Pillow==11.3.0
+feedparser==6.0.12
+trafilatura==2.0.0
+
+# Document Ingestion
+pymupdf4llm==0.3.4
+pymupdf-layout==1.27.1
+PyMuPDF==1.27.1
+python-docx==1.2.0
+python-pptx==1.0.2
+openpyxl==3.1.5
+pandas==2.3.2
+beautifulsoup4==4.14.3
+EbookLib==0.20
+Markdown==3.10.2
+
+# Optional (recommended)
+keyring==25.7.0
+plyer==2.1.0
+
+# Optional — LoRA fine-tuning
+trl==0.24.0
+datasets==4.3.0
+
+# Optional — browser scraping
+playwright==1.58.0
+
+# Optional — scheduler
+croniter==6.2.2

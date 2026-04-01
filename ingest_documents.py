@@ -25,6 +25,9 @@ from datetime import datetime
 # ---------------------------------------------------------------------------
 import re as _re  # used by _strip_thinking below
 
+import logging
+log = logging.getLogger(__name__)
+
 # ---------------------------------------------------------------------------
 # Metadata extraction prompt
 #
@@ -95,9 +98,9 @@ class DocumentIngester:
             '.csv', '.xlsx', '.xls', '.epub'
         }
 
-        print(f"✓ Document ingester ready!")
-        print(f"  Documents directory: {self.documents_dir}")
-        print(f"  Supported types: {', '.join(self.supported_extensions)}\n")
+        log.info(f"✓ Document ingester ready!")
+        log.info(f"  Documents directory: {self.documents_dir}")
+        log.info(f"  Supported types: {', '.join(self.supported_extensions)}\n")
 
     def chunk_text(self, text, chunk_size=400, overlap=50):
         """Split text into overlapping chunks.
@@ -137,10 +140,10 @@ class DocumentIngester:
             # Sanity check: ~100 chars per page minimum
             if result and len(result.strip()) >= page_count * 100:
                 return result
-            print(f"    ⚠ pymupdf4llm returned only {len(result or '')} chars "
+            log.warning(f" ⚠ pymupdf4llm returned only {len(result or '')} chars "
                   f"for {page_count} pages — falling back to raw fitz extraction")
         except Exception as e:
-            print(f"    ⚠ pymupdf4llm failed ({e}) — falling back to raw fitz")
+            log.error(f" ⚠ pymupdf4llm failed ({e}) — falling back to raw fitz")
 
         # Fallback: raw fitz page-by-page
         try:
@@ -152,11 +155,11 @@ class DocumentIngester:
                     pages.append(text)
             doc.close()
             full_text = "\n\n".join(pages)
-            print(f"    → fitz fallback: extracted {len(full_text)} chars "
+            log.info(f" → fitz fallback: extracted {len(full_text)} chars "
                   f"from {len(pages)} pages")
             return full_text if full_text.strip() else None
         except Exception as e:
-            print(f"  ✗ fitz fallback also failed: {e}")
+            log.error(f"  ✗ fitz fallback also failed: {e}")
             return None
 
     def extract_docx(self, filepath):
@@ -166,7 +169,7 @@ class DocumentIngester:
             text = "\n".join([para.text for para in doc.paragraphs])
             return text
         except Exception as e:
-            print(f"  ✗ Error reading DOCX: {e}")
+            log.error(f"  ✗ Error reading DOCX: {e}")
             return None
 
     def extract_pptx(self, filepath):
@@ -184,7 +187,7 @@ class DocumentIngester:
                     parts.append(f"[Slide {i + 1}]\n" + "\n".join(texts))
             return "\n\n".join(parts) if parts else None
         except Exception as e:
-            print(f"  ✗ Error reading PPTX: {e}")
+            log.error(f"  ✗ Error reading PPTX: {e}")
             return None
 
     def extract_txt(self, filepath):
@@ -193,7 +196,7 @@ class DocumentIngester:
             with open(filepath, 'r', encoding='utf-8', errors='ignore') as file:
                 return file.read()
         except Exception as e:
-            print(f"  ✗ Error reading text file: {e}")
+            log.error(f"  ✗ Error reading text file: {e}")
             return None
 
     def extract_markdown(self, filepath):
@@ -205,7 +208,7 @@ class DocumentIngester:
                 soup = BeautifulSoup(html, 'html.parser')
                 return soup.get_text()
         except Exception as e:
-            print(f"  ✗ Error reading Markdown: {e}")
+            log.error(f"  ✗ Error reading Markdown: {e}")
             return None
 
     def extract_csv_excel(self, filepath):
@@ -221,7 +224,7 @@ class DocumentIngester:
             text += df.to_string()
             return text
         except Exception as e:
-            print(f"  ✗ Error reading data file: {e}")
+            log.error(f"  ✗ Error reading data file: {e}")
             return None
 
     def extract_html(self, filepath):
@@ -233,7 +236,7 @@ class DocumentIngester:
                     script.decompose()
                 return soup.get_text()
         except Exception as e:
-            print(f"  ✗ Error reading HTML: {e}")
+            log.error(f"  ✗ Error reading HTML: {e}")
             return None
 
     @staticmethod
@@ -283,7 +286,7 @@ class DocumentIngester:
             import ebooklib
             from ebooklib import epub as _epub
         except ImportError:
-            print("  ✗ ebooklib not installed — run: pip install ebooklib")
+            log.error("  ✗ ebooklib not installed — run: pip install ebooklib")
             return None
 
         try:
@@ -295,7 +298,7 @@ class DocumentIngester:
                     parts.append(text)
             return "\n\n".join(parts) if parts else None
         except Exception as e:
-            print(f"  ✗ Error reading EPUB: {e}")
+            log.error(f"  ✗ Error reading EPUB: {e}")
             return None
 
     def ingest_epub_with_vision(self, filepath, llm_client,
@@ -316,15 +319,15 @@ class DocumentIngester:
             import ebooklib
             from ebooklib import epub as _epub
         except ImportError:
-            print("  ✗ ebooklib not installed — run: pip install ebooklib")
+            log.error("  ✗ ebooklib not installed — run: pip install ebooklib")
             return 0
 
-        print(f"  Processing (EPUB+vision): {filepath.name}")
+        log.info(f"  Processing (EPUB+vision): {filepath.name}")
 
         try:
             book = _epub.read_epub(str(filepath), options={"ignore_ncx": True})
         except Exception as exc:
-            print(f"  ✗ Could not open EPUB: {exc}")
+            log.error(f"  ✗ Could not open EPUB: {exc}")
             return 0
 
         # Clear stale chunks
@@ -332,9 +335,9 @@ class DocumentIngester:
             existing = self.collection.get(where={"filename": filepath.name}, include=[])
             if existing["ids"]:
                 self.collection.delete(ids=existing["ids"])
-                print(f"    → Cleared {len(existing['ids'])} existing chunks")
+                log.info(f" → Cleared {len(existing['ids'])} existing chunks")
         except Exception as exc:
-            print(f"    ⚠ Could not clear existing chunks: {exc}")
+            log.error(f" ⚠ Could not clear existing chunks: {exc}")
 
         doc_id_base = f"doc_{filepath.stem}_{int(datetime.now().timestamp())}"
         chunks_stored = 0
@@ -347,7 +350,7 @@ class DocumentIngester:
             try:
                 chapter_text = self._html_chapter_to_text(item.get_content())
             except Exception as exc:
-                print(f"    ⚠ Chapter {ch_idx} extraction failed: {exc}")
+                log.error(f" ⚠ Chapter {ch_idx} extraction failed: {exc}")
                 continue
             if not chapter_text or len(chapter_text.split()) < 15:
                 continue
@@ -385,7 +388,7 @@ class DocumentIngester:
             if (img.media_type or "") not in _SKIP_TYPES
             and len(img.get_content()) >= 1024
         ]
-        print(f"    → {len(chapters)} chapters, "
+        log.info(f" → {len(chapters)} chapters, "
               f"{len(candidate_images)}/{len(all_images)} image(s) to describe")
 
         for img_item in candidate_images:
@@ -406,18 +409,18 @@ class DocumentIngester:
                 pil_img.save(buf, format="PNG")
                 img_b64 = base64.b64encode(buf.getvalue()).decode()
             except Exception as conv_exc:
-                print(f"    ⚠ Could not convert image to PNG: {conv_exc} — skipping")
+                log.error(f" ⚠ Could not convert image to PNG: {conv_exc} — skipping")
                 continue
 
             img_index += 1
-            print(f"    [img {img_index}/{len(candidate_images)}] Describing...",
+            log.info(f" [img {img_index}/{len(candidate_images)}] Describing...",
                   end=" ", flush=True)
 
             t_img = time.time()
             vision_desc = self._describe_page(llm_client, img_b64,
                                               img_index, filepath.name)
             elapsed_img = time.time() - t_img
-            print(f"{elapsed_img:.1f}s")
+            log.info(f"{elapsed_img:.1f}s")
 
             if not vision_desc:
                 continue
@@ -442,7 +445,7 @@ class DocumentIngester:
             chunks_stored += 1
 
         elapsed_total = time.time() - t_start
-        print(f"    ✓ Ingested {chunks_stored} chunks "
+        log.info(f" ✓ Ingested {chunks_stored} chunks "
               f"in {int(elapsed_total // 60)}m{int(elapsed_total % 60):02d}s "
               f"(epub+vision)")
         return chunks_stored
@@ -492,7 +495,7 @@ class DocumentIngester:
             try:
                 raw = llm_client.generate(prompt, max_length=512, temperature=0.0)
             except LLMError as exc:
-                print(f"      LLM unavailable for metadata p{page_num} {filename}: {exc}")
+                log.warning(f"   LLM unavailable for metadata p{page_num} {filename}: {exc}")
                 return None
             raw = _strip_thinking(raw)
             # Extract the outermost JSON object from the response
@@ -503,7 +506,7 @@ class DocumentIngester:
                 return parsed
             return None
         except Exception as exc:
-            print(f"      ⚠ Metadata extraction failed p{page_num} {filename}: {exc}")
+            log.error(f"   ⚠ Metadata extraction failed p{page_num} {filename}: {exc}")
             return None
 
     def _describe_page(self, llm_client, img_b64: str, page_num: int,
@@ -523,16 +526,16 @@ class DocumentIngester:
                     temperature=0.0,
                 )
             except LLMError as exc:
-                print(f"      LLM unavailable for vision p{page_num}: {exc}")
+                log.warning(f"   LLM unavailable for vision p{page_num}: {exc}")
                 return ""
             if not desc:
-                print(f"      Vision failed p{page_num}: empty response")
+                log.error(f"   Vision failed p{page_num}: empty response")
                 return ""
             if desc.strip().upper() == "SKIP":
                 return ""
             return desc.strip()
         except Exception as exc:
-            print(f"      ⚠ Vision exception p{page_num}: {exc}")
+            log.warning(f"   ⚠ Vision exception p{page_num}: {exc}")
             return ""
 
     def ingest_pdf_with_vision(self, filepath, llm_client,
@@ -564,11 +567,11 @@ class DocumentIngester:
         Returns:
             Number of chunks stored in ChromaDB.
         """
-        print(f"  Processing (vision): {filepath.name}")
+        log.info(f"  Processing (vision): {filepath.name}")
 
         doc = fitz.open(str(filepath))
         page_count = doc.page_count
-        print(f"    → {page_count} pages to describe")
+        log.info(f" → {page_count} pages to describe")
 
         # Remove stale chunks for this file before re-ingesting
         try:
@@ -578,9 +581,9 @@ class DocumentIngester:
             )
             if existing["ids"]:
                 self.collection.delete(ids=existing["ids"])
-                print(f"    → Cleared {len(existing['ids'])} existing chunks")
+                log.info(f" → Cleared {len(existing['ids'])} existing chunks")
         except Exception as exc:
-            print(f"    ⚠ Could not clear existing chunks: {exc}")
+            log.error(f" ⚠ Could not clear existing chunks: {exc}")
 
         doc_id_base = f"doc_{filepath.stem}_{int(datetime.now().timestamp())}"
         chunks_stored = 0
@@ -601,7 +604,7 @@ class DocumentIngester:
                 eta_str = f"  ETA ~{int(remaining // 60)}m{int(remaining % 60):02d}s"
             else:
                 eta_str = ""
-            print(f"    [{page_num:>4}/{page_count}] Describing...{eta_str}",
+            log.info(f" [{page_num:>4}/{page_count}] Describing...{eta_str}",
                   end=" ", flush=True)
 
             # Skip vision for image-heavy / art pages — fewer than 15 words of
@@ -609,7 +612,7 @@ class DocumentIngester:
             # chapter divider, or blank page.  These render as huge pixmaps and
             # flood KoboldCpp with image tokens causing stalls or timeouts.
             if len(raw_text.split()) < 15:
-                print(f"0.0s  (art/blank — vision skipped)")
+                log.info(f"0.0s  (art/blank — vision skipped)")
                 vision_desc = ""
             else:
                 # Render page to base64 PNG only when we know it has content
@@ -619,15 +622,15 @@ class DocumentIngester:
                 vision_desc = self._describe_page(llm_client, img_b64, page_num,
                                                   filepath.name)
                 page_elapsed = time.time() - t_page
-                print(f"{page_elapsed:.1f}s")
+                log.info(f"{page_elapsed:.1f}s")
 
             # Skip genuinely empty pages
             if not vision_desc and not raw_text:
-                print(f"      ↳ skipped (blank page)")
+                log.info(f"   ↳ skipped (blank page)")
                 continue
 
             if vision_desc:
-                print(f"      ↳ {vision_desc[:100].replace(chr(10), ' ')}")
+                log.info(f"   ↳ {vision_desc[:100].replace(chr(10), ' ')}")
 
             # --- Build enriched chunk text ---
             parts = []
@@ -696,7 +699,7 @@ class DocumentIngester:
 
         doc.close()
         total_elapsed = time.time() - t_start
-        print(f"    ✓ Ingested {chunks_stored} page-chunks "
+        log.info(f" ✓ Ingested {chunks_stored} page-chunks "
               f"in {int(total_elapsed // 60)}m{int(total_elapsed % 60):02d}s "
               f"(vision-enhanced)")
         return chunks_stored
@@ -724,11 +727,11 @@ class DocumentIngester:
                     filepath, llm_client, chunk_size=chunk_size, overlap=overlap,
                     md_extract=md_extract)
 
-        print(f"  Processing: {filepath.name}")
+        log.info(f"  Processing: {filepath.name}")
 
         text = self.extract_text(filepath)
         if not text or len(text.strip()) < 50:
-            print(f"    ⚠ Skipped (no content or too short)")
+            log.warning(f" ⚠ Skipped (no content or too short)")
             return 0
 
         # Remove any existing chunks for this file so re-ingest is idempotent
@@ -740,12 +743,12 @@ class DocumentIngester:
             )
             if existing["ids"]:
                 self.collection.delete(ids=existing["ids"])
-                print(f"    → Replaced {len(existing['ids'])} existing chunks")
+                log.info(f" → Replaced {len(existing['ids'])} existing chunks")
         except Exception as e:
-            print(f"    ⚠ Could not delete existing chunks: {e}")
+            log.error(f" ⚠ Could not delete existing chunks: {e}")
 
         chunks = self.chunk_text(text, chunk_size=chunk_size, overlap=overlap)
-        print(f"    → Created {len(chunks)} chunks ({chunk_size}w/{overlap}w overlap)")
+        log.info(f" → Created {len(chunks)} chunks ({chunk_size}w/{overlap}w overlap)")
 
         doc_id_base = f"doc_{filepath.stem}_{int(datetime.now().timestamp())}"
 
@@ -785,7 +788,7 @@ class DocumentIngester:
                 ids=[doc_id],
             )
 
-        print(f"    ✓ Ingested {len(chunks)} chunks")
+        log.info(f" ✓ Ingested {len(chunks)} chunks")
         return len(chunks)
 
     def ingest_directory(self, chunk_size=400, overlap=50, llm_client=None,
@@ -800,9 +803,9 @@ class DocumentIngester:
             md_extract:  If True, run LLM entity metadata extraction per chunk.
         """
         if not self.documents_dir.exists():
-            print(f"Creating documents directory: {self.documents_dir}")
+            log.info(f"Creating documents directory: {self.documents_dir}")
             self.documents_dir.mkdir(parents=True, exist_ok=True)
-            print(f"\n✓ Created! Add your documents to: {self.documents_dir}")
+            log.info(f"✓ Created! Add your documents to: {self.documents_dir}")
             return
 
         files = []
@@ -810,7 +813,7 @@ class DocumentIngester:
             files.extend(self.documents_dir.rglob(f"*{ext}"))
 
         if not files:
-            print(f"No documents found in {self.documents_dir}")
+            log.info(f"No documents found in {self.documents_dir}")
             return
 
         mode_parts = []
@@ -819,7 +822,7 @@ class DocumentIngester:
         if md_extract:
             mode_parts.append("mdextraction")
         mode_note = f" ({', '.join(mode_parts)})" if mode_parts else ""
-        print(f"Found {len(files)} files to ingest{mode_note}\n")
+        log.info(f"Found {len(files)} files to ingest{mode_note}\n")
 
         total_chunks = 0
         successful = 0
@@ -837,20 +840,20 @@ class DocumentIngester:
                 total_chunks += chunks
                 successful += 1
             except Exception as e:
-                print(f"  ✗ Failed: {e}")
+                log.error(f"  ✗ Failed: {e}")
 
-        print(f"\n{'=' * 50}")
-        print(f"✓ Ingestion complete!")
-        print(f"  Files: {successful}/{len(files)}")
-        print(f"  Chunks: {total_chunks}")
-        print(f"{'=' * 50}\n")
+        log.info(f"{'=' * 50}")
+        log.info(f"✓ Ingestion complete!")
+        log.info(f"  Files: {successful}/{len(files)}")
+        log.info(f"  Chunks: {total_chunks}")
+        log.info(f"{'=' * 50}\n")
 
     def list_documents(self):
         """List all ingested documents"""
         results = self.collection.get()
 
         if not results['ids']:
-            print("No documents in database")
+            log.info("No documents in database")
             return
 
         files = {}
@@ -864,11 +867,11 @@ class DocumentIngester:
                 }
             files[filename]['chunks'] += 1
 
-        print(f"\nDocuments in database: {len(files)}\n")
+        log.info(f"Documents in database: {len(files)}\n")
 
         for filename, info in sorted(files.items()):
-            print(f"  {filename}")
-            print(f"    Type: {info['type']}, Chunks: {info['chunks']}")
+            log.info(f"  {filename}")
+            log.info(f" Type: {info['type']}, Chunks: {info['chunks']}")
 
     def clear_documents(self):
         """Clear all documents"""
@@ -877,10 +880,13 @@ class DocumentIngester:
             name="talon_documents",
             metadata={"description": "User documents for RAG retrieval"}
         )
-        print("✓ Cleared all documents")
+        log.info("✓ Cleared all documents")
 
 
 if __name__ == "__main__":
+    from core.logging_config import setup_logging
+    setup_logging()
+
     import argparse
 
     parser = argparse.ArgumentParser(
@@ -968,18 +974,16 @@ if __name__ == "__main__":
             mode_label = "+".join(
                 m for m, f in [("vision", args.vision), ("mdextraction", args.mdextraction)] if f
             )
-            print(f"{mode_label} mode — connecting to LLM server...")
+            log.info(f"{mode_label} mode — connecting to LLM server...")
             llm_client = LLMClient(cfg)
             if not llm_client.test_connection():
-                print(
-                    "⚠  Could not reach LLM server.  "
+                log.error("⚠  Could not reach LLM server.  "
                     "Falling back to plain text extraction.\n"
                     "   Ensure your LLM server is running before using "
-                    "--vision or --mdextraction.\n"
-                )
+                    "--vision or --mdextraction.\n")
                 llm_client = None
             else:
-                print(f"✓ LLM server ready — {mode_label} ingestion enabled\n")
+                log.info(f"✓ LLM server ready — {mode_label} ingestion enabled\n")
 
         mode_parts = []
         if args.vision and llm_client:
@@ -987,7 +991,7 @@ if __name__ == "__main__":
         if args.mdextraction and llm_client:
             mode_parts.append("mdextraction")
         mode = "+".join(mode_parts) if mode_parts else "text"
-        print(f"Mode: {mode}  |  chunk-size: {args.chunk_size}  |  overlap: {args.overlap}\n")
+        log.info(f"Mode: {mode}  |  chunk-size: {args.chunk_size}  |  overlap: {args.overlap}\n")
         ingester.ingest_directory(
             chunk_size=args.chunk_size,
             overlap=args.overlap,

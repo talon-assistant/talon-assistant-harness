@@ -2,6 +2,9 @@ import base64
 import io
 from PIL import Image, ImageGrab
 
+import logging
+log = logging.getLogger(__name__)
+
 
 class VisionSystem:
     """Handles screenshot capture and image file loading for visual context."""
@@ -27,5 +30,5 @@ class VisionSystem:
                 img.save(buf, format="PNG")
                 return base64.b64encode(buf.getvalue()).decode()
         except Exception as e:
-            print(f"   [Vision] Could not load image '{path}': {e}")
+            log.error(f"[Vision] Could not load image '{path}': {e}")
             return None

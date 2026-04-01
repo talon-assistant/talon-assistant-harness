@@ -41,6 +41,9 @@ from urllib.error import URLError
 
 from core.llm_client import LLMError
 
+import logging
+log = logging.getLogger(__name__)
+
 
 _SYSTEM_PROMPT = (
     "You are Talon, a desktop AI assistant. Right now, no user is waiting for you. "
@@ -163,7 +166,7 @@ class ReflectionLoop:
 
     def start(self) -> None:
         if not self._cfg.get("enabled", False):
-            print("   [Reflection] Disabled — set personality.reflection.enabled=true to activate.")
+            log.info("[Reflection] Disabled — set personality.reflection.enabled=true to activate.")
             return
         self._stop.clear()
         self._thread = threading.Thread(
@@ -185,7 +188,7 @@ class ReflectionLoop:
             features.append("anticipation")
         feat_str = f" [{', '.join(features)}]" if features else ""
 
-        print(f"   [Reflection] Loop started — free thought every {interval}m{feat_str}.")
+        log.info(f"[Reflection] Loop started — free thought every {interval}m{feat_str}.")
 
     def stop(self) -> None:
         self._stop.set()
@@ -196,7 +199,7 @@ class ReflectionLoop:
         interval_s = self._cfg.get("interval_minutes", 60) * 60
         initial_wait = min(interval_s, 300)
         consolidation_every = self._cfg.get("consolidation_interval", 12)
-        print(f"   [Reflection] First thought in {initial_wait}s.")
+        log.info(f"[Reflection] First thought in {initial_wait}s.")
         self._stop.wait(initial_wait)
 
         while not self._stop.is_set():
@@ -209,7 +212,7 @@ class ReflectionLoop:
 
                 self._reflect()
             except Exception:
-                print(f"   [Reflection] Error:\n{traceback.format_exc()}")
+                log.error(f"[Reflection] Error:\n{traceback.format_exc()}")
 
             self._stop.wait(interval_s)
 
@@ -473,7 +476,7 @@ class ReflectionLoop:
 
         context = "\n\n".join(context_parts)
 
-        print(f"\n[Reflection] Free thought at {time_str}…")
+        log.info(f"[Reflection] Free thought at {time_str}…")
 
         # ── Phase 2: free thought ─────────────────────────────────────────────
         system = _SYSTEM_PROMPT
@@ -490,7 +493,7 @@ class ReflectionLoop:
         if needs_novelty_nudge:
             rep_pen = stagnant_rep_pen
             gen_max = min(max_tokens, stagnant_cap)
-            print(f"   [Reflection] Stagnation: rep_pen={rep_pen}, max_tokens capped at {gen_max}")
+            log.info(f"[Reflection] Stagnation: rep_pen={rep_pen}, max_tokens capped at {gen_max}")
 
         reflect_temp = self._cfg.get("temperature", 0.88)
         tool_bonus = self._cfg.get("tool_call_bonus_tokens", 512)
@@ -505,10 +508,10 @@ class ReflectionLoop:
         )
 
         if thought is None:
-            print("   [Reflection] Phase 2 skipped — system busy.")
+            log.info("[Reflection] Phase 2 skipped — system busy.")
             return
         if not thought.strip():
-            print("   [Reflection] No output generated.")
+            log.info("[Reflection] No output generated.")
             return
 
         thought = thought.strip()
@@ -525,7 +528,7 @@ class ReflectionLoop:
                 break
             call_key = f"{tag}:{(query or '').strip().lower()}"
             if call_key in _seen_tool_calls:
-                print(f"   [Reflection] Skipping duplicate tool call: [{tag}: {query or ''}]")
+                log.warning(f"[Reflection] Skipping duplicate tool call: [{tag}: {query or ''}]")
                 # Remove the duplicate tag from text to prevent infinite loop
                 last_tag_pos = thought.rfind(f"[{tag}")
                 if last_tag_pos >= 0:
@@ -537,7 +540,7 @@ class ReflectionLoop:
             tool_calls_used += 1
             tool_result = self._execute_tool_tag(tag, query)
             if tool_result:
-                print(f"   [Reflection] Tool call #{tool_calls_used}: [{tag}: {query or ''}] "
+                log.info(f"[Reflection] Tool call #{tool_calls_used}: [{tag}: {query or ''}] "
                       f"→ {len(tool_result)} chars")
                 # Inject results and let the model continue
                 gen_max += tool_bonus
@@ -556,7 +559,7 @@ class ReflectionLoop:
                 if continuation and continuation.strip():
                     thought = thought + "\n\n" + continuation.strip()
             else:
-                print(f"   [Reflection] Tool call #{tool_calls_used}: [{tag}: {query or ''}] "
+                log.info(f"[Reflection] Tool call #{tool_calls_used}: [{tag}: {query or ''}] "
                       "→ no results")
 
         # ── Phase 3: curiosity check + action + synthesis ─────────────────────
@@ -574,9 +577,9 @@ class ReflectionLoop:
 
         enrichment = ""
         if action_raw is None:
-            print("   [Reflection] Curiosity skipped — system busy.")
+            log.info("[Reflection] Curiosity skipped — system busy.")
         elif not action_raw.strip():
-            print("   [Reflection] Curiosity: (no response)")
+            log.info("[Reflection] Curiosity: (no response)")
         else:
             # Take only the first line/sentence — model sometimes appends
             # justifications that pollute the search query.
@@ -588,7 +591,7 @@ class ReflectionLoop:
                 if idx > 10:
                     action = action[:idx].strip()
             if action.lower().rstrip(".") in _NO_RESPONSES:
-                print("   [Reflection] Curiosity: no")
+                log.info("[Reflection] Curiosity: no")
             else:
                 # Let the query route naturally (may hit RAG or web).
                 # If RAG returns no useful results, fall through to web.
@@ -600,7 +603,7 @@ class ReflectionLoop:
                     action = "search for " + action[8:].strip()
                 elif low.startswith("find "):
                     action = "search for " + action[5:].strip()
-                print(f"   [Reflection] Curiosity: {action}")
+                log.info(f"[Reflection] Curiosity: {action}")
                 result = self._locked_process_command(
                     action,
                     speak_response=False,
@@ -608,10 +611,10 @@ class ReflectionLoop:
                     command_source="reflection",
                 )
                 if result is None:
-                    print("   [Reflection] Action skipped — system busy.")
+                    log.info("[Reflection] Action skipped — system busy.")
                 elif result.get("success") and result.get("response"):
                     enrichment = result["response"]
-                    print(f"   [Reflection] Got results ({len(enrichment)} chars).")
+                    log.info(f"[Reflection] Got results ({len(enrichment)} chars).")
                 else:
                     # First route returned nothing useful — try web search
                     query = action
@@ -620,7 +623,7 @@ class ReflectionLoop:
                             query = query[len(pfx):]
                             break
                     web_action = "search the web for " + query
-                    print("   [Reflection] First route empty — trying web search.")
+                    log.info("[Reflection] First route empty — trying web search.")
                     web_result = self._locked_process_command(
                         web_action,
                         speak_response=False,
@@ -629,7 +632,7 @@ class ReflectionLoop:
                     )
                     if web_result and web_result.get("success") and web_result.get("response"):
                         enrichment = web_result["response"]
-                        print(f"   [Reflection] Web fallback got results ({len(enrichment)} chars).")
+                        log.info(f"[Reflection] Web fallback got results ({len(enrichment)} chars).")
 
         # Synthesis — also respect stagnation token cap
         if enrichment:
@@ -646,7 +649,7 @@ class ReflectionLoop:
                 rep_pen=rep_pen,
             )
             if extension is None:
-                print("   [Reflection] Synthesis skipped — system busy.")
+                log.info("[Reflection] Synthesis skipped — system busy.")
             elif extension.strip():
                 thought = thought + "\n\n---\n\n" + extension.strip()
 
@@ -697,18 +700,18 @@ class ReflectionLoop:
                 temperature=0.1,
             )
             if rating_raw is None:
-                print("   [Reflection] Valence skipped — system busy.")
+                log.info("[Reflection] Valence skipped — system busy.")
             else:
                 valence_score = self._parse_valence(rating_raw.strip())
                 if valence_score is not None:
-                    print(f"   [Reflection] Valence: {valence_score}/10")
+                    log.debug(f"[Reflection] Valence: {valence_score}/10")
                 else:
-                    print(f"   [Reflection] Valence: could not parse "
+                    log.error(f"[Reflection] Valence: could not parse "
                           f"'{rating_raw.strip()}'")
 
         # ── Phase 7: store ────────────────────────────────────────────────────
         preview = thought[:120] + ("…" if len(thought) > 120 else "")
-        print(f"   [Reflection] {preview}")
+        log.info(f"[Reflection] {preview}")
 
         memory.store_free_thought(thought, valence=valence_score)
 
@@ -775,23 +778,23 @@ class ReflectionLoop:
             return
         msg = msg.strip()
         if not msg or msg.lower().rstrip(".") in ("no", "nah", "nothing", "not really"):
-            print("   [Reflection] Outreach: nothing worth sharing.")
+            log.info("[Reflection] Outreach: nothing worth sharing.")
             return
 
         # Find the Signal talent and send
         signal_talent = self._assistant._get_talent_by_name("signal_remote")
         if not signal_talent:
-            print("   [Reflection] Outreach: Signal talent not available.")
+            log.info("[Reflection] Outreach: Signal talent not available.")
             return
 
         account = signal_talent.talent_config.get("account_number", "")
         if not account:
-            print("   [Reflection] Outreach: no Signal account configured.")
+            log.info("[Reflection] Outreach: no Signal account configured.")
             return
 
         signal_talent._send_reply(account, msg)
         self._last_outreach = now
-        print(f"   [Reflection] Outreach: sent message via Signal.")
+        log.info(f"[Reflection] Outreach: sent message via Signal.")
 
     # ── consolidation (dream) ──────────────────────────────────────────────
 
@@ -806,10 +809,10 @@ class ReflectionLoop:
         memory = self._assistant.memory
         thoughts = memory.get_free_thoughts()
         if len(thoughts) < 6:
-            print("   [Dream] Too few thoughts to consolidate — skipping.")
+            log.warning("[Dream] Too few thoughts to consolidate — skipping.")
             return
 
-        print(f"   [Dream] Starting consolidation ({len(thoughts)} thoughts)...")
+        log.info(f"[Dream] Starting consolidation ({len(thoughts)} thoughts)...")
 
         # ── Phase 1: Cluster similar thoughts ────────────────────────────
         # Build a simple list of (id, timestamp, valence, preview) for the LLM
@@ -851,10 +854,10 @@ class ReflectionLoop:
         )
 
         if not analysis:
-            print("   [Dream] Analysis skipped — system busy.")
+            log.info("[Dream] Analysis skipped — system busy.")
             return
 
-        print(f"   [Dream] Analysis complete.")
+        log.info(f"[Dream] Analysis complete.")
 
         # ── Phase 3: Parse clusters and consolidate ──────────────────────
         import re as _re
@@ -981,11 +984,11 @@ class ReflectionLoop:
                         gid = int(gmatch.group(1))
                         try:
                             memory.complete_goal(gid, "abandoned")
-                            print(f"   [Dream] Abandoned stale goal #{gid}")
+                            log.info(f"[Dream] Abandoned stale goal #{gid}")
                         except Exception:
                             pass
 
-        print(f"   [Dream] Consolidation complete: "
+        log.info(f"[Dream] Consolidation complete: "
               f"{consolidated_count} clusters merged, "
               f"{deleted_count} thoughts pruned.")
 
@@ -1016,10 +1019,10 @@ class ReflectionLoop:
             if not titles:
                 return None
             topic = random.choice(titles)
-            print(f"   [Reflection] Injecting trending topic: {topic}")
+            log.info(f"[Reflection] Injecting trending topic: {topic}")
             return topic
         except Exception as exc:
-            print(f"   [Reflection] Trending topic fetch failed: {exc}")
+            log.error(f"[Reflection] Trending topic fetch failed: {exc}")
             return None
 
     # ── coherence ─────────────────────────────────────────────────────────────
@@ -1069,7 +1072,7 @@ class ReflectionLoop:
 
         if invert:
             # ── Inverted mode: penalise similarity ────────────────────
-            print(f"   [Coherence] INVERTED — checking for staleness "
+            log.debug(f"[Coherence] INVERTED — checking for staleness "
                   f"(distance={closest_dist:.2f})")
             staleness_prompt = (
                 f"Your current thought:\n{thought[:1000]}\n\n"
@@ -1095,14 +1098,14 @@ class ReflectionLoop:
                 temperature=0.3,
             )
             if result is None:
-                print("   [Coherence] Skipped — system busy.")
+                log.debug("[Coherence] Skipped — system busy.")
             elif result.strip().lower().startswith("stale"):
-                print(f"   [Coherence] STALE — thought is a rehash.")
+                log.debug(f"[Coherence] STALE — thought is a rehash.")
             else:
-                print(f"   [Coherence] New element: {result.strip()[:100]}")
+                log.debug(f"[Coherence] New element: {result.strip()[:100]}")
         else:
             # ── Normal mode: check for contradiction ──────────────────
-            print(f"   [Coherence] Found similar past thought "
+            log.debug(f"[Coherence] Found similar past thought "
                   f"(distance={closest_dist:.2f})")
             coherence_prompt = (
                 f"Your current thought:\n{thought[:1000]}\n\n"
@@ -1118,11 +1121,11 @@ class ReflectionLoop:
                 temperature=0.4,
             )
             if result is None:
-                print("   [Coherence] Skipped — system busy.")
+                log.debug("[Coherence] Skipped — system busy.")
             elif result.strip().lower().startswith("consistent"):
-                print("   [Coherence] Consistent with past thoughts.")
+                log.debug("[Coherence] Consistent with past thoughts.")
             else:
-                print(f"   [Coherence] Reconciliation: "
+                log.debug(f"[Coherence] Reconciliation: "
                       f"{result.strip()[:100]}…")
                 # Store the reconciliation as a memory
                 try:
@@ -1140,7 +1143,7 @@ class ReflectionLoop:
                         ids=[doc_id],
                     )
                 except Exception as e:
-                    print(f"   [Coherence] Could not store "
+                    log.error(f"[Coherence] Could not store "
                           f"reconciliation: {e}")
 
     # ── goal extraction ───────────────────────────────────────────────────────
@@ -1171,12 +1174,12 @@ class ReflectionLoop:
         )
 
         if raw is None:
-            print("   [Goals] Skipped — system busy.")
+            log.info("[Goals] Skipped — system busy.")
             return
 
         raw = raw.strip()
         if not raw or raw.lower() in _NO_RESPONSES:
-            print("   [Goals] No new goals.")
+            log.info("[Goals] No new goals.")
             return
 
         # Check for progress updates
@@ -1185,7 +1188,7 @@ class ReflectionLoop:
             note = match.group(2).strip()
             if any(g["id"] == goal_id for g in active_goals):
                 memory.update_goal_progress(goal_id, note)
-                print(f"   [Goals] Progress on #{goal_id}: {note[:60]}")
+                log.info(f"[Goals] Progress on #{goal_id}: {note[:60]}")
 
         # Check for new goal (skip if at cap)
         lines = raw.split("\n")
@@ -1202,15 +1205,15 @@ class ReflectionLoop:
             if len(line) < 10:
                 continue
             if len(active_goals) >= max_active:
-                print(f"   [Goals] At cap ({max_active}) — skipping: {line[:60]}")
+                log.warning(f"[Goals] At cap ({max_active}) — skipping: {line[:60]}")
                 break
             # Reject goals that are too similar to existing ones
             if not self._goal_is_novel(line, active_goals):
-                print(f"   [Goals] Too similar to existing goal — skipping: {line[:60]}")
+                log.warning(f"[Goals] Too similar to existing goal — skipping: {line[:60]}")
                 break
             memory.store_goal(line)
             active_goals.append({"id": -1, "text": line})  # bump count
-            print(f"   [Goals] Created goal #{len(active_goals)}: {line[:60]}")
+            log.info(f"[Goals] Created goal #{len(active_goals)}: {line[:60]}")
             break  # Only one new goal per cycle
 
     # ── novelty detection ────────────────────────────────────────────────────
@@ -1249,14 +1252,14 @@ class ReflectionLoop:
             threshold = self._cfg.get("novelty_threshold", 0.35)
 
             if avg_dist < threshold:
-                print(f"   [Reflection] Novelty: LOW (avg distance={avg_dist:.3f}, "
+                log.debug(f"[Reflection] Novelty: LOW (avg distance={avg_dist:.3f}, "
                       f"threshold={threshold}) — injecting diversity nudge")
                 return True
             else:
-                print(f"   [Reflection] Novelty: OK (avg distance={avg_dist:.3f})")
+                log.debug(f"[Reflection] Novelty: OK (avg distance={avg_dist:.3f})")
                 return False
         except Exception as e:
-            print(f"   [Reflection] Novelty check failed: {e}")
+            log.error(f"[Reflection] Novelty check failed: {e}")
             return False
 
     def _goal_is_novel(self, new_goal_text: str,

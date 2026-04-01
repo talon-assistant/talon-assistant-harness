@@ -18,6 +18,9 @@ import json
 import os
 from datetime import datetime
 
+import logging
+log = logging.getLogger(__name__)
+
 _PAIRS_FILE = os.path.join("data", "training_pairs.jsonl")
 _MIN_OUTPUT_LEN = 20    # skip empty / one-word error responses
 
@@ -64,7 +67,7 @@ def append_training_pair(instruction: str, output: str, source: str) -> bool:
         if _sf:
             _blocked, _alert = _sf.check_semantic(output, "insight")
             if _blocked:
-                print(f"   [Harvest] Skipped — semantic classifier flagged output ({source})")
+                log.info(f"[Harvest] Skipped — semantic classifier flagged output ({source})")
                 return False
     except Exception:
         pass  # fail open
@@ -81,5 +84,5 @@ def append_training_pair(instruction: str, output: str, source: str) -> bool:
     with open(_PAIRS_FILE, "a", encoding="utf-8") as f:
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
-    print(f"   [Harvest] Saved {source} pair: '{instruction[:60]}'")
+    log.info(f"[Harvest] Saved {source} pair: '{instruction[:60]}'")
     return True

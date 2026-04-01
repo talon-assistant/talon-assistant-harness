@@ -32,6 +32,9 @@ import warnings
 from pathlib import Path
 from typing import Optional
 
+import logging
+log = logging.getLogger(__name__)
+
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
@@ -131,7 +134,7 @@ class SecurityClassifier:
             return self._infer(text, artifact_type)
         except Exception as exc:
             if self._verbose:
-                print(f"   [SecurityClassifier] Inference error: {exc}")
+                log.error(f"[SecurityClassifier] Inference error: {exc}")
             return {
                 "label": "safe",
                 "confidence": 1.0,
@@ -171,7 +174,7 @@ class SecurityClassifier:
         except ImportError:
             self._load_error = "PyTorch not installed — classifier disabled"
             if self._verbose:
-                print(f"   [SecurityClassifier] {self._load_error}")
+                log.error(f"[SecurityClassifier] {self._load_error}")
             return
 
         # --- model file
@@ -181,7 +184,7 @@ class SecurityClassifier:
                 "run scripts/train_security_classifier.py first"
             )
             if self._verbose:
-                print(f"   [SecurityClassifier] {self._load_error}")
+                log.error(f"[SecurityClassifier] {self._load_error}")
             return
 
         # --- load checkpoint
@@ -196,7 +199,7 @@ class SecurityClassifier:
         except Exception as exc:
             self._load_error = f"Could not load checkpoint: {exc}"
             if self._verbose:
-                print(f"   [SecurityClassifier] {self._load_error}")
+                log.error(f"[SecurityClassifier] {self._load_error}")
             return
 
         # --- reconstruct model
@@ -229,7 +232,7 @@ class SecurityClassifier:
         except Exception as exc:
             self._load_error = f"State dict mismatch: {exc}"
             if self._verbose:
-                print(f"   [SecurityClassifier] {self._load_error}")
+                log.error(f"[SecurityClassifier] {self._load_error}")
             return
 
         model.eval()
@@ -242,7 +245,7 @@ class SecurityClassifier:
         except Exception as exc:
             self._load_error = f"Could not load embedder: {exc}"
             if self._verbose:
-                print(f"   [SecurityClassifier] {self._load_error}")
+                log.error(f"[SecurityClassifier] {self._load_error}")
             self._model = None
             return
 
@@ -251,10 +254,8 @@ class SecurityClassifier:
         f1_str = f", val_F1={val_f1:.3f}" if val_f1 is not None else ""
         count_str = f"{trained_on} examples, " if trained_on else ""
         if self._verbose:
-            print(
-                f"   [SecurityClassifier] Loaded ({count_str}"
-                f"threshold={self.threshold:.2f})"
-            )
+            log.info(f"[SecurityClassifier] Loaded ({count_str}"
+                f"threshold={self.threshold:.2f})")
 
     # ── Inference ─────────────────────────────────────────────────────────────
 

@@ -21,6 +21,9 @@ from pathlib import Path
 
 from talents.base import BaseTalent
 
+import logging
+log = logging.getLogger(__name__)
+
 
 class LoraTrainTalent(BaseTalent):
     name = "lora_train"
@@ -145,7 +148,7 @@ class LoraTrainTalent(BaseTalent):
         # ── 2. Stop inference server ───────────────────────────────
         was_running = bool(server_manager and server_manager.is_running())
         if was_running:
-            print("   [LoRA] Stopping inference server for training...")
+            log.info("[LoRA] Stopping inference server for training...")
             server_manager.stop()
             time.sleep(2)
 
@@ -190,14 +193,14 @@ class LoraTrainTalent(BaseTalent):
                     else:
                         adapter_hf = str(Path(output_dir) / "adapter")
                         msg += f"\nHuggingFace adapter: {adapter_hf}"
-                    print(f"   [LoRA] {msg}")
+                    log.info(f"[LoRA] {msg}")
                     if notify_cb:
                         try:
                             notify_cb("LoRA Training Complete", msg[:120])
                         except Exception:
                             pass
                 else:
-                    print(f"   [LoRA] Training failed (exit {result.returncode}).")
+                    log.error(f"[LoRA] Training failed (exit {result.returncode}).")
                     if notify_cb:
                         try:
                             notify_cb("LoRA Training Failed", "Check the console for details.")
@@ -205,16 +208,16 @@ class LoraTrainTalent(BaseTalent):
                             pass
 
             except subprocess.TimeoutExpired:
-                print("   [LoRA] Training timed out after 2 hours.")
+                log.info("[LoRA] Training timed out after 2 hours.")
             except Exception as e:
-                print(f"   [LoRA] Training error: {e}")
+                log.error(f"[LoRA] Training error: {e}")
             finally:
                 if was_running and server_manager:
-                    print("   [LoRA] Restarting inference server...")
+                    log.info("[LoRA] Restarting inference server...")
                     try:
                         server_manager.start()
                     except Exception as e:
-                        print(f"   [LoRA] Server restart failed: {e}")
+                        log.error(f"[LoRA] Server restart failed: {e}")
 
         threading.Thread(target=_train_and_notify, daemon=True).start()
 

@@ -20,6 +20,9 @@ from pathlib import Path
 
 import requests
 
+import logging
+log = logging.getLogger(__name__)
+
 
 class LLMServerManager:
     """Manages the lifecycle of a local llama-server process.
@@ -235,12 +238,12 @@ class LLMServerManager:
                 if fname.lower() in _SERVER_NAMES and not server_exe:
                     server_exe = fpath
 
-        print(f"   [LLMServer] Extracted {len(all_extracted_files)} files")
+        log.info(f"[LLMServer] Extracted {len(all_extracted_files)} files")
         # Log a handful of files for diagnostic purposes
         for fp in all_extracted_files[:15]:
-            print(f"   [LLMServer]   {fp}")
+            log.info(f"[LLMServer]   {fp}")
         if len(all_extracted_files) > 15:
-            print(f"   [LLMServer]   ... and {len(all_extracted_files) - 15} more")
+            log.info(f"[LLMServer]   ... and {len(all_extracted_files) - 15} more")
 
         if server_exe and server_exe.parent != bin_dir:
             # Files extracted into a nested folder — flatten everything up to bin_dir.
@@ -249,7 +252,7 @@ class LLMServerManager:
             while top_level.parent != bin_dir:
                 top_level = top_level.parent
 
-            print(f"   [LLMServer] Flattening {top_level.name}/ -> {bin_dir}/")
+            log.debug(f"[LLMServer] Flattening {top_level.name}/ -> {bin_dir}/")
             for item in list(top_level.rglob("*")):
                 if item.is_file():
                     dest = bin_dir / item.name
@@ -265,7 +268,7 @@ class LLMServerManager:
                 actual = bin_dir / server_exe.name
                 if actual.exists():
                     shutil.copy2(str(actual), str(renamed))
-                    print(f"   [LLMServer] Renamed {server_exe.name} -> llama-server.exe")
+                    log.debug(f"[LLMServer] Renamed {server_exe.name} -> llama-server.exe")
 
         # Also try to download CUDA runtime if available
         self._download_cudart(assets, bin_dir, progress_cb, status_cb)
@@ -352,7 +355,7 @@ class LLMServerManager:
                         if not dest.exists():
                             shutil.move(str(fpath), str(dest))
         except Exception as e:
-            print(f"   [LLMServer] CUDA runtime download failed (non-fatal): {e}")
+            log.error(f"[LLMServer] CUDA runtime download failed (non-fatal): {e}")
         finally:
             zip_path.unlink(missing_ok=True)
 
@@ -403,7 +406,7 @@ class LLMServerManager:
         if self.extra_args:
             cmd.extend(self.extra_args.split())
 
-        print(f"   [LLMServer] Starting: {' '.join(cmd)}")
+        log.info(f"[LLMServer] Starting: {' '.join(cmd)}")
 
         # Add bin_path to DLL search path for CUDA DLLs
         env = os.environ.copy()
@@ -440,7 +443,7 @@ class LLMServerManager:
             self.status = "stopped"
             return
 
-        print("   [LLMServer] Stopping server...")
+        log.info("[LLMServer] Stopping server...")
         try:
             self._process.terminate()
             try:
@@ -449,7 +452,7 @@ class LLMServerManager:
                 self._process.kill()
                 self._process.wait(timeout=3)
         except Exception as e:
-            print(f"   [LLMServer] Error stopping: {e}")
+            log.error(f"[LLMServer] Error stopping: {e}")
         finally:
             self._process = None
             self.status = "stopped"
@@ -492,7 +495,7 @@ class LLMServerManager:
                 if resp.status_code == 200:
                     data = resp.json()
                     if data.get("status") == "ok":
-                        print("   [LLMServer] Server is healthy!")
+                        log.info("[LLMServer] Server is healthy!")
                         self.status = "running"
                         if self.on_ready:
                             self.on_ready()

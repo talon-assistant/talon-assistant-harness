@@ -24,6 +24,9 @@ import json
 import sys
 from pathlib import Path
 
+import logging
+log = logging.getLogger(__name__)
+
 
 SETTINGS_PATH = Path("config/settings.json")
 BATCH = 500   # documents per ChromaDB batch
@@ -47,12 +50,12 @@ def migrate():
     chroma_path = mem_cfg.get("chroma_path", "data/chroma_db")
     embed_model = mem_cfg.get("embedding_model", "BAAI/bge-base-en-v1.5")
 
-    print("=" * 60)
-    print("Talon embedding migration")
-    print("=" * 60)
-    print(f"  chroma_path   : {chroma_path}")
-    print(f"  embed_model   : {embed_model}")
-    print()
+    log.info("=" * 60)
+    log.info("Talon embedding migration")
+    log.info("=" * 60)
+    log.info(f"  chroma_path   : {chroma_path}")
+    log.info(f"  embed_model   : {embed_model}")
+    log.debug("")
 
     import chromadb
     from core.embeddings import embed_documents
@@ -70,20 +73,20 @@ def migrate():
     ]
 
     for coll_name, coll_meta in collection_defs:
-        print(f"── {coll_name} ──")
+        log.info(f"── {coll_name} ──")
 
         try:
             old_coll = client.get_collection(coll_name)
         except Exception:
-            print("   Not found — skipping.\n")
+            log.warning("Not found — skipping.\n")
             continue
 
         total = old_coll.count()
         if total == 0:
-            print("   Empty — nothing to migrate.\n")
+            log.info("Empty — nothing to migrate.\n")
             continue
 
-        print(f"   Fetching {total} document(s)...")
+        log.info(f"Fetching {total} document(s)...")
         all_docs, all_ids, all_metas = [], [], []
         offset = 0
         while offset < total:
@@ -97,17 +100,17 @@ def migrate():
             all_metas.extend(batch["metadatas"])
             offset += BATCH
 
-        print(f"   Re-embedding {len(all_docs)} document(s) with {embed_model}...")
+        log.info(f"Re-embedding {len(all_docs)} document(s) with {embed_model}...")
         new_embeddings = embed_documents(all_docs, embed_model)
 
-        print("   Replacing collection...")
+        log.info("Replacing collection...")
         client.delete_collection(coll_name)
         new_coll = client.get_or_create_collection(
             name=coll_name,
             metadata=coll_meta,
         )
 
-        print("   Inserting with new embeddings...")
+        log.info("Inserting with new embeddings...")
         for i in range(0, len(all_docs), BATCH):
             new_coll.add(
                 embeddings=new_embeddings[i:i + BATCH],
@@ -116,13 +119,15 @@ def migrate():
                 ids=all_ids[i:i + BATCH],
             )
             done = min(i + BATCH, len(all_docs))
-            print(f"   {done}/{len(all_docs)}")
+            log.info(f"{done}/{len(all_docs)}")
 
-        print(f"   Done.\n")
+        log.info(f"Done.\n")
 
-    print("Migration complete — all collections re-embedded.")
-    print("You can now start Talon normally.")
+    log.info("Migration complete — all collections re-embedded.")
+    log.info("You can now start Talon normally.")
 
 
 if __name__ == "__main__":
+    from core.logging_config import setup_logging
+    setup_logging()
     migrate()

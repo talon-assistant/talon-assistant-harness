@@ -5,6 +5,9 @@ from talents.base import BaseTalent
 from core.llm_client import LLMError
 from phue import Bridge
 
+import logging
+log = logging.getLogger(__name__)
+
 
 class HueLightsTalent(BaseTalent):
     name = "hue_lights"
@@ -41,7 +44,7 @@ class HueLightsTalent(BaseTalent):
 
             self.color_map = hue_config.get("colors", {})
             total_lights = sum(len(lights) for lights in self.light_groups.values())
-            print(f"   Loaded {total_lights} lights")
+            log.info(f"Loaded {total_lights} lights")
             self.hue_enabled = True
 
             # Populate managed_lights in _config so the GUI shows them
@@ -53,7 +56,7 @@ class HueLightsTalent(BaseTalent):
             self._config["managed_lights"] = managed
 
         except Exception as e:
-            print(f"   Hue unavailable: {e}")
+            log.warning(f"Hue unavailable: {e}")
             self.hue_enabled = False
 
     def _load_hue_config(self):
@@ -287,9 +290,9 @@ Respond ONLY with valid JSON, no additional text."""
                 self.bridge = Bridge(new_ip)
                 self.bridge.connect()
                 self.hue_enabled = True
-                print(f"   [Hue] Reconnected to bridge at {new_ip}")
+                log.info(f"[Hue] Reconnected to bridge at {new_ip}")
             except Exception as e:
-                print(f"   [Hue] Failed to reconnect: {e}")
+                log.error(f"[Hue] Failed to reconnect: {e}")
                 self.hue_enabled = False
                 return
 
@@ -334,9 +337,9 @@ Respond ONLY with valid JSON, no additional text."""
                         all_lights[name] for name in light_names if name in all_lights
                     ]
                 total = sum(len(lg) for lg in self.light_groups.values())
-                print(f"   [Hue] Synced lights — {total} active across {len(self.light_groups)} group(s)")
+                log.info(f"[Hue] Synced lights — {total} active across {len(self.light_groups)} group(s)")
             except Exception as e:
-                print(f"   [Hue] Error rebuilding light groups: {e}")
+                log.error(f"[Hue] Error rebuilding light groups: {e}")
 
     def get_available_lights(self):
         """Return all light names the bridge knows about.
@@ -349,5 +352,5 @@ Respond ONLY with valid JSON, no additional text."""
             all_lights = self.bridge.get_light_objects('name')
             return sorted(all_lights.keys())
         except Exception as e:
-            print(f"   [Hue] Error listing lights: {e}")
+            log.error(f"[Hue] Error listing lights: {e}")
             return []

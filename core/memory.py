@@ -5,6 +5,9 @@ import json
 import time
 from datetime import datetime
 
+import logging
+log = logging.getLogger(__name__)
+
 # Disable ChromaDB's PostHog telemetry — its background thread does SSL I/O
 # that causes heap corruption / GIL crashes on Python 3.10 + PyQt6.
 os.environ.setdefault("ANONYMIZED_TELEMETRY", "false")
@@ -21,11 +24,16 @@ class MemorySystem:
     def __init__(self, db_path="data/talon_memory.db", chroma_path="data/chroma_db",
                  embedding_model="BAAI/bge-base-en-v1.5",
                  reranker_model="BAAI/bge-reranker-base"):
-        print("   [Memory] Initializing memory systems...")
+        log.info("[Memory] Initializing memory systems...")
 
         # SQLite for structured data
         self.db_path = db_path
         self.init_database()
+
+        # Enable WAL mode for better concurrent read performance
+        conn = sqlite3.connect(self.db_path)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.close()
 
         # ChromaDB client
         self.chroma_client = chromadb.PersistentClient(path=chroma_path)
@@ -77,7 +85,7 @@ class MemorySystem:
         self._reranker_model = reranker_model
 
         # Pre-warm the embedding model so first-query latency is predictable
-        print("   [Memory] Loading embedding model...")
+        log.info("[Memory] Loading embedding model...")
         _emb.embed_documents(["warmup"], embedding_model)
 
         # Document retriever — RAG pipeline over docs_collection
@@ -88,7 +96,7 @@ class MemorySystem:
         # Invalidated whenever a rule is added, deleted, or toggled.
         self._rules_exist: bool | None = None
 
-        print("   [Memory] Memory systems ready!")
+        log.info("[Memory] Memory systems ready!")
 
     def init_database(self):
         """Initialize SQLite database"""
@@ -239,7 +247,7 @@ class MemorySystem:
             metadatas=[{"type": "preference", "category": category, "timestamp": datetime.now().isoformat()}],
             ids=[doc_id]
         )
-        print(f"   [Memory] Stored preference: {preference_text}")
+        log.info(f"[Memory] Stored preference: {preference_text}")
 
     def store_soft_hint(self, hint_text: str) -> None:
         """Store a soft behavioural hint derived from session reflection shortcuts.
@@ -277,7 +285,7 @@ class MemorySystem:
                         "timestamp": datetime.now().isoformat()}],
             ids=[doc_id],
         )
-        print(f"   [Memory] Stored soft hint: {hint_text[:80]}")
+        log.info(f"[Memory] Stored soft hint: {hint_text[:80]}")
 
     def store_successful_pattern(self, command, actions, context=""):
         """Store a successful command pattern in ChromaDB"""
@@ -314,7 +322,7 @@ class MemorySystem:
             metadatas=[{"correction": correction, "timestamp": ts}],
             ids=[doc_id]
         )
-        print(f"   [Memory] Stored correction: '{prev_command}' → '{correction}'")
+        log.info(f"[Memory] Stored correction: '{prev_command}' → '{correction}'")
 
     def get_relevant_corrections(self, command: str, max_results: int = 2) -> list[dict]:
         """Return past corrections whose prev_command is semantically close to command.
@@ -341,7 +349,7 @@ class MemorySystem:
                     out.append({"prev_command": doc, "correction": meta["correction"]})
             return out
         except Exception as e:
-            print(f"   [Memory] get_relevant_corrections error: {e}")
+            log.error(f"[Memory] get_relevant_corrections error: {e}")
             return []
 
     def count_similar_corrections(self, command: str, threshold: float = 0.60) -> int:
@@ -363,7 +371,7 @@ class MemorySystem:
             distances = results["distances"][0] if results["distances"] else []
             return sum(1 for d in distances if d <= threshold)
         except Exception as e:
-            print(f"   [Memory] count_similar_corrections error: {e}")
+            log.error(f"[Memory] count_similar_corrections error: {e}")
             return 0
 
     # ── Session reflection ────────────────────────────────────────────
@@ -459,9 +467,9 @@ class MemorySystem:
                                 key=lambda x: x[1].get("timestamp", ""))
                 oldest_id = paired[0][0]
                 self.memory_collection.delete(ids=[oldest_id])
-                print(f"   [Memory] Pruned oldest session reflection ({oldest_id})")
+                log.info(f"[Memory] Pruned oldest session reflection ({oldest_id})")
         except Exception as e:
-            print(f"   [Memory] Could not prune old reflections: {e}")
+            log.error(f"[Memory] Could not prune old reflections: {e}")
 
         doc_id = f"reflect_{int(time.time() * 1000)}"
         timestamp = datetime.now().isoformat()
@@ -471,7 +479,7 @@ class MemorySystem:
             metadatas=[{"type": "session_reflection", "timestamp": timestamp}],
             ids=[doc_id],
         )
-        print(f"   [Memory] Stored session reflection ({doc_id})")
+        log.info(f"[Memory] Stored session reflection ({doc_id})")
 
     def get_last_session_reflection(self) -> str:
         """Return the most recent session reflection text, or '' if none exists."""
@@ -492,7 +500,7 @@ class MemorySystem:
             )
             return paired[0][0]
         except Exception as e:
-            print(f"   [Memory] Could not retrieve session reflection: {e}")
+            log.error(f"[Memory] Could not retrieve session reflection: {e}")
             return ""
 
     def store_free_thought(self, text: str, thought_num: int = 1,
@@ -526,7 +534,7 @@ class MemorySystem:
                 oldest_id = paired[0][0]
                 self.memory_collection.delete(ids=[oldest_id])
         except Exception as e:
-            print(f"   [Memory] Could not prune free thoughts: {e}")
+            log.error(f"[Memory] Could not prune free thoughts: {e}")
 
         ts     = datetime.now().isoformat()
         doc_id = f"freethought_{int(time.time() * 1000)}_{thought_num}"
@@ -567,7 +575,7 @@ class MemorySystem:
                 for i, m, d in paired
             ]
         except Exception as e:
-            print(f"   [Memory] Could not retrieve free thoughts: {e}")
+            log.error(f"[Memory] Could not retrieve free thoughts: {e}")
             return []
 
     def delete_free_thought(self, doc_id: str) -> None:
@@ -575,7 +583,7 @@ class MemorySystem:
         try:
             self.memory_collection.delete(ids=[doc_id])
         except Exception as e:
-            print(f"   [Memory] Could not delete free thought {doc_id}: {e}")
+            log.error(f"[Memory] Could not delete free thought {doc_id}: {e}")
 
     def clear_free_thoughts(self) -> int:
         """Delete all free thoughts. Returns count deleted."""
@@ -589,7 +597,7 @@ class MemorySystem:
                 self.memory_collection.delete(ids=ids)
             return len(ids)
         except Exception as e:
-            print(f"   [Memory] Could not clear free thoughts: {e}")
+            log.error(f"[Memory] Could not clear free thoughts: {e}")
             return 0
 
     # ── Self-initiated goals ─────────────────────────────────────────────────
@@ -607,7 +615,7 @@ class MemorySystem:
         gid = cursor.lastrowid
         conn.commit()
         conn.close()
-        print(f"   [Goals] Created goal #{gid}: {text[:80]}")
+        log.info(f"[Goals] Created goal #{gid}: {text[:80]}")
         return gid
 
     def get_active_goals(self) -> list[dict]:
@@ -650,7 +658,7 @@ class MemorySystem:
         )
         conn.commit()
         conn.close()
-        print(f"   [Goals] Goal #{goal_id} → {status}")
+        log.info(f"[Goals] Goal #{goal_id} → {status}")
 
     def get_all_goals(self) -> list[dict]:
         """Return all goals (active, completed, abandoned), newest first."""
@@ -675,7 +683,7 @@ class MemorySystem:
         cursor.execute("DELETE FROM goals WHERE id = ?", (goal_id,))
         conn.commit()
         conn.close()
-        print(f"   [Goals] Deleted goal #{goal_id}")
+        log.info(f"[Goals] Deleted goal #{goal_id}")
 
     # ── Anticipation — user behaviour patterns ────────────────────────────────
 
@@ -766,7 +774,7 @@ class MemorySystem:
                 return docs
             return []
         except Exception as e:
-            print(f"   [Memory] Document search error: {e}")
+            log.error(f"[Memory] Document search error: {e}")
             return []
 
     def get_relevant_context(self, query, max_items=3, include_documents=False):
@@ -856,7 +864,7 @@ class MemorySystem:
             ids=[chroma_id],
         )
 
-        print(f"   [Memory] Saved note #{note_id}: {content[:60]}...")
+        log.info(f"[Memory] Saved note #{note_id}: {content[:60]}...")
         return note_id
 
     def search_notes(self, query, n_results=5):
@@ -888,7 +896,7 @@ class MemorySystem:
                     })
             return notes
         except Exception as e:
-            print(f"   [Memory] Note search error: {e}")
+            log.error(f"[Memory] Note search error: {e}")
             return []
 
     def list_notes(self, limit=10):
@@ -943,9 +951,9 @@ class MemorySystem:
         try:
             self.notes_collection.delete(ids=[chroma_id])
         except Exception as e:
-            print(f"   [Memory] ChromaDB delete warning: {e}")
+            log.warning(f"[Memory] ChromaDB delete warning: {e}")
 
-        print(f"   [Memory] Deleted note #{note_id}")
+        log.info(f"[Memory] Deleted note #{note_id}")
         return True
 
     # ── Rules CRUD (behavioral rules: trigger → action) ─────────────
@@ -975,7 +983,7 @@ class MemorySystem:
         Called when the HNSW index is missing from disk (e.g. after chroma_db
         was wiped). SQLite is always the authoritative store for rules data.
         """
-        print("   [Rules] Rebuilding ChromaDB index from SQLite...")
+        log.info("[Rules] Rebuilding ChromaDB index from SQLite...")
 
         # Drop and recreate the collection
         try:
@@ -999,7 +1007,7 @@ class MemorySystem:
         conn.close()
 
         if not rows:
-            print("   [Rules] No enabled rules to restore")
+            log.info("[Rules] No enabled rules to restore")
             return
 
         for rule_id, trigger, action, timestamp, chroma_id in rows:
@@ -1015,9 +1023,9 @@ class MemorySystem:
                     ids=[chroma_id],
                 )
             except Exception as e:
-                print(f"   [Rules] Could not restore rule #{rule_id}: {e}")
+                log.error(f"[Rules] Could not restore rule #{rule_id}: {e}")
 
-        print(f"   [Rules] Restored {len(rows)} rule(s) from SQLite")
+        log.info(f"[Rules] Restored {len(rows)} rule(s) from SQLite")
 
     def add_rule(self, trigger, action, original_command=""):
         """Store a behavioral rule in SQLite + ChromaDB.
@@ -1057,7 +1065,7 @@ class MemorySystem:
         )
 
         self._rules_exist = None  # Invalidate cache
-        print(f"   [Memory] Stored rule #{rule_id}: "
+        log.debug(f"[Memory] Stored rule #{rule_id}: "
               f"'{trigger}' -> '{action}'")
         return rule_id
 
@@ -1076,7 +1084,7 @@ class MemorySystem:
         """
         # Fast-path: skip ChromaDB entirely when no enabled rules exist
         if not self._check_rules_exist():
-            print("   [Rules] Skipping — no rules stored")
+            log.warning("[Rules] Skipping — no rules stored")
             return None
 
         # Adaptive threshold: short phrases are more likely to be triggers
@@ -1093,7 +1101,7 @@ class MemorySystem:
             if not results["documents"] or not results["documents"][0]:
                 # ChromaDB empty but SQLite may have rules — try rebuild
                 if self._check_rules_exist():
-                    print("   [Rules] ChromaDB empty but SQLite has rules — rebuilding...")
+                    log.info("[Rules] ChromaDB empty but SQLite has rules — rebuilding...")
                     self._rebuild_rules_collection()
                     results = self.rules_collection.query(
                         query_embeddings=_emb.embed_queries([command], self._embed_model),
@@ -1101,17 +1109,17 @@ class MemorySystem:
                         include=["documents", "metadatas", "distances"],
                     )
                     if not results["documents"] or not results["documents"][0]:
-                        print("   [Rules] Still empty after rebuild")
+                        log.info("[Rules] Still empty after rebuild")
                         return None
                 else:
-                    print("   [Rules] No rules in database to match against")
+                    log.info("[Rules] No rules in database to match against")
                     return None
 
             closest_trigger = results["documents"][0][0]
             distance = results["distances"][0][0]
             meta = results["metadatas"][0][0]
 
-            print(f"   [Rules] Closest match: '{closest_trigger}' "
+            log.debug(f"[Rules] Closest match: '{closest_trigger}' "
                   f"(distance={distance:.3f}, threshold={threshold:.1f})")
 
             if distance <= threshold:
@@ -1133,9 +1141,9 @@ class MemorySystem:
                         "distance": distance,
                     }
                 else:
-                    print(f"   [Rules] Rule #{rule_id} matched but is disabled")
+                    log.info(f"[Rules] Rule #{rule_id} matched but is disabled")
             else:
-                print(f"   [Rules] No match — distance {distance:.3f} "
+                log.debug(f"[Rules] No match — distance {distance:.3f} "
                       f"> threshold {threshold:.1f}")
         except Exception as e:
             err = str(e)
@@ -1152,7 +1160,7 @@ class MemorySystem:
                         closest_trigger = results["documents"][0][0]
                         distance = results["distances"][0][0]
                         meta = results["metadatas"][0][0]
-                        print(f"   [Rules] Closest match (after rebuild): "
+                        log.debug(f"[Rules] Closest match (after rebuild): "
                               f"'{closest_trigger}' (distance={distance:.3f})")
                         if distance <= threshold:
                             return {
@@ -1162,9 +1170,9 @@ class MemorySystem:
                                 "distance": distance,
                             }
                 except Exception as retry_e:
-                    print(f"   [Rules] Retry after rebuild failed: {retry_e}")
+                    log.error(f"[Rules] Retry after rebuild failed: {retry_e}")
             else:
-                print(f"   [Memory] Rule match error: {e}")
+                log.error(f"[Memory] Rule match error: {e}")
         return None
 
     def list_rules(self, limit=20):
@@ -1218,10 +1226,10 @@ class MemorySystem:
         try:
             self.rules_collection.delete(ids=[chroma_id])
         except Exception as e:
-            print(f"   [Memory] ChromaDB rule delete warning: {e}")
+            log.warning(f"[Memory] ChromaDB rule delete warning: {e}")
 
         self._rules_exist = None  # Invalidate cache
-        print(f"   [Memory] Deleted rule #{rule_id}")
+        log.info(f"[Memory] Deleted rule #{rule_id}")
         return True
 
     def toggle_rule(self, rule_id, enabled):
@@ -1243,5 +1251,5 @@ class MemorySystem:
         if changed:
             self._rules_exist = None  # Invalidate cache
             state = "enabled" if enabled else "disabled"
-            print(f"   [Memory] Rule #{rule_id} {state}")
+            log.info(f"[Memory] Rule #{rule_id} {state}")
         return changed

@@ -92,8 +92,8 @@ class NewsTalent(BaseTalent):
         news_results = self._get_news(topic, max_results=max_results,
                                       provider=provider)
 
-        print(f"   -> News topic: '{topic}' via {provider}")
-        print(f"   -> Results preview: {news_results[:300]}...")
+        log.debug(f"-> News topic: '{topic}' via {provider}")
+        log.debug(f"-> Results preview: {news_results[:300]}...")
 
         # Semantic injection check before passing news content to LLM
         from core.security import get_security_filter as _gsf
@@ -123,7 +123,7 @@ class NewsTalent(BaseTalent):
         except LLMError as e:
             return {"success": False, "response": f"LLM unavailable: {e}", "actions_taken": [], "spoken": False}
 
-        print(f"   -> LLM response: {response[:200]}...")
+        log.debug(f"-> LLM response: {response[:200]}...")
 
         return {
             "success": True,
@@ -166,7 +166,7 @@ class NewsTalent(BaseTalent):
         """Get news via DuckDuckGo (free, no API key)."""
         try:
             region = self._config.get("region", "us-en")
-            print(f"   -> Fetching news from DuckDuckGo: '{topic}' "
+            log.debug(f"-> Fetching news from DuckDuckGo: '{topic}' "
                   f"(region={region}, timelimit=d)")
             with DDGS() as ddgs:
                 results = list(ddgs.news(
@@ -178,7 +178,7 @@ class NewsTalent(BaseTalent):
 
             # Fallback: if no results within the past day, widen to past week
             if not results:
-                print("   -> No results in past day, expanding to past week")
+                log.debug("-> No results in past day, expanding to past week")
                 with DDGS() as ddgs:
                     results = list(ddgs.news(
                         topic,
@@ -188,10 +188,10 @@ class NewsTalent(BaseTalent):
                     ))
 
             if not results:
-                print("   -> WARNING: DuckDuckGo news returned zero results!")
+                log.warning("-> WARNING: DuckDuckGo news returned zero results!")
                 return "No news found."
 
-            print(f"   -> Got {len(results)} news articles from DuckDuckGo")
+            log.debug(f"-> Got {len(results)} news articles from DuckDuckGo")
 
             formatted_news = ""
             for i, article in enumerate(results, 1):
@@ -208,7 +208,7 @@ class NewsTalent(BaseTalent):
             return formatted_news
 
         except Exception as e:
-            print(f"   -> ERROR in DuckDuckGo news: {e}")
+            log.error(f"-> ERROR in DuckDuckGo news: {e}")
             return f"Error fetching news: {str(e)}"
 
     # ── NewsAPI.org ────────────────────────────────────────────────
@@ -225,7 +225,7 @@ class NewsTalent(BaseTalent):
                     "Get one at https://newsapi.org/register")
 
         try:
-            print(f"   -> Fetching news from NewsAPI: '{topic}'")
+            log.debug(f"-> Fetching news from NewsAPI: '{topic}'")
 
             if topic == "general":
                 url = "https://newsapi.org/v2/top-headlines"
@@ -258,7 +258,7 @@ class NewsTalent(BaseTalent):
             if not articles:
                 return "No news found."
 
-            print(f"   -> Got {len(articles)} articles from NewsAPI")
+            log.debug(f"-> Got {len(articles)} articles from NewsAPI")
 
             formatted_news = ""
             for i, article in enumerate(articles, 1):
@@ -274,7 +274,7 @@ class NewsTalent(BaseTalent):
             return formatted_news
 
         except Exception as e:
-            print(f"   -> ERROR in NewsAPI: {e}")
+            log.error(f"-> ERROR in NewsAPI: {e}")
             return f"Error fetching news: {str(e)}"
 
     # ── GNews ─────────────────────────────────────────────────────
@@ -291,7 +291,7 @@ class NewsTalent(BaseTalent):
                     "Get one at https://gnews.io/")
 
         try:
-            print(f"   -> Fetching news from GNews: '{topic}'")
+            log.debug(f"-> Fetching news from GNews: '{topic}'")
 
             if topic == "general":
                 url = "https://gnews.io/api/v4/top-headlines"
@@ -321,7 +321,7 @@ class NewsTalent(BaseTalent):
             if not articles:
                 return "No news found."
 
-            print(f"   -> Got {len(articles)} articles from GNews")
+            log.debug(f"-> Got {len(articles)} articles from GNews")
 
             formatted_news = ""
             for i, article in enumerate(articles, 1):
@@ -337,5 +337,5 @@ class NewsTalent(BaseTalent):
             return formatted_news
 
         except Exception as e:
-            print(f"   -> ERROR in GNews: {e}")
+            log.error(f"-> ERROR in GNews: {e}")
             return f"Error fetching news: {str(e)}"

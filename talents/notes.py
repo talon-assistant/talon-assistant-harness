@@ -19,6 +19,9 @@ from talents.base import BaseTalent
 from core.llm_client import LLMError
 from core.security import wrap_external, INJECTION_DEFENSE_CLAUSE
 
+import logging
+log = logging.getLogger(__name__)
+
 
 class NotesTalent(BaseTalent):
     name = "notes"
@@ -387,6 +390,6 @@ class NotesTalent(BaseTalent):
                     if isinstance(t, str) and len(t.strip()) > 0
                 ][:5]
         except (json.JSONDecodeError, Exception) as e:
-            print(f"   [Notes] Tag generation error: {e}")
+            log.error(f"[Notes] Tag generation error: {e}")
 
         return []

@@ -29,6 +29,9 @@ from PIL import Image
 from talents.base import BaseTalent
 from core.llm_client import LLMError
 
+import logging
+log = logging.getLogger(__name__)
+
 
 class TaskAssistTalent(BaseTalent):
     """Collaborative screen-aware assistant — capture context, draft, review."""
@@ -264,12 +267,12 @@ Respond ONLY with a JSON object — no markdown, no explanation:
         plan = self._parse_plan(raw)
         if plan is None or not plan.get("steps"):
             # Fall back to quick draft if planning fails
-            print("   [TaskAssist] Plan parsing failed, falling back to quick draft.")
+            log.error("[TaskAssist] Plan parsing failed, falling back to quick draft.")
             return self._execute_quick_draft(command, context)
 
-        print(f"   [TaskAssist] Plan: '{plan.get('plan_summary', '')}'")
+        log.info(f"[TaskAssist] Plan: '{plan.get('plan_summary', '')}'")
         for i, s in enumerate(plan["steps"], 1):
-            print(f"   [TaskAssist]   {i}. {s}")
+            log.info(f"[TaskAssist]   {i}. {s}")
 
         return {
             "success": True,
@@ -334,7 +337,7 @@ Respond ONLY with a JSON object — no markdown, no explanation:
                 raw_b64 = vision.capture_screenshot()
                 screenshot_b64 = self._resize_screenshot(raw_b64)
             except Exception as e:
-                print(f"   [TaskAssist] Screenshot failed: {e}")
+                log.error(f"[TaskAssist] Screenshot failed: {e}")
         return screenshot_b64
 
     def _resize_screenshot(self, b64_png: str) -> str:

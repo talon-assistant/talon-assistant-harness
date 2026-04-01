@@ -31,6 +31,9 @@ from talents.base import BaseTalent
 from core.llm_client import LLMError
 from core.security import wrap_external, INJECTION_DEFENSE_CLAUSE
 
+import logging
+log = logging.getLogger(__name__)
+
 
 class EmailTalent(BaseTalent):
     name = "email"
@@ -823,7 +826,7 @@ class EmailTalent(BaseTalent):
         if not password:
             raise ValueError("No email password configured. Use the gear icon to set it.")
 
-        print(f"   [Email] Connecting to IMAP {server}:{port}...")
+        log.info(f"[Email] Connecting to IMAP {server}:{port}...")
         imap = imaplib.IMAP4_SSL(server, port)
 
         try:
@@ -840,7 +843,7 @@ class EmailTalent(BaseTalent):
 
         self._imap = imap
         self._connected = True
-        print(f"   [Email] IMAP connected!")
+        log.info(f"[Email] IMAP connected!")
         return imap
 
     def _disconnect(self):
@@ -878,7 +881,7 @@ class EmailTalent(BaseTalent):
                     "message_id": msg.get("Message-ID", ""),
                 })
             except Exception as e:
-                print(f"   [Email] Error fetching summary: {e}")
+                log.error(f"[Email] Error fetching summary: {e}")
                 continue
         return summaries
 
@@ -942,7 +945,7 @@ class EmailTalent(BaseTalent):
                     "message_id": msg.get("Message-ID", ""),
                 })
             except Exception as e:
-                print(f"   [Email] Error fetching email: {e}")
+                log.error(f"[Email] Error fetching email: {e}")
                 continue
         return emails
 
@@ -1036,7 +1039,7 @@ class EmailTalent(BaseTalent):
 
         for path in (attach_paths or []):
             if not os.path.isfile(path):
-                print(f"   [Email] Attachment not found, skipping: {path}")
+                log.warning(f"[Email] Attachment not found, skipping: {path}")
                 continue
             ctype, encoding = mimetypes.guess_type(path)
             if ctype is None or encoding is not None:
@@ -1049,9 +1052,9 @@ class EmailTalent(BaseTalent):
             part.add_header("Content-Disposition", "attachment",
                             filename=os.path.basename(path))
             msg.attach(part)
-            print(f"   [Email] Attached: {os.path.basename(path)}")
+            log.info(f"[Email] Attached: {os.path.basename(path)}")
 
-        print(f"   [Email] Sending via SMTP {server}:{port} to {to_addr}...")
+        log.info(f"[Email] Sending via SMTP {server}:{port} to {to_addr}...")
         with smtplib.SMTP(server, port) as smtp:
             smtp.ehlo()
             smtp.starttls()
@@ -1059,7 +1062,7 @@ class EmailTalent(BaseTalent):
             smtp.login(username, password)
             smtp.send_message(msg)
 
-        print(f"   [Email] Sent!")
+        log.info(f"[Email] Sent!")
 
     def _send_smtp_reply(self, to_addr, subject, body, reply_uid):
         """Send a reply email with proper In-Reply-To / References threading headers."""
@@ -1082,7 +1085,7 @@ class EmailTalent(BaseTalent):
             msg["References"]  = reply_uid
         msg.attach(MIMEText(body, "plain"))
 
-        print(f"   [Email] Sending reply via SMTP {server}:{port} to {to_addr}...")
+        log.info(f"[Email] Sending reply via SMTP {server}:{port} to {to_addr}...")
         with smtplib.SMTP(server, port) as smtp:
             smtp.ehlo()
             smtp.starttls()
@@ -1090,4 +1093,4 @@ class EmailTalent(BaseTalent):
             smtp.login(username, password)
             smtp.send_message(msg)
 
-        print(f"   [Email] Reply sent!")
+        log.info(f"[Email] Reply sent!")

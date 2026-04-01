@@ -6,6 +6,9 @@ from PyQt6.QtWidgets import QSystemTrayIcon, QMenu
 from PyQt6.QtGui import QIcon, QPixmap, QPainter, QColor, QFont, QAction
 from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot, QMetaObject, Qt
 
+import logging
+log = logging.getLogger(__name__)
+
 
 def _create_default_icon():
     """Create a simple 64x64 blue circle 'J' icon programmatically."""
@@ -108,7 +111,7 @@ class SystemTrayManager(QObject):
                 _ready.set()
                 if not user32.RegisterHotKey(
                         None, HOTKEY_ID, MOD_CONTROL | MOD_SHIFT, VK_J):
-                    print("[SystemTray] RegisterHotKey failed "
+                    log.error("[SystemTray] RegisterHotKey failed "
                           "(Ctrl+Shift+J may already be in use).")
                     return
                 msg = ctypes.wintypes.MSG()
@@ -129,9 +132,9 @@ class SystemTrayManager(QObject):
             self._hotkey_thread    = t
             self._hotkey_thread_id = _id_holder[0]
             self._kernel32         = kernel32
-            print("[SystemTray] Global hotkey Ctrl+Shift+J registered.")
+            log.info("[SystemTray] Global hotkey Ctrl+Shift+J registered.")
         except Exception as e:
-            print(f"[SystemTray] Global hotkey setup failed: {e}")
+            log.error(f"[SystemTray] Global hotkey setup failed: {e}")
 
     @pyqtSlot()
     def _toggle_window(self):

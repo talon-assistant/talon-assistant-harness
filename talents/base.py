@@ -8,6 +8,9 @@ from typing import Any
 
 from core.llm_client import LLMError
 
+import logging
+log = logging.getLogger(__name__)
+
 
 @dataclass
 class TalentContext:
@@ -406,7 +409,7 @@ def run_talent_isolated(talent, command: str, config: dict,
             return future.result(timeout=timeout)
     except Exception:
         tb = traceback.format_exc()
-        print(f"   [Isolation] subprocess failed:\n{tb}")
+        log.error(f"[Isolation] subprocess failed:\n{tb}")
         return {
             "success": False,
             "response": "That operation failed in the background worker.",

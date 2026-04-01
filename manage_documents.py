@@ -19,6 +19,9 @@ from pathlib import Path
 
 import chromadb
 
+import logging
+log = logging.getLogger(__name__)
+
 
 def _load_config():
     config_path = Path("config/settings.json")
@@ -71,7 +74,7 @@ def cmd_list(collection):
     """List all ingested documents with chunk counts."""
     all_ids, all_metas = _all_metadatas(collection)
     if not all_ids:
-        print("No documents ingested.")
+        log.info("No documents ingested.")
         return
 
     # Aggregate by filename
@@ -83,12 +86,12 @@ def cmd_list(collection):
         chunk_type = meta.get("type", "")
         types.setdefault(fname, set()).add(chunk_type)
 
-    print(f"\n{'Document':<60} {'Chunks':>6}  Types")
-    print("-" * 80)
+    log.info(f"{'Document':<60} {'Chunks':>6}  Types")
+    log.info("-" * 80)
     for fname in sorted(counts):
         type_str = ", ".join(sorted(types[fname]))
-        print(f"{fname:<60} {counts[fname]:>6}  {type_str}")
-    print(f"\nTotal: {len(counts)} document(s), {len(all_ids)} chunk(s)")
+        log.info(f"{fname:<60} {counts[fname]:>6}  {type_str}")
+    log.info(f"Total: {len(counts)} document(s), {len(all_ids)} chunk(s)")
 
 
 def cmd_info(collection, name: str):
@@ -105,22 +108,22 @@ def cmd_info(collection, name: str):
             if name.lower() in m.get("filename", "").lower()
         )
         if matches:
-            print(f"No exact match for '{name}'. Did you mean:")
+            log.info(f"No exact match for '{name}'. Did you mean:")
             for m in sorted(matches):
-                print(f"  {m}")
+                log.info(f"  {m}")
         else:
-            print(f"No document found matching '{name}'.")
+            log.info(f"No document found matching '{name}'.")
         return
 
-    print(f"\n{name} — {len(result['ids'])} chunk(s)\n")
+    log.info(f"{name} — {len(result['ids'])} chunk(s)\n")
     for i, (doc_id, meta, doc) in enumerate(
             zip(result["ids"], result["metadatas"], result["documents"]), 1):
         preview = doc[:80].replace("\n", " ") + ("..." if len(doc) > 80 else "")
         chunk_type = meta.get("type", "")
         chapter = meta.get("chapter", meta.get("page_number", ""))
-        print(f"  [{i:>3}] {doc_id}")
-        print(f"        type={chunk_type}  chapter/page={chapter}")
-        print(f"        {preview}\n")
+        log.info(f"  [{i:>3}] {doc_id}")
+        log.info(f"     type={chunk_type}  chapter/page={chapter}")
+        log.info(f"     {preview}\n")
 
 
 def cmd_sample(collection, name: str, n: int = 3, sequential: bool = False,
@@ -130,7 +133,7 @@ def cmd_sample(collection, name: str, n: int = 3, sequential: bool = False,
     if chunk_id:
         result = collection.get(ids=[chunk_id], include=["metadatas", "documents"])
         if not result["ids"]:
-            print(f"No chunk found with id '{chunk_id}'.")
+            log.info(f"No chunk found with id '{chunk_id}'.")
             return
         _print_chunk(1, result["ids"][0], result["metadatas"][0], result["documents"][0])
         return
@@ -147,11 +150,11 @@ def cmd_sample(collection, name: str, n: int = 3, sequential: bool = False,
             if name.lower() in m.get("filename", "").lower()
         )
         if matches:
-            print(f"No exact match for '{name}'. Did you mean:")
+            log.info(f"No exact match for '{name}'. Did you mean:")
             for m in sorted(matches):
-                print(f"  {m}")
+                log.info(f"  {m}")
         else:
-            print(f"No document found matching '{name}'.")
+            log.info(f"No document found matching '{name}'.")
         return
 
     total = len(result["ids"])
@@ -165,7 +168,7 @@ def cmd_sample(collection, name: str, n: int = 3, sequential: bool = False,
         indices = random.sample(range(total), min(n, total))
         indices.sort()  # keep them in document order even when random
 
-    print(f"\n{name} — showing {len(indices)} of {total} chunk(s)"
+    log.info(f"{name} — showing {len(indices)} of {total} chunk(s)"
           f" ({'first' if sequential else 'random'})\n")
     for rank, idx in enumerate(indices, 1):
         _print_chunk(rank, ids[idx], metas[idx], docs[idx])
@@ -177,12 +180,12 @@ def _print_chunk(rank: int, chunk_id: str, meta: dict, doc: str):
     chapter = meta.get("chapter", meta.get("page_number", ""))
     char_count = len(doc)
     sep = "─" * 72
-    print(f"{sep}")
-    print(f"  Chunk #{rank}  │  id: {chunk_id}")
-    print(f"  type={chunk_type}  chapter/page={chapter}  ({char_count} chars)")
-    print(sep)
-    print(doc)
-    print()
+    log.info(f"{sep}")
+    log.info(f"  Chunk #{rank}  │  id: {chunk_id}")
+    log.info(f"  type={chunk_type}  chapter/page={chapter}  ({char_count} chars)")
+    log.info(sep)
+    log.info(doc)
+    log.debug("")
 
 
 def cmd_remove(collection, name: str):
@@ -199,22 +202,22 @@ def cmd_remove(collection, name: str):
             if name.lower() in m.get("filename", "").lower()
         )
         if matches:
-            print(f"No exact match for '{name}'. Did you mean:")
+            log.info(f"No exact match for '{name}'. Did you mean:")
             for m in sorted(matches):
-                print(f"  {m}")
-            print("\nUse the exact filename shown above.")
+                log.info(f"  {m}")
+            log.info("Use the exact filename shown above.")
         else:
-            print(f"No document found matching '{name}'.")
+            log.info(f"No document found matching '{name}'.")
         return
 
     count = len(result["ids"])
     confirm = input(f"Remove {count} chunk(s) for '{name}'? [y/N] ").strip().lower()
     if confirm != "y":
-        print("Aborted.")
+        log.info("Aborted.")
         return
 
     collection.delete(ids=result["ids"])
-    print(f"✓ Removed {count} chunk(s) for '{name}'.")
+    log.info(f"✓ Removed {count} chunk(s) for '{name}'.")
 
 
 def cmd_clear(collection):
@@ -226,7 +229,7 @@ def cmd_clear(collection):
 
     count = len(all_ids)
     if count == 0:
-        print("Collection is already empty.")
+        log.info("Collection is already empty.")
         return
 
     confirm = input(
@@ -234,14 +237,14 @@ def cmd_clear(collection):
         f"Type 'yes' to confirm: "
     ).strip().lower()
     if confirm != "yes":
-        print("Aborted.")
+        log.info("Aborted.")
         return
 
     # Delete in batches to avoid the same SQLite variable limit on delete
     batch_size = 500
     for i in range(0, count, batch_size):
         collection.delete(ids=all_ids[i:i + batch_size])
-    print(f"✓ Cleared {count} chunk(s).")
+    log.info(f"✓ Cleared {count} chunk(s).")
 
 
 def main():
@@ -291,4 +294,6 @@ def main():
 
 
 if __name__ == "__main__":
+    from core.logging_config import setup_logging
+    setup_logging()
     main()

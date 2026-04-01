@@ -15,6 +15,9 @@ import ast
 import inspect
 from talents.base import BaseTalent
 
+import logging
+log = logging.getLogger(__name__)
+
 # Default catalog URL — can be overridden in settings
 DEFAULT_CATALOG_URL = (
     "https://raw.githubusercontent.com/talon-assistant/talent-catalog/main/catalog.json"
@@ -96,19 +99,19 @@ class MarketplaceClient:
     def _fetch_remote_catalog(self):
         """Fetch catalog JSON from the configured URL."""
         try:
-            print(f"   [Marketplace] Fetching catalog from {self.catalog_url}")
+            log.info(f"[Marketplace] Fetching catalog from {self.catalog_url}")
             bust = f"?t={int(time.time())}"
             resp = requests.get(self.catalog_url + bust, timeout=15)
             if resp.status_code == 200:
                 data = resp.json()
                 talents = data if isinstance(data, list) else data.get("talents", [])
-                print(f"   [Marketplace] Got {len(talents)} talents from catalog")
+                log.info(f"[Marketplace] Got {len(talents)} talents from catalog")
                 return talents
             else:
-                print(f"   [Marketplace] Catalog fetch returned {resp.status_code}")
+                log.info(f"[Marketplace] Catalog fetch returned {resp.status_code}")
                 return None
         except Exception as e:
-            print(f"   [Marketplace] Catalog fetch error: {e}")
+            log.error(f"[Marketplace] Catalog fetch error: {e}")
             return None
 
     def _load_local_catalog(self):
@@ -121,10 +124,10 @@ class MarketplaceClient:
                 with open(local_path, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                 talents = data if isinstance(data, list) else data.get("talents", [])
-                print(f"   [Marketplace] Loaded {len(talents)} talents from local catalog")
+                log.info(f"[Marketplace] Loaded {len(talents)} talents from local catalog")
                 return talents
         except Exception as e:
-            print(f"   [Marketplace] Local catalog error: {e}")
+            log.error(f"[Marketplace] Local catalog error: {e}")
         return None
 
     def _load_disk_cache(self, ignore_ttl=False):
@@ -147,7 +150,7 @@ class MarketplaceClient:
             with open(self._cache_path, 'w') as f:
                 json.dump({"cached_at": time.time(), "talents": talents}, f)
         except Exception as e:
-            print(f"   [Marketplace] Cache save error: {e}")
+            log.error(f"[Marketplace] Cache save error: {e}")
 
     # ── Install ────────────────────────────────────────────────────
 
@@ -173,7 +176,7 @@ class MarketplaceClient:
 
         # Download the file
         try:
-            print(f"   [Marketplace] Downloading {filename} from {download_url}")
+            log.info(f"[Marketplace] Downloading {filename} from {download_url}")
             bust = f"{'&' if '?' in download_url else '?'}t={int(time.time())}"
             resp = requests.get(download_url + bust, timeout=30)
             if resp.status_code != 200:
@@ -195,7 +198,7 @@ class MarketplaceClient:
         try:
             with open(dest_path, 'w', encoding='utf-8') as f:
                 f.write(source_code)
-            print(f"   [Marketplace] Saved to {dest_path}")
+            log.info(f"[Marketplace] Saved to {dest_path}")
             return {"success": True, "filepath": dest_path, "error": ""}
         except Exception as e:
             return {"success": False, "filepath": "",
@@ -231,7 +234,7 @@ class MarketplaceClient:
                                     and isinstance(item.value, ast.Constant)
                                     and item.value.value == talent_name):
                                 os.remove(fpath)
-                                print(f"   [Marketplace] Removed {fpath}")
+                                log.info(f"[Marketplace] Removed {fpath}")
                                 return {"success": True, "error": ""}
             except Exception:
                 continue

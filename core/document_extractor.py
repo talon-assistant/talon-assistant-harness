@@ -17,6 +17,9 @@ ingest_documents.py for the batch RAG pipeline.
 
 import os
 
+import logging
+log = logging.getLogger(__name__)
+
 MAX_CHARS = 32_000  # ~8 000 tokens — leaves ~8 000 tokens for overhead + response
                     # in a 16 384-token context. Raise if you have a larger context.
 
@@ -60,7 +63,7 @@ def extract(path: str) -> str | None:
             return _extract_epub(path)
         return None
     except Exception as e:
-        print(f"   [DocExtractor] Failed to extract '{os.path.basename(path)}': {e}")
+        log.error(f"[DocExtractor] Failed to extract '{os.path.basename(path)}': {e}")
         return None
 
 

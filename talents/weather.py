@@ -2,6 +2,9 @@ import requests
 from talents.base import BaseTalent
 from core.llm_client import LLMError
 
+import logging
+log = logging.getLogger(__name__)
+
 
 # WMO weather interpretation codes -> human descriptions
 _WMO_CODES = {
@@ -74,7 +77,7 @@ class WeatherTalent(BaseTalent):
             self._extract_arg(llm, command, "location")
             or self._config.get("default_location", "")
         )
-        print(f"   [Weather] Extracted location: {repr(location)}")
+        log.info(f"[Weather] Extracted location: {repr(location)}")
 
         time_scope = (
             self._extract_arg(
@@ -84,7 +87,7 @@ class WeatherTalent(BaseTalent):
             ) or "today"
         ).lower()
         forecast_days = self._SCOPE_DAYS.get(time_scope, 1)
-        print(f"   [Weather] Time scope: {time_scope!r}  forecast_days={forecast_days}")
+        log.info(f"[Weather] Time scope: {time_scope!r}  forecast_days={forecast_days}")
 
         provider = self._config.get("provider", "Open-Meteo")
 
@@ -112,8 +115,8 @@ class WeatherTalent(BaseTalent):
         # Format the raw data into a readable block for the LLM
         formatted = self._format_weather(weather_data, geo, provider, forecast_days)
 
-        print(f"   -> Weather data for '{geo['name']}' via {provider}:")
-        print(f"   -> {formatted[:400]}...")
+        log.debug(f"-> Weather data for '{geo['name']}' via {provider}:")
+        log.debug(f"-> {formatted[:400]}...")
         user_message = (
             f"=== CURRENT WEATHER DATA ===\n"
             f"{formatted}\n"
@@ -197,16 +200,16 @@ class WeatherTalent(BaseTalent):
                 "timezone": "auto",
                 "forecast_days": forecast_days,
             }
-            print(f"   -> Fetching Open-Meteo: lat={geo['lat']}, lon={geo['lon']}")
+            log.debug(f"-> Fetching Open-Meteo: lat={geo['lat']}, lon={geo['lon']}")
             resp = requests.get(url, params=params, timeout=10)
 
             if resp.status_code == 200:
                 return resp.json()
             else:
-                print(f"   -> Open-Meteo returned status {resp.status_code}")
+                log.debug(f"-> Open-Meteo returned status {resp.status_code}")
                 return None
         except Exception as e:
-            print(f"   -> ERROR fetching Open-Meteo: {e}")
+            log.error(f"-> ERROR fetching Open-Meteo: {e}")
             return None
 
     def _format_open_meteo(self, data, geo, forecast_days=1):
@@ -289,7 +292,7 @@ class WeatherTalent(BaseTalent):
             return formatted
 
         except (KeyError, IndexError) as e:
-            print(f"   -> Error parsing Open-Meteo data: {e}")
+            log.error(f"-> Error parsing Open-Meteo data: {e}")
             return str(data)
 
     # ── OpenWeatherMap ─────────────────────────────────────────────
@@ -302,7 +305,7 @@ class WeatherTalent(BaseTalent):
         """
         api_key = self._config.get("api_key", "")
         if not api_key:
-            print("   -> OpenWeatherMap requires an API key")
+            log.debug("-> OpenWeatherMap requires an API key")
             return None
 
         try:
@@ -314,19 +317,19 @@ class WeatherTalent(BaseTalent):
                 "appid": api_key,
                 "units": unit_param,
             }
-            print(f"   -> Fetching OpenWeatherMap: lat={geo['lat']}, lon={geo['lon']}")
+            log.debug(f"-> Fetching OpenWeatherMap: lat={geo['lat']}, lon={geo['lon']}")
             resp = requests.get(url, params=params, timeout=10)
 
             if resp.status_code == 401:
-                print("   -> OpenWeatherMap API key invalid")
+                log.debug("-> OpenWeatherMap API key invalid")
                 return None
             if resp.status_code == 200:
                 return resp.json()
             else:
-                print(f"   -> OpenWeatherMap returned status {resp.status_code}")
+                log.debug(f"-> OpenWeatherMap returned status {resp.status_code}")
                 return None
         except Exception as e:
-            print(f"   -> ERROR fetching OpenWeatherMap: {e}")
+            log.error(f"-> ERROR fetching OpenWeatherMap: {e}")
             return None
 
     def _format_owm(self, data, geo):
@@ -372,7 +375,7 @@ class WeatherTalent(BaseTalent):
             return formatted
 
         except (KeyError, IndexError) as e:
-            print(f"   -> Error parsing OWM data: {e}")
+            log.error(f"-> Error parsing OWM data: {e}")
             return str(data)
 
     # ── WeatherAPI.com ─────────────────────────────────────────────
@@ -385,7 +388,7 @@ class WeatherTalent(BaseTalent):
         """
         api_key = self._config.get("api_key", "")
         if not api_key:
-            print("   -> WeatherAPI requires an API key")
+            log.debug("-> WeatherAPI requires an API key")
             return None
 
         try:
@@ -395,19 +398,19 @@ class WeatherTalent(BaseTalent):
                 "q": f"{geo['lat']},{geo['lon']}",
                 "aqi": "no",
             }
-            print(f"   -> Fetching WeatherAPI: lat={geo['lat']}, lon={geo['lon']}")
+            log.debug(f"-> Fetching WeatherAPI: lat={geo['lat']}, lon={geo['lon']}")
             resp = requests.get(url, params=params, timeout=10)
 
             if resp.status_code == 403:
-                print("   -> WeatherAPI key invalid or expired")
+                log.debug("-> WeatherAPI key invalid or expired")
                 return None
             if resp.status_code == 200:
                 return resp.json()
             else:
-                print(f"   -> WeatherAPI returned status {resp.status_code}")
+                log.debug(f"-> WeatherAPI returned status {resp.status_code}")
                 return None
         except Exception as e:
-            print(f"   -> ERROR fetching WeatherAPI: {e}")
+            log.error(f"-> ERROR fetching WeatherAPI: {e}")
             return None
 
     def _format_weatherapi(self, data, geo):
@@ -448,7 +451,7 @@ class WeatherTalent(BaseTalent):
             return formatted
 
         except (KeyError, IndexError) as e:
-            print(f"   -> Error parsing WeatherAPI data: {e}")
+            log.error(f"-> Error parsing WeatherAPI data: {e}")
             return str(data)
 
     # ── Geocoding (shared across providers) ────────────────────────
@@ -501,7 +504,7 @@ class WeatherTalent(BaseTalent):
 
             for query in queries:
                 params = {"name": query, "count": 5, "language": "en", "format": "json"}
-                print(f"   -> Geocoding: '{query}'")
+                log.debug(f"-> Geocoding: '{query}'")
                 resp = requests.get(url, params=params, timeout=10)
 
                 if resp.status_code != 200:
@@ -529,14 +532,14 @@ class WeatherTalent(BaseTalent):
                     "lon": best["longitude"],
                     "timezone": best.get("timezone", "auto"),
                 }
-                print(f"   -> Resolved: {full_name} ({result['lat']}, {result['lon']})")
+                log.debug(f"-> Resolved: {full_name} ({result['lat']}, {result['lon']})")
                 return result
 
-            print(f"   -> All geocoding attempts failed for '{location}'")
+            log.error(f"-> All geocoding attempts failed for '{location}'")
             return None
 
         except Exception as e:
-            print(f"   -> ERROR in geocoding: {e}")
+            log.error(f"-> ERROR in geocoding: {e}")
             return None
 
     @staticmethod
@@ -555,7 +558,7 @@ class WeatherTalent(BaseTalent):
     def _geolocate_by_ip(self):
         """Fallback: get approximate location from IP address."""
         try:
-            print("   -> No location given, detecting by IP...")
+            log.debug("-> No location given, detecting by IP...")
             resp = requests.get("https://ipapi.co/json/", timeout=5)
             if resp.status_code == 200:
                 data = resp.json()
@@ -567,7 +570,7 @@ class WeatherTalent(BaseTalent):
                     "timezone": data.get("timezone", "auto"),
                 }
         except Exception as e:
-            print(f"   -> IP geolocation failed: {e}")
+            log.error(f"-> IP geolocation failed: {e}")
         return None
 
     @staticmethod

@@ -21,6 +21,9 @@ import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
 
+import logging
+log = logging.getLogger(__name__)
+
 # croniter is an optional dependency — cron tasks require it at task-creation
 # time, not at import time, so the rest of the scheduler always works.
 try:
@@ -70,9 +73,7 @@ class Scheduler:
         with self._lock:
             enabled = [t for t in self._tasks if t.get("enabled", True)]
         cron_status = "croniter available" if _HAS_CRONITER else "croniter not installed — cron tasks disabled"
-        print(
-            f"[Scheduler] Started — {len(enabled)} active task(s) ({cron_status})"
-        )
+        log.info(f"[Scheduler] Started — {len(enabled)} active task(s) ({cron_status})")
 
     def stop(self) -> None:
         """Stop the background polling thread."""
@@ -158,7 +159,7 @@ class Scheduler:
             self._tasks.append(task)
             self._save_tasks()
 
-        print(f"[Scheduler] Created task {task_id!r}: {task['label']!r} ({task_type})")
+        log.info(f"[Scheduler] Created task {task_id!r}: {task['label']!r} ({task_type})")
         return dict(task)
 
     def cancel_task(self, task_id: str) -> bool:
@@ -170,7 +171,7 @@ class Scheduler:
             if removed:
                 self._save_tasks()
         if removed:
-            print(f"[Scheduler] Cancelled task {task_id!r}")
+            log.info(f"[Scheduler] Cancelled task {task_id!r}")
         return removed
 
     def list_tasks(self) -> list[dict]:
@@ -195,7 +196,7 @@ class Scheduler:
             try:
                 self._tick()
             except Exception as exc:
-                print(f"[Scheduler] Unexpected error in tick: {exc}")
+                log.error(f"[Scheduler] Unexpected error in tick: {exc}")
             time.sleep(_POLL_INTERVAL)
 
     def _tick(self) -> None:
@@ -308,7 +309,7 @@ class Scheduler:
             output    = task.get("output", "gui")
             speak_tts = output in ("tts", "both")
             label     = task.get("label", command)
-            print(f"[Scheduler] Firing {task.get('task_type', '?')} task {task.get('id', '?')!r}: {label!r}")
+            log.info(f"[Scheduler] Firing {task.get('task_type', '?')} task {task.get('id', '?')!r}: {label!r}")
             threading.Thread(
                 target=self._run_command,
                 args=(command, speak_tts),
@@ -339,7 +340,7 @@ class Scheduler:
                 command, speak_response=(speak_tts and global_tts)
             )
         except Exception as exc:
-            print(f"[Scheduler] Error running {command!r}: {exc}")
+            log.error(f"[Scheduler] Error running {command!r}: {exc}")
 
     # ── Persistence ───────────────────────────────────────────────────────────
 
@@ -360,9 +361,9 @@ class Scheduler:
 
                 with self._lock:
                     self._tasks = tasks
-                print(f"[Scheduler] Loaded {len(tasks)} persisted task(s)")
+                log.info(f"[Scheduler] Loaded {len(tasks)} persisted task(s)")
         except (json.JSONDecodeError, OSError) as exc:
-            print(f"[Scheduler] Could not load tasks file: {exc}")
+            log.error(f"[Scheduler] Could not load tasks file: {exc}")
 
     def _save_tasks(self) -> None:
         """Persist tasks to disk. Must be called while holding self._lock."""
@@ -373,7 +374,7 @@ class Scheduler:
             with open(_TASKS_FILE, "w", encoding="utf-8") as f:
                 json.dump(persistent, f, indent=2)
         except OSError as exc:
-            print(f"[Scheduler] Could not save tasks: {exc}")
+            log.error(f"[Scheduler] Could not save tasks: {exc}")
 
     def _import_legacy(self, legacy_schedule: list[dict]) -> None:
         """Import settings.json "scheduler" entries as in-memory legacy tasks.
@@ -398,4 +399,4 @@ class Scheduler:
                 self._tasks.append(task)
                 count += 1
         if count:
-            print(f"[Scheduler] Imported {count} legacy schedule entry/entries")
+            log.info(f"[Scheduler] Imported {count} legacy schedule entry/entries")

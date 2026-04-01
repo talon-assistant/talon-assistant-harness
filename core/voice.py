@@ -10,6 +10,9 @@ import edge_tts
 import soundfile as sf
 from faster_whisper import WhisperModel
 
+import logging
+log = logging.getLogger(__name__)
+
 
 class VoiceSystem:
     """Handles speech-to-text (Whisper), text-to-speech (edge-tts), and audio I/O"""
@@ -38,27 +41,27 @@ class VoiceSystem:
 
         # Load Whisper model
         whisper_config = config["whisper"]
-        print(f"[Loading] Whisper model ({whisper_config['model_size']}) on GPU...")
+        log.info(f"[Loading] Whisper model ({whisper_config['model_size']}) on GPU...")
         try:
             self.whisper_model = WhisperModel(
                 whisper_config["model_size"],
                 device=whisper_config["preferred_device"],
                 compute_type=whisper_config["preferred_compute_type"]
             )
-            print("   Whisper loaded on GPU!")
+            log.info("Whisper loaded on GPU!")
         except Exception as e:
-            print(f"   GPU failed, falling back to CPU: {e}")
+            log.error(f"GPU failed, falling back to CPU: {e}")
             self.whisper_model = WhisperModel(
                 whisper_config["model_size"],
                 device=whisper_config["fallback_device"],
                 compute_type=whisper_config["fallback_compute_type"]
             )
-            print("   Whisper loaded on CPU!")
+            log.info("Whisper loaded on CPU!")
 
         # TTS stop event — set by stop_speaking() to interrupt playback
         self._stop_event = threading.Event()
 
-        print("   TTS ready!")
+        log.info("TTS ready!")
 
     def record_audio(self, duration):
         """Record audio for specified duration"""
@@ -91,7 +94,7 @@ class VoiceSystem:
 
         Returns True if speech completed normally, False if interrupted.
         """
-        print(f"Talon: {text}")
+        log.info(f"Talon: {text}")
 
         if not text or len(text.strip()) == 0:
             return True
@@ -148,7 +151,7 @@ class VoiceSystem:
             return True
 
         except Exception as e:
-            print(f"TTS Error: {e}")
+            log.error(f"TTS Error: {e}")
             return True
 
         finally:
@@ -160,8 +163,8 @@ class VoiceSystem:
 
     def listen_for_wake_word(self):
         """Continuously listen for wake words"""
-        print(f"Voice mode active - Listening for: {', '.join(self.wake_words)}")
-        print("(Press Ctrl+C to exit)\n")
+        log.info(f"Voice mode active - Listening for: {', '.join(self.wake_words)}")
+        log.info("(Press Ctrl+C to exit)\n")
 
         while True:
             audio = self.record_audio(self.chunk_duration)
@@ -178,10 +181,10 @@ class VoiceSystem:
                 continue
 
             if text and len(text) > 1:
-                print(f"Heard: {text}")
+                log.info(f"Heard: {text}")
 
             if any(wake_word in text for wake_word in self.wake_words):
-                print("\nWake word detected!\n")
+                log.info("Wake word detected!\n")
                 self.handle_command()
 
     def handle_command(self):

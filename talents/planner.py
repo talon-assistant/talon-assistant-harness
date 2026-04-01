@@ -18,6 +18,9 @@ import re
 from talents.base import BaseTalent
 from core.llm_client import LLMError
 
+import logging
+log = logging.getLogger(__name__)
+
 
 class PlannerTalent(BaseTalent):
     name = "planner"
@@ -112,7 +115,7 @@ If single-step:
 
         if plan is None:
             # LLM returned unparseable output — decline so normal routing handles it
-            print("   [Planner] Could not parse plan JSON, declining.")
+            log.error("[Planner] Could not parse plan JSON, declining.")
             return {
                 "success": False,
                 "response": "",
@@ -122,7 +125,7 @@ If single-step:
 
         if not plan.get("is_multi_step"):
             # LLM says this is a single-step request — decline gracefully
-            print("   [Planner] Single-step request detected, declining to normal routing.")
+            log.info("[Planner] Single-step request detected, declining to normal routing.")
             return {
                 "success": False,
                 "response": "",
@@ -141,9 +144,9 @@ If single-step:
                 "spoken": False,
             }
 
-        print(f"   [Planner] Plan: '{summary}' — {len(steps)} step(s)")
+        log.info(f"[Planner] Plan: '{summary}' — {len(steps)} step(s)")
         for i, s in enumerate(steps, 1):
-            print(f"   [Planner]   {i}. {s}")
+            log.info(f"[Planner]   {i}. {s}")
 
         # ── Step 2: Announce plan ─────────────────────────────────────────────
         intro = f"{summary}. {len(steps)} step{'s' if len(steps) != 1 else ''}."

@@ -10,6 +10,9 @@ import json
 from core import embeddings as _emb
 from core import reranker as _reranker
 
+import logging
+log = logging.getLogger(__name__)
+
 
 class DocumentRetriever:
     """Retrieve and rank document chunks from a ChromaDB collection."""
@@ -129,7 +132,7 @@ class DocumentRetriever:
 
             if not all_chunks:
                 mode = "explicit" if use_explicit else "ambient"
-                print(f"   [RAG] No chunks passed threshold "
+                log.debug(f"[RAG] No chunks passed threshold "
                       f"(mode={mode}, threshold={max_distance:.2f})")
                 return ""
 
@@ -175,10 +178,10 @@ class DocumentRetriever:
                     query, all_chunks, self._reranker_model,
                     top_k=FINAL_CAP, min_score=RERANK_MIN_SCORE,
                 )
-                print(f"   [RAG] Cross-encoder reranked {n_before}→{len(all_chunks)} chunks "
+                log.info(f"[RAG] Cross-encoder reranked {n_before}→{len(all_chunks)} chunks "
                       f"(min_score={RERANK_MIN_SCORE})")
                 if not all_chunks:
-                    print("   [RAG] All chunks below reranker threshold — skipping injection")
+                    log.warning("[RAG] All chunks below reranker threshold — skipping injection")
                     return ""
 
             # ── Phase 3: multi-hop ────────────────────────────────────────
@@ -200,16 +203,16 @@ class DocumentRetriever:
                         all_chunks = self._rrf_fuse(all_chunks, discounted)
                         all_chunks = self._jaccard_dedup(all_chunks)
                         all_chunks = all_chunks[:FINAL_CAP + 4]
-                        print(f"   [RAG] Multi-hop added {len(hop_chunks)} chunk(s) "
+                        log.info(f"[RAG] Multi-hop added {len(hop_chunks)} chunk(s) "
                               f"from entities: {unique_entities[:3]}")
 
             # ── Phase 4: format ───────────────────────────────────────────
-            print(f"   [RAG] Injecting {len(all_chunks)} unique chunk(s) "
+            log.debug(f"[RAG] Injecting {len(all_chunks)} unique chunk(s) "
                   f"(explicit={explicit}, synthesis={synthesis}, "
                   f"best_dist={all_chunks[0][2]:.3f})")
             for _fn, _txt, _d, _pg in all_chunks:
                 pg_label = f" p{_pg + 1}" if _pg is not None else ""
-                print(f"      {_d:.3f} kw={_keyword_score(_txt)}  "
+                log.info(f"   {_d:.3f} kw={_keyword_score(_txt)}  "
                       f"{_fn}{pg_label}  |  {_txt[:60].replace(chr(10), ' ')!r}")
 
             if use_explicit:
@@ -235,7 +238,7 @@ class DocumentRetriever:
             return "\n".join(lines) + "\n"
 
         except Exception as e:
-            print(f"   [RAG] Document context error: {e}")
+            log.error(f"[RAG] Document context error: {e}")
             return ""
 
     # ── Internal helpers ──────────────────────────────────────────────────

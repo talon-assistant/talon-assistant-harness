@@ -8,6 +8,9 @@ from gui.workers import CommandWorker, TTSWorker, VoiceListenWorker, EmailSendWo
 from talents.base import BaseTalent
 from core.credential_store import CredentialStore
 
+import logging
+log = logging.getLogger(__name__)
+
 
 class AssistantBridge(QObject):
     """Bridge between TalonAssistant (blocking, print-based) and Qt GUI (signal-based).
@@ -497,7 +500,7 @@ class AssistantBridge(QObject):
 
         # Refresh sidebar
         self._emit_full_talent_list()
-        print(f"   [Bridge] Uninstalled talent: {talent_name}")
+        log.info(f"[Bridge] Uninstalled talent: {talent_name}")
 
     def _emit_full_talent_list(self):
         """Re-emit talents_loaded with current full list (including has_config)."""
@@ -550,9 +553,9 @@ class AssistantBridge(QObject):
         try:
             if self.assistant and hasattr(self.assistant, '_reflect_on_session'):
                 self.assistant._reflect_on_session()
-                print("[Session] Reflection stored on exit.")
+                log.info("[Session] Reflection stored on exit.")
         except Exception as e:
-            print(f"[Session] Reflection failed on exit: {e}")
+            log.error(f"[Session] Reflection failed on exit: {e}")
 
         try:
             if self._voice_worker:

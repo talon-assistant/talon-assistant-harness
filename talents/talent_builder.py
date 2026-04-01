@@ -44,6 +44,9 @@ from pathlib import Path
 from talents.base import BaseTalent
 from core.llm_client import LLMError
 
+import logging
+log = logging.getLogger(__name__)
+
 
 # ── Module-level imports that every assembled talent gets ─────────────────────
 # All commonly needed stdlib + requests are pre-imported so the model never
@@ -172,7 +175,7 @@ class TalentBuilderTalent(BaseTalent):
                 "response": "What should the new talent do? Describe it and I'll build it.",
                 "actions_taken": [],
             }
-        print(f"   [TalentBuilder] Description: {description}")
+        log.info(f"[TalentBuilder] Description: {description}")
 
         # ── Step 2: LLM call 1 — requirements JSON ────────────────────────────
         requirements = self._extract_requirements(llm, description)
@@ -191,7 +194,7 @@ class TalentBuilderTalent(BaseTalent):
         requirements["class_name"] = self._class_name(
             requirements.get("class_name", ""), talent_name
         )
-        print(f"   [TalentBuilder] Building '{talent_name}' "
+        log.info(f"[TalentBuilder] Building '{talent_name}' "
               f"(needs_config={requirements.get('needs_config')})")
 
         # Resolve name collision by appending _2
@@ -210,7 +213,7 @@ class TalentBuilderTalent(BaseTalent):
         test_error = ""
 
         for attempt in range(1, max_attempts + 1):
-            print(f"   [TalentBuilder] Attempt {attempt}/{max_attempts}")
+            log.info(f"[TalentBuilder] Attempt {attempt}/{max_attempts}")
 
             # Generate execute body (with error context on retries)
             if attempt == 1:
@@ -218,7 +221,7 @@ class TalentBuilderTalent(BaseTalent):
             else:
                 # Refine: send the previous body + error back
                 fix_context = error or test_error
-                print(f"   [TalentBuilder] Refining — error: {fix_context}")
+                log.error(f"[TalentBuilder] Refining — error: {fix_context}")
                 execute_body = self._fix_execute_body(
                     llm, execute_body, fix_context
                 )
@@ -230,7 +233,7 @@ class TalentBuilderTalent(BaseTalent):
             # Body sanity check
             body_ok, body_err = self._validate_execute_body(execute_body)
             if not body_ok:
-                print(f"   [TalentBuilder] Body issue: {body_err}")
+                log.info(f"[TalentBuilder] Body issue: {body_err}")
                 execute_body = self._fix_execute_body(
                     llm, execute_body, body_err
                 )
@@ -240,7 +243,7 @@ class TalentBuilderTalent(BaseTalent):
             valid, error = self._validate_code(code)
 
             if not valid:
-                print(f"   [TalentBuilder] Syntax error: {error}")
+                log.error(f"[TalentBuilder] Syntax error: {error}")
                 continue
 
             # Self-test: write to temp, import, try can_handle + execute
@@ -248,10 +251,10 @@ class TalentBuilderTalent(BaseTalent):
                 code, requirements, llm, assistant
             )
             if test_ok:
-                print(f"   [TalentBuilder] Self-test passed on attempt {attempt}")
+                log.info(f"[TalentBuilder] Self-test passed on attempt {attempt}")
                 break
             else:
-                print(f"   [TalentBuilder] Self-test failed: {test_error}")
+                log.error(f"[TalentBuilder] Self-test failed: {test_error}")
                 # On last attempt, keep the code anyway — user can fix in manager
                 if attempt < max_attempts:
                     valid = True  # Code compiles, just test failed
@@ -259,7 +262,7 @@ class TalentBuilderTalent(BaseTalent):
         # ── Write to disk ───────────────────────────────────────────────────
         dest_path.parent.mkdir(parents=True, exist_ok=True)
         dest_path.write_text(code, encoding="utf-8")
-        print(f"   [TalentBuilder] Written to {dest_path}")
+        log.info(f"[TalentBuilder] Written to {dest_path}")
 
         # ── Hot-load ────────────────────────────────────────────────────────
         if valid and assistant and hasattr(assistant, "load_user_talent"):
@@ -363,9 +366,9 @@ class TalentBuilderTalent(BaseTalent):
             if m:
                 return json.loads(m.group())
         except LLMError as e:
-            print(f"   [TalentBuilder] LLM unavailable: {e}")
+            log.warning(f"[TalentBuilder] LLM unavailable: {e}")
         except Exception as e:
-            print(f"   [TalentBuilder] Requirements error: {e}")
+            log.error(f"[TalentBuilder] Requirements error: {e}")
         return None
 
     def _generate_execute_body(self, llm, requirements: dict) -> str:
@@ -400,10 +403,10 @@ class TalentBuilderTalent(BaseTalent):
             )
             return self._extract_code_block(raw)
         except LLMError as e:
-            print(f"   [TalentBuilder] LLM unavailable: {e}")
+            log.warning(f"[TalentBuilder] LLM unavailable: {e}")
             return ""
         except Exception as e:
-            print(f"   [TalentBuilder] Body gen error: {e}")
+            log.error(f"[TalentBuilder] Body gen error: {e}")
             return ""
 
     @staticmethod
@@ -551,10 +554,10 @@ class TalentBuilderTalent(BaseTalent):
             raw = llm.generate(fix_prompt, max_length=1200, temperature=0.0)
             return self._extract_code_block(raw)
         except LLMError as e:
-            print(f"   [TalentBuilder] LLM unavailable: {e}")
+            log.warning(f"[TalentBuilder] LLM unavailable: {e}")
             return body
         except Exception as e:
-            print(f"   [TalentBuilder] Fix error: {e}")
+            log.error(f"[TalentBuilder] Fix error: {e}")
             return body
 
     def _self_test(self, code: str, requirements: dict,

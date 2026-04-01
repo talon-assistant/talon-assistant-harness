@@ -15,6 +15,9 @@ keyring entries to stay within the Windows Credential Manager size limit.
 import base64
 import zlib
 
+import logging
+log = logging.getLogger(__name__)
+
 try:
     import keyring
     _HAS_KEYRING = True
@@ -37,7 +40,7 @@ class CredentialStore:
 
     def __init__(self):
         if not _HAS_KEYRING:
-            print("   [CredentialStore] WARNING: keyring not installed. "
+            log.warning("[CredentialStore] WARNING: keyring not installed. "
                   "Secrets will remain in plaintext config.")
 
     # ── Public API ────────────────────────────────────────────────
@@ -58,7 +61,7 @@ class CredentialStore:
             keyring.set_password(_SERVICE, f"{talent_name}.{field_key}", value)
             return True
         except Exception as e:
-            print(f"   [CredentialStore] Failed to store "
+            log.error(f"[CredentialStore] Failed to store "
                   f"{talent_name}.{field_key}: {e}")
             return False
 
@@ -73,7 +76,7 @@ class CredentialStore:
             value = keyring.get_password(_SERVICE, f"{talent_name}.{field_key}")
             return value or ""
         except Exception as e:
-            print(f"   [CredentialStore] Failed to read "
+            log.error(f"[CredentialStore] Failed to read "
                   f"{talent_name}.{field_key}: {e}")
             return ""
 
@@ -87,7 +90,7 @@ class CredentialStore:
         except keyring.errors.PasswordDeleteError:
             return False  # already absent
         except Exception as e:
-            print(f"   [CredentialStore] Failed to delete "
+            log.error(f"[CredentialStore] Failed to delete "
                   f"{talent_name}.{field_key}: {e}")
             return False
 
@@ -126,7 +129,7 @@ class CredentialStore:
                 keyring.set_password(_SERVICE, f"{base_key}.{i}", chunk)
             return True
         except Exception as e:
-            print(f"   [CredentialStore] Failed to store blob "
+            log.error(f"[CredentialStore] Failed to store blob "
                   f"{base_key}: {e}")
             # Clean up partial writes
             self._delete_blob_chunks(talent_name, field_key)
@@ -151,7 +154,7 @@ class CredentialStore:
             for i in range(count):
                 chunk = keyring.get_password(_SERVICE, f"{base_key}.{i}")
                 if chunk is None:
-                    print(f"   [CredentialStore] Blob chunk {i} missing "
+                    log.warning(f"[CredentialStore] Blob chunk {i} missing "
                           f"for {base_key}")
                     return ""
                 parts.append(chunk)
@@ -160,7 +163,7 @@ class CredentialStore:
             compressed = base64.b64decode(encoded)
             return zlib.decompress(compressed).decode("utf-8")
         except Exception as e:
-            print(f"   [CredentialStore] Failed to read blob "
+            log.error(f"[CredentialStore] Failed to read blob "
                   f"{base_key}: {e}")
             return ""
 
@@ -209,7 +212,7 @@ class CredentialStore:
                     keyring.delete_password("talon_email", username)
                 except Exception:
                     pass  # non-critical
-                print("   [CredentialStore] Migrated email password "
+                log.info("[CredentialStore] Migrated email password "
                       "from legacy keyring entry")
         except Exception:
             pass  # no legacy entry — nothing to do

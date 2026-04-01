@@ -21,6 +21,9 @@ from datetime import datetime, timedelta
 from talents.base import BaseTalent
 from core.llm_client import LLMError
 
+import logging
+log = logging.getLogger(__name__)
+
 # Try to import plyer for native notifications; fall back to print
 try:
     from plyer import notification as plyer_notification
@@ -184,7 +187,7 @@ class ReminderTalent(BaseTalent):
         # Human-friendly time description
         time_desc = self._format_duration(seconds)
 
-        print(f"   [Reminder] Set: '{message}' in {time_desc} (id={reminder_id})")
+        log.info(f"[Reminder] Set: '{message}' in {time_desc} (id={reminder_id})")
 
         return {
             "success": True,
@@ -207,7 +210,7 @@ class ReminderTalent(BaseTalent):
             return
 
         message = reminder.get("message", "Reminder!")
-        print(f"\n   [Reminder] FIRED: {message}")
+        log.info(f"[Reminder] FIRED: {message}")
 
         default_snooze = self._config.get("default_snooze_minutes", 5)
 
@@ -216,7 +219,7 @@ class ReminderTalent(BaseTalent):
             try:
                 self._notify_cb(reminder_id, "Talon Reminder", message, default_snooze)
             except Exception as e:
-                print(f"   [Reminder] Alert callback error: {e}")
+                log.error(f"[Reminder] Alert callback error: {e}")
                 self._plyer_fallback(message)
         else:
             # No callback available (headless / pre-bridge) — use OS toast
@@ -233,7 +236,7 @@ class ReminderTalent(BaseTalent):
                     timeout=10,
                 )
             except Exception as e:
-                print(f"   [Reminder] plyer notification error: {e}")
+                log.error(f"[Reminder] plyer notification error: {e}")
 
     # ── List reminders ─────────────────────────────────────────────
 
@@ -358,7 +361,7 @@ class ReminderTalent(BaseTalent):
         except (json.JSONDecodeError, AttributeError):
             pass
 
-        print(f"   [Reminder] LLM parse failed: {response[:200]}")
+        log.error(f"[Reminder] LLM parse failed: {response[:200]}")
         return None
 
     def _quick_parse(self, command):
@@ -443,9 +446,9 @@ class ReminderTalent(BaseTalent):
                         continue
 
                 if rearmed:
-                    print(f"   [Reminder] Re-armed {rearmed} saved reminder(s)")
+                    log.info(f"[Reminder] Re-armed {rearmed} saved reminder(s)")
         except Exception as e:
-            print(f"   [Reminder] Error loading reminders: {e}")
+            log.error(f"[Reminder] Error loading reminders: {e}")
 
     def _save_reminders(self):
         """Persist active reminders to disk (call while holding self._lock)."""
@@ -453,7 +456,7 @@ class ReminderTalent(BaseTalent):
             with open(self._REMINDERS_FILE, 'w') as f:
                 json.dump(self._reminders, f, indent=2)
         except Exception as e:
-            print(f"   [Reminder] Error saving reminders: {e}")
+            log.error(f"[Reminder] Error saving reminders: {e}")
 
     # ── Re-wire notify callback after bridge is ready ──────────────
 
@@ -511,7 +514,7 @@ class ReminderTalent(BaseTalent):
         self._active_timers[new_id] = timer
 
         time_desc = self._format_duration(seconds)
-        print(f"   [Reminder] Snoozed: '{message}' {time_desc} (id={new_id})")
+        log.info(f"[Reminder] Snoozed: '{message}' {time_desc} (id={new_id})")
 
     # ── Helpers ────────────────────────────────────────────────────
 

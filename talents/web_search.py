@@ -118,10 +118,10 @@ class WebSearchTalent(BaseTalent):
         if any(t in cmd_lower for t in self._META_COMPLAINT_TRIGGERS):
             prior = self._get_prior_query(context)
             if prior:
-                print(f"   [WebSearch] Meta-complaint detected; "
+                log.info(f"[WebSearch] Meta-complaint detected; "
                       f"recovering prior query: {prior!r}")
                 return prior
-            print("   [WebSearch] Meta-complaint with no recoverable prior query "
+            log.info("[WebSearch] Meta-complaint with no recoverable prior query "
                   "— declining to conversation.")
             return None
 
@@ -147,7 +147,7 @@ class WebSearchTalent(BaseTalent):
         if is_referential:
             prior = self._get_prior_query(context)
             if prior:
-                print(f"   [WebSearch] Referential query; "
+                log.info(f"[WebSearch] Referential query; "
                       f"using prior query: {prior!r}")
                 return prior
             # No prior query found — use the stripped text as best effort
@@ -172,8 +172,8 @@ class WebSearchTalent(BaseTalent):
                                    provider=provider)
 
         # Log what we got back for debugging
-        print(f"   -> Search query sent: '{search_query}' via {provider}")
-        print(f"   -> Results preview: {web_results[:300]}...")
+        log.debug(f"-> Search query sent: '{search_query}' via {provider}")
+        log.debug(f"-> Results preview: {web_results[:300]}...")
 
         # Semantic injection check before passing web content to LLM
         from core.security import get_security_filter as _gsf
@@ -203,7 +203,7 @@ class WebSearchTalent(BaseTalent):
         except LLMError as e:
             return {"success": False, "response": f"LLM unavailable: {e}", "actions_taken": [], "spoken": False}
 
-        print(f"   -> LLM response: {response[:200]}...")
+        log.debug(f"-> LLM response: {response[:200]}...")
 
         # Harvest as training pair — web search results are high-signal facts
         # the base model may not have known, worth learning from.
@@ -212,7 +212,7 @@ class WebSearchTalent(BaseTalent):
                 from core.training_harvester import append_training_pair
                 append_training_pair(command, response, source="web_search")
             except Exception as e:
-                print(f"   [Harvest] Failed: {e}")
+                log.error(f"[Harvest] Failed: {e}")
 
         return {
             "success": True,
@@ -255,20 +255,20 @@ class WebSearchTalent(BaseTalent):
     def _search_duckduckgo(self, query, max_results):
         """Search via DuckDuckGo (free, no API key)."""
         try:
-            print(f"   -> Searching DuckDuckGo: '{query}'")
+            log.debug(f"-> Searching DuckDuckGo: '{query}'")
             with DDGS() as ddgs:
                 results = list(ddgs.text(query, max_results=max_results))
 
             if not results:
-                print("   -> WARNING: DuckDuckGo returned zero results!")
+                log.warning("-> WARNING: DuckDuckGo returned zero results!")
                 return "No search results found."
 
-            print(f"   -> Got {len(results)} results from DuckDuckGo")
+            log.debug(f"-> Got {len(results)} results from DuckDuckGo")
             return self._format_results(results,
                                         title_key="title", body_key="body",
                                         url_key="href")
         except Exception as e:
-            print(f"   -> ERROR in DuckDuckGo search: {e}")
+            log.error(f"-> ERROR in DuckDuckGo search: {e}")
             return f"Error searching web: {str(e)}"
 
     # ── Google Custom Search ──────────────────────────────────────
@@ -288,7 +288,7 @@ class WebSearchTalent(BaseTalent):
         key, cx = api_key.split(":", 1)
 
         try:
-            print(f"   -> Searching Google CSE: '{query}'")
+            log.debug(f"-> Searching Google CSE: '{query}'")
             url = "https://www.googleapis.com/customsearch/v1"
             params = {"key": key, "cx": cx, "q": query, "num": min(max_results, 10)}
             resp = requests.get(url, params=params, timeout=15)
@@ -303,7 +303,7 @@ class WebSearchTalent(BaseTalent):
             if not items:
                 return "No search results found."
 
-            print(f"   -> Got {len(items)} results from Google")
+            log.debug(f"-> Got {len(items)} results from Google")
             formatted = ""
             for i, item in enumerate(items, 1):
                 formatted += f"Result {i}:\n"
@@ -313,7 +313,7 @@ class WebSearchTalent(BaseTalent):
             return formatted
 
         except Exception as e:
-            print(f"   -> ERROR in Google search: {e}")
+            log.error(f"-> ERROR in Google search: {e}")
             return f"Error searching Google: {str(e)}"
 
     # ── Bing Web Search ───────────────────────────────────────────
@@ -329,7 +329,7 @@ class WebSearchTalent(BaseTalent):
                     "Get one at https://www.microsoft.com/en-us/bing/apis/bing-web-search-api")
 
         try:
-            print(f"   -> Searching Bing: '{query}'")
+            log.debug(f"-> Searching Bing: '{query}'")
             url = "https://api.bing.microsoft.com/v7.0/search"
             headers = {"Ocp-Apim-Subscription-Key": api_key}
             params = {"q": query, "count": max_results, "mkt": "en-US"}
@@ -345,7 +345,7 @@ class WebSearchTalent(BaseTalent):
             if not pages:
                 return "No search results found."
 
-            print(f"   -> Got {len(pages)} results from Bing")
+            log.debug(f"-> Got {len(pages)} results from Bing")
             formatted = ""
             for i, page in enumerate(pages, 1):
                 formatted += f"Result {i}:\n"
@@ -355,7 +355,7 @@ class WebSearchTalent(BaseTalent):
             return formatted
 
         except Exception as e:
-            print(f"   -> ERROR in Bing search: {e}")
+            log.error(f"-> ERROR in Bing search: {e}")
             return f"Error searching Bing: {str(e)}"
 
     # ── SearXNG (self-hosted) ─────────────────────────────────────
@@ -375,7 +375,7 @@ class WebSearchTalent(BaseTalent):
         api_key = self._config.get("api_key", "")
 
         try:
-            print(f"   -> Searching SearXNG at {endpoint}: '{query}'")
+            log.debug(f"-> Searching SearXNG at {endpoint}: '{query}'")
             url = f"{endpoint}/search"
             params = {"q": query, "format": "json", "number_of_results": max_results}
             headers = {}
@@ -391,7 +391,7 @@ class WebSearchTalent(BaseTalent):
             if not results:
                 return "No search results found."
 
-            print(f"   -> Got {len(results)} results from SearXNG")
+            log.debug(f"-> Got {len(results)} results from SearXNG")
             formatted = ""
             for i, r in enumerate(results[:max_results], 1):
                 formatted += f"Result {i}:\n"
@@ -401,7 +401,7 @@ class WebSearchTalent(BaseTalent):
             return formatted
 
         except Exception as e:
-            print(f"   -> ERROR in SearXNG search: {e}")
+            log.error(f"-> ERROR in SearXNG search: {e}")
             return f"Error searching SearXNG: {str(e)}"
 
     # ── Helpers ────────────────────────────────────────────────────

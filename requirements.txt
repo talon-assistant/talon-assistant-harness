@@ -1,52 +1,60 @@
+# Talon Assistant — Python dependencies
+# Requires Python >=3.10, <3.14
+#
+# For reproducible installs, use requirements.lock instead.
+
 # Core
-PyQt6
-numpy
-requests
+PyQt6>=6.5
+numpy>=1.24
+requests>=2.28
 
 # Voice / Audio
-faster-whisper
-edge-tts
-sounddevice
-soundfile
+faster-whisper>=1.0
+edge-tts>=6.0
+sounddevice>=0.4
+soundfile>=0.12
 
 # AI / Memory
-chromadb>=0.6.0
-sentence-transformers
+chromadb>=1.0
+sentence-transformers>=2.2
 
 # Talents
-phue
-ddgs
-pyautogui
-pyperclip
-pynput
-Pillow
-feedparser
-trafilatura
+phue>=1.1
+ddgs>=6.0
+pyautogui>=0.9
+pyperclip>=1.8
+Pillow>=10.0
+feedparser>=6.0
+trafilatura>=1.6
 
 # Document Ingestion
-pymupdf4llm
+pymupdf4llm>=0.3
 pymupdf_layout
-python-docx
-python-pptx
-openpyxl
-pandas
-beautifulsoup4
-ebooklib
-Markdown
+python-docx>=1.0
+python-pptx>=0.6
+openpyxl>=3.1
+pandas>=2.0
+beautifulsoup4>=4.12
+ebooklib>=0.18
+Markdown>=3.4
 
 # Optional (recommended)
-keyring
-plyer
+keyring>=24.0
+plyer>=2.1
 
 # Optional — LoRA fine-tuning (talent: lora_train)
 # unsloth requires a platform-specific install — see https://github.com/unslothai/unsloth
 # Windows + CUDA 12:  pip install "unsloth[cu124-torch260] @ git+https://github.com/unslothai/unsloth.git"
 # Linux / WSL2:       pip install unsloth
-trl
-datasets
+trl>=0.12
+datasets>=2.14
 
 # Optional — Cowork Bridge browser_fetch (authenticated page scraping)
 playwright>=1.40.0
 
 # Optional — scheduler talent cron support
-croniter
+croniter>=1.3
+
+# Dev / Testing
+# pytest>=7.0
+# pytest-qt>=4.2

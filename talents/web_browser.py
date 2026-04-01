@@ -14,6 +14,9 @@ import os
 from talents.base import BaseTalent
 from core.llm_client import LLMError
 
+import logging
+log = logging.getLogger(__name__)
+
 # ── constants ────────────────────────────────────────────────────────────────
 
 MAX_CHARS = 24_000   # ~6 000 tokens — leaves headroom for prompt + response
@@ -170,7 +173,7 @@ class WebBrowserTalent(BaseTalent):
                     continue
                 # If only one URL, use it. If multiple, ask the LLM to pick.
                 if len(urls) == 1:
-                    print(f"   [WebBrowser] URL from buffer: {urls[0]}")
+                    log.info(f"[WebBrowser] URL from buffer: {urls[0]}")
                     return _normalise_url(urls[0])
                 pick = self._extract_arg(
                     llm,
@@ -179,7 +182,7 @@ class WebBrowserTalent(BaseTalent):
                     max_length=120,
                 )
                 if pick and pick.upper() != "NONE" and pick.startswith("http"):
-                    print(f"   [WebBrowser] URL from buffer (LLM pick): {pick}")
+                    log.info(f"[WebBrowser] URL from buffer (LLM pick): {pick}")
                     return _normalise_url(pick)
                 # Fall through to LLM extraction
 
@@ -218,7 +221,7 @@ class WebBrowserTalent(BaseTalent):
             if newest_ts is not None:
                 age_h = (_time.time() - newest_ts) / 3600
                 if age_h > _RSS_MAX_AGE_HOURS:
-                    print(f"   [WebBrowser] RSS stale ({age_h:.0f}h old) — skipping, "
+                    log.warning(f"[WebBrowser] RSS stale ({age_h:.0f}h old) — skipping, "
                           f"falling back to direct fetch")
                     return None
 
@@ -235,10 +238,10 @@ class WebBrowserTalent(BaseTalent):
                         lines.append(f"  {summary}")
             return "\n".join(lines)
         except ImportError:
-            print("   [WebBrowser] feedparser not installed — skipping RSS")
+            log.warning("[WebBrowser] feedparser not installed — skipping RSS")
             return None
         except Exception as e:
-            print(f"   [WebBrowser] RSS fetch error: {e}")
+            log.error(f"[WebBrowser] RSS fetch error: {e}")
             return None
 
     def _fetch_page(self, url: str) -> str | None:
@@ -249,7 +252,7 @@ class WebBrowserTalent(BaseTalent):
             resp.raise_for_status()
             html = resp.text
         except Exception as e:
-            print(f"   [WebBrowser] HTTP fetch error: {e}")
+            log.error(f"[WebBrowser] HTTP fetch error: {e}")
             return None
 
         # trafilatura — best for article extraction
@@ -266,7 +269,7 @@ class WebBrowserTalent(BaseTalent):
         except ImportError:
             pass
         except Exception as e:
-            print(f"   [WebBrowser] trafilatura error: {e}")
+            log.error(f"[WebBrowser] trafilatura error: {e}")
 
         # BeautifulSoup fallback
         try:
@@ -280,7 +283,7 @@ class WebBrowserTalent(BaseTalent):
             if len(text.split()) > 20:
                 return text
         except Exception as e:
-            print(f"   [WebBrowser] BS4 error: {e}")
+            log.error(f"[WebBrowser] BS4 error: {e}")
 
         return None
 
@@ -297,7 +300,7 @@ class WebBrowserTalent(BaseTalent):
             return {"response": "", "talent": self.name, "success": False}
 
         domain = _domain_from_url(url)
-        print(f"   [WebBrowser] Target: {url}  (domain={domain})")
+        log.info(f"[WebBrowser] Target: {url}  (domain={domain})")
 
         # ── Step 2: fetch ─────────────────────────────────────────────────────
         content      = None
@@ -329,7 +332,7 @@ class WebBrowserTalent(BaseTalent):
         # Truncate
         if len(content) > MAX_CHARS:
             content = content[:MAX_CHARS] + f"\n\n[Content truncated at {MAX_CHARS} chars]"
-        print(f"   [WebBrowser] Got {len(content):,} chars via {source_label}")
+        log.info(f"[WebBrowser] Got {len(content):,} chars via {source_label}")
 
         # ── Step 3: summarise / answer ────────────────────────────────────────
         # If command is "open [browser] and go to X", reframe as a content request

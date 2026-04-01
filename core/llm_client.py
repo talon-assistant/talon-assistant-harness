@@ -13,6 +13,9 @@ import requests
 import json
 from urllib.parse import urlparse
 
+import logging
+log = logging.getLogger(__name__)
+
 
 class LLMError(Exception):
     """Raised when an LLM generation request fails."""
@@ -58,7 +61,7 @@ class LLMClient:
             else:
                 return self._test_koboldcpp()
         except Exception as e:
-            print(f"   Warning: {e}")
+            log.warning(f"Warning: {e}")
             return False
 
     def _test_koboldcpp(self):
@@ -77,10 +80,10 @@ class LLMClient:
             timeout=10
         )
         if test_response.status_code == 200:
-            print("   KoboldCpp connected!")
+            log.info("KoboldCpp connected!")
             return True
         else:
-            print(f"   Warning: Status {test_response.status_code}")
+            log.warning(f"Warning: Status {test_response.status_code}")
             return False
 
     def _base_url(self) -> str:
@@ -98,18 +101,18 @@ class LLMClient:
         try:
             resp = requests.get(health_url, timeout=10)
         except requests.ConnectionError:
-            print(f"   Warning: llama.cpp server not reachable at {health_url}")
+            log.warning(f"Warning: llama.cpp server not reachable at {health_url}")
             return False
         if resp.status_code == 200:
             data = resp.json()
             status = data.get("status", "")
             if status == "ok":
-                print("   llama.cpp server connected!")
+                log.info("llama.cpp server connected!")
                 return True
             if status == "loading":
-                print("   llama.cpp server is loading model — will retry at request time")
+                log.info("llama.cpp server is loading model — will retry at request time")
                 return True  # Not an error; server will be ready soon
-        print(f"   Warning: llama.cpp health check returned {resp.status_code}")
+        log.warning(f"Warning: llama.cpp health check returned {resp.status_code}")
         return False
 
     def _test_openai(self):
@@ -118,12 +121,12 @@ class LLMClient:
         try:
             resp = requests.get(models_url, timeout=10)
         except requests.ConnectionError:
-            print(f"   Warning: OpenAI server not reachable at {models_url}")
+            log.warning(f"Warning: OpenAI server not reachable at {models_url}")
             return False
         if resp.status_code == 200:
-            print("   OpenAI-compatible server connected!")
+            log.info("OpenAI-compatible server connected!")
             return True
-        print(f"   Warning: OpenAI models endpoint returned {resp.status_code}")
+        log.warning(f"Warning: OpenAI models endpoint returned {resp.status_code}")
         return False
 
     # ── Generation ────────────────────────────────────────────
@@ -359,6 +362,6 @@ class LLMClient:
         # Diagnostic: log prompt size so context-window issues are visible
         char_count = len(formatted)
         approx_tokens = char_count // 4  # rough estimate: ~4 chars per token
-        print(f"   [LLM] Prompt size: {char_count} chars (~{approx_tokens} tokens)")
+        log.debug(f"[LLM] Prompt size: {char_count} chars (~{approx_tokens} tokens)")
 
         return formatted

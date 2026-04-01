@@ -25,6 +25,9 @@ from datetime import datetime
 
 from talents.base import BaseTalent
 
+import logging
+log = logging.getLogger(__name__)
+
 
 class SignalRemoteTalent(BaseTalent):
     name = "signal_remote"
@@ -169,7 +172,7 @@ class SignalRemoteTalent(BaseTalent):
             for pid in pids:
                 subprocess.run(["taskkill", "/F", "/T", "/PID", pid],
                                 capture_output=True)
-                print(f"   [Signal] Killed orphaned signal-cli JVM (PID {pid}).")
+                log.info(f"[Signal] Killed orphaned signal-cli JVM (PID {pid}).")
             if pids:
                 time.sleep(1.0)
         except Exception:
@@ -186,7 +189,7 @@ class SignalRemoteTalent(BaseTalent):
             name="signal-remote-poll",
         )
         self._poll_thread.start()
-        print("   [Signal] Poll thread started.")
+        log.info("[Signal] Poll thread started.")
 
     def _stop_polling(self) -> None:
         self._stop_event.set()
@@ -205,7 +208,7 @@ class SignalRemoteTalent(BaseTalent):
             try:
                 self._check_messages()
             except Exception as e:
-                print(f"   [Signal] Poll error: {e}")
+                log.error(f"[Signal] Poll error: {e}")
 
     def _check_messages(self) -> None:
         """Run `signal-cli receive` and dispatch any Note-to-Self envelopes."""
@@ -225,7 +228,7 @@ class SignalRemoteTalent(BaseTalent):
         )
 
         if result.returncode != 0:
-            print(f"   [Signal] receive failed: {result.stderr.strip()[:200]}")
+            log.error(f"[Signal] receive failed: {result.stderr.strip()[:200]}")
             return
 
         for line in (result.stdout or "").splitlines():
@@ -291,7 +294,7 @@ class SignalRemoteTalent(BaseTalent):
             self._stats["last_seen"] = now_iso
             self._stats["last_sender"] = sender
 
-        print(f"   [Signal] Command from {sender}: {command!r}")
+        log.info(f"[Signal] Command from {sender}: {command!r}")
 
         # Semantic injection check on the raw Signal command before processing
         from core.security import get_security_filter as _gsf
@@ -299,11 +302,11 @@ class SignalRemoteTalent(BaseTalent):
         if _sf:
             _blocked, _alert = _sf.check_semantic_input(command, "signal_in")
             if _blocked:
-                print(f"   [Signal] Command blocked by semantic classifier: {command!r}")
+                log.info(f"[Signal] Command blocked by semantic classifier: {command!r}")
                 return
 
         if self._assistant is None:
-            print("   [Signal] Assistant not available, cannot process command.")
+            log.error("[Signal] Assistant not available, cannot process command.")
             return
 
         # Resolve incoming image attachments to local file paths
@@ -318,9 +321,9 @@ class SignalRemoteTalent(BaseTalent):
                 att_path = os.path.join(config_dir, "attachments", att_id)
                 if os.path.exists(att_path):
                     image_paths.append(att_path)
-                    print(f"   [Signal] Received image attachment: {att_id}")
+                    log.info(f"[Signal] Received image attachment: {att_id}")
                 else:
-                    print(f"   [Signal] Attachment file missing: {att_path}")
+                    log.warning(f"[Signal] Attachment file missing: {att_path}")
 
         result = {}
         try:
@@ -334,7 +337,7 @@ class SignalRemoteTalent(BaseTalent):
             response = (result.get("response") or "").strip()
         except Exception as e:
             response = f"Error processing command: {e}"
-            print(f"   [Signal] process_command error: {e}")
+            log.error(f"[Signal] process_command error: {e}")
 
         # Truncate if needed
         max_chars = int(cfg.get("max_response_chars", 1000))
@@ -381,13 +384,13 @@ class SignalRemoteTalent(BaseTalent):
             r = subprocess.run(cmd, capture_output=True, text=True,
                                encoding='utf-8', errors='replace', timeout=30)
             if r.returncode != 0:
-                print(f"   [Signal] Send failed: {r.stderr.strip()[:200]}")
+                log.error(f"[Signal] Send failed: {r.stderr.strip()[:200]}")
                 return
             att_note = f" (+{len(attachments)} attachment(s))" if attachments else ""
             dest = "Note-to-Self" if is_self else recipient
-            print(f"   [Signal] Reply sent to {dest}{att_note}.")
+            log.info(f"[Signal] Reply sent to {dest}{att_note}.")
         except Exception as e:
-            print(f"   [Signal] Send error: {e}")
+            log.error(f"[Signal] Send error: {e}")
 
     # ── Validation ─────────────────────────────────────────────────
 
@@ -395,11 +398,11 @@ class SignalRemoteTalent(BaseTalent):
         cfg = self.talent_config
 
         if self._assistant is None:
-            print("   [Signal] Cannot start: assistant not set yet.")
+            log.error("[Signal] Cannot start: assistant not set yet.")
             return False
 
         if not cfg.get("account_number", "").strip():
-            print("   [Signal] Cannot start: account_number not configured.")
+            log.error("[Signal] Cannot start: account_number not configured.")
             return False
 
         cli = cfg.get("signal_cli_path", "signal-cli")
@@ -409,19 +412,19 @@ class SignalRemoteTalent(BaseTalent):
                                encoding='utf-8', errors='replace', timeout=15)
             if r.returncode != 0:
                 err = (r.stderr or r.stdout or "").strip()[:300]
-                print(f"   [Signal] Cannot start: signal-cli --version failed "
+                log.error(f"[Signal] Cannot start: signal-cli --version failed "
                       f"(exit {r.returncode}) at {cli!r}.")
                 if err:
-                    print(f"   [Signal] Output: {err}")
+                    log.info(f"[Signal] Output: {err}")
                 return False
         except FileNotFoundError:
-            print(f"   [Signal] Cannot start: signal-cli not found at {cli!r}.")
+            log.error(f"[Signal] Cannot start: signal-cli not found at {cli!r}.")
             return False
         except subprocess.TimeoutExpired:
-            print(f"   [Signal] Cannot start: signal-cli --version timed out at {cli!r}.")
+            log.error(f"[Signal] Cannot start: signal-cli --version timed out at {cli!r}.")
             return False
         except OSError as e:
-            print(f"   [Signal] Cannot start: OS error running {cli!r}: {e}")
+            log.error(f"[Signal] Cannot start: OS error running {cli!r}: {e}")
             return False
 
         return True

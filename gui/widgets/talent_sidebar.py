@@ -1,6 +1,10 @@
+import logging
+
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                              QCheckBox, QScrollArea, QFrame, QPushButton)
 from PyQt6.QtCore import pyqtSignal, Qt, QTimer
+
+log = logging.getLogger(__name__)
 
 
 class TalentItem(QFrame):
@@ -162,7 +166,7 @@ class TalentSidebar(QScrollArea):
 
             QTimer.singleShot(3000, lambda g=gen: self._clear_highlights(g))
         except Exception as e:
-            print(f"   [Sidebar] highlight error: {e}")
+            log.error(f"[Sidebar] highlight error: {e}")
 
     def _clear_highlights(self, generation):
         """Clear highlights only if no newer highlight has been requested."""

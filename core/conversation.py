@@ -16,6 +16,9 @@ from typing import Any
 from core.security import wrap_external as _wrap_external, INJECTION_DEFENSE_CLAUSE
 from core import document_extractor as _docext
 
+import logging
+log = logging.getLogger(__name__)
+
 
 class ConversationEngine:
     """Manages the conversation path for TalonAssistant.
@@ -216,14 +219,14 @@ class ConversationEngine:
                 if text:
                     doc_blocks.append((os.path.basename(path), text))
                 else:
-                    print(f"   [Attach] Could not extract '{os.path.basename(path)}'.")
+                    log.error(f"[Attach] Could not extract '{os.path.basename(path)}'.")
 
         if file_images_b64:
-            print(f"   [Vision] Loaded {len(file_images_b64)} attached image(s).")
+            log.info(f"[Vision] Loaded {len(file_images_b64)} attached image(s).")
             # User supplied image(s) — don't also grab the desktop screenshot.
             needs_vision = False
         if doc_blocks:
-            print(f"   [Attach] Loaded {len(doc_blocks)} document(s).")
+            log.info(f"[Attach] Loaded {len(doc_blocks)} document(s).")
 
         screenshot_b64 = None
         if needs_vision:
@@ -273,7 +276,7 @@ class ConversationEngine:
         intent = "ambient"
         if not rag_explicit:
             intent = self._classify_query_intent(command)
-            print(f"   [RAG] Intent: {intent}")
+            log.debug(f"[RAG] Intent: {intent}")
 
         # Multi-query expansion for explicit/factual/synthesis modes.
         rag_query = command
@@ -300,7 +303,7 @@ class ConversationEngine:
                 if isinstance(queries, list) and queries:
                     rag_query = str(queries[0])
                     rag_alt_queries = [str(q) for q in queries[1:]]
-                    print(f"   [RAG] Queries: {queries}")
+                    log.debug(f"[RAG] Queries: {queries}")
             except Exception:
                 pass  # Fall back to raw command silently
 
@@ -484,7 +487,7 @@ class ConversationEngine:
         reflection = self._a.memory.get_last_session_reflection()
         if reflection:
             self._last_session_context = reflection
-            print(f"   [Memory] Last session context loaded "
+            log.info(f"[Memory] Last session context loaded "
                   f"({len(reflection)} chars)")
         else:
             self._last_session_context = ""
@@ -576,18 +579,18 @@ class ConversationEngine:
                 # Security: scan before writing to long-term memory (cross-session risk)
                 suppressed, _alert = self._a.security.check_output(insight, context="eviction")
                 if suppressed:
-                    print(f"   [Buffer] Eviction insight suppressed by security filter")
+                    log.info(f"[Buffer] Eviction insight suppressed by security filter")
                     return
                 _sem_blocked, _sem_alert = self._a.security.check_semantic(insight, "insight")
                 if _sem_blocked:
-                    print(f"   [Buffer] Eviction insight blocked by semantic classifier")
+                    log.info(f"[Buffer] Eviction insight blocked by semantic classifier")
                     return
                 self._a.memory.store_preference(insight, category="insight")
-                print(f"   [Buffer] Eviction insight: {insight[:80]}")
+                log.info(f"[Buffer] Eviction insight: {insight[:80]}")
         except Exception as e:
-            print(f"   [Buffer] LLM unavailable: {e}")
+            log.warning(f"[Buffer] LLM unavailable: {e}")
         except Exception as e:
-            print(f"   [Buffer] Consolidation error: {e}")
+            log.error(f"[Buffer] Consolidation error: {e}")
 
     def _async_summarize_session(self) -> None:
         """Background: compress the current buffer into a one-line session summary.
@@ -619,15 +622,15 @@ class ConversationEngine:
                 # Security: scan before injecting into future prompts (session-scoped risk)
                 suppressed, _alert = self._a.security.check_output(summary, context="summarizer")
                 if suppressed:
-                    print(f"   [Buffer] Session summary suppressed by security filter")
+                    log.info(f"[Buffer] Session summary suppressed by security filter")
                     return
                 _sem_blocked, _sem_alert = self._a.security.check_semantic(summary, "summary")
                 if _sem_blocked:
-                    print(f"   [Buffer] Session summary blocked by semantic classifier")
+                    log.info(f"[Buffer] Session summary blocked by semantic classifier")
                     return
                 self._session_summary = summary
-                print(f"   [Buffer] Session summary: {summary[:100]}")
+                log.info(f"[Buffer] Session summary: {summary[:100]}")
         except Exception as e:
-            print(f"   [Buffer] LLM unavailable: {e}")
+            log.warning(f"[Buffer] LLM unavailable: {e}")
         except Exception as e:
-            print(f"   [Buffer] Summarisation failed: {e}")
+            log.error(f"[Buffer] Summarisation failed: {e}")

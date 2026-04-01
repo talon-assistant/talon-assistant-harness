@@ -25,6 +25,9 @@ import webbrowser
 
 from talents.base import BaseTalent
 
+import logging
+log = logging.getLogger(__name__)
+
 _CONFIG_PATH = os.path.join("config", "news_digest.json")
 
 # ── HTML helpers ──────────────────────────────────────────────────────────────
@@ -174,9 +177,9 @@ class NewsDigestTalent(BaseTalent):
         # Only fetch feeds the user has enabled
         self._feeds       = [f for f in all_feeds if f.get("enabled", True)]
         if all_feeds:
-            print(f"[NewsDigest] {len(self._feeds)}/{len(all_feeds)} feed(s) enabled.")
+            log.info(f"[NewsDigest] {len(self._feeds)}/{len(all_feeds)} feed(s) enabled.")
         else:
-            print("[NewsDigest] Warning: no feeds in news_digest.json")
+            log.warning("[NewsDigest] Warning: no feeds in news_digest.json")
 
     def _save_config(self, config: dict) -> None:
         """Persist feed changes back to config/news_digest.json."""
@@ -194,9 +197,9 @@ class NewsDigestTalent(BaseTalent):
             })
             with open(_CONFIG_PATH, "w", encoding="utf-8") as f:
                 json.dump(existing, f, indent=2, ensure_ascii=False)
-            print(f"[NewsDigest] Config saved to {_CONFIG_PATH}")
+            log.info(f"[NewsDigest] Config saved to {_CONFIG_PATH}")
         except Exception as e:
-            print(f"[NewsDigest] Failed to save config: {e}")
+            log.error(f"[NewsDigest] Failed to save config: {e}")
 
     def can_handle(self, command: str) -> bool:
         return self.keyword_match(command)
@@ -215,7 +218,7 @@ class NewsDigestTalent(BaseTalent):
             return {"success": False, "response": msg, "actions_taken": []}
 
         # ── fetch ─────────────────────────────────────────────────────────────
-        print(f"[NewsDigest] Fetching {len(self._feeds)} feed(s)…")
+        log.info(f"[NewsDigest] Fetching {len(self._feeds)} feed(s)…")
         categories: dict[str, list[dict]] = {}
 
         for feed_cfg in self._feeds:
@@ -226,12 +229,12 @@ class NewsDigestTalent(BaseTalent):
                 continue
             stories = self._fetch_feed(url, name)
             if not stories:
-                print(f"   [NewsDigest] {name}: no stories (feed unavailable or all old)")
+                log.warning(f"[NewsDigest] {name}: no stories (feed unavailable or all old)")
                 continue
             categories.setdefault(category, []).append(
                 {"source": name, "url": url, "stories": stories}
             )
-            print(f"   [NewsDigest] {name}: {len(stories)} stories")
+            log.info(f"[NewsDigest] {name}: {len(stories)} stories")
 
         if not categories:
             msg = "Couldn't fetch any news stories right now — feeds may be unavailable."
@@ -295,7 +298,7 @@ class NewsDigestTalent(BaseTalent):
         out_path = os.path.join(out_dir, filename)
         with open(out_path, "w", encoding="utf-8") as f:
             f.write(html)
-        print(f"[NewsDigest] Saved → {out_path}")
+        log.info(f"[NewsDigest] Saved → {out_path}")
 
         # ── open (skip when called remotely — no browser on the Signal sender's end) ──
         command_source = context.get("command_source", "local")
@@ -321,7 +324,7 @@ class NewsDigestTalent(BaseTalent):
         try:
             import feedparser
         except ImportError:
-            print("[NewsDigest] feedparser not installed — run: pip install feedparser")
+            log.warning("[NewsDigest] feedparser not installed — run: pip install feedparser")
             return []
 
         try:
@@ -363,5 +366,5 @@ class NewsDigestTalent(BaseTalent):
             return stories
 
         except Exception as e:
-            print(f"   [NewsDigest] Error fetching {name} ({url}): {e}")
+            log.error(f"[NewsDigest] Error fetching {name} ({url}): {e}")
             return []

@@ -1,6 +1,7 @@
 """Talent Manager — view, edit, test, and delete user-created talents."""
 
 import os
+import logging
 
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QListWidget,
@@ -9,6 +10,8 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import pyqtSignal, Qt
 from PyQt6.QtGui import QFont
+
+log = logging.getLogger(__name__)
 
 
 class TalentManagerDialog(QDialog):
@@ -257,9 +260,9 @@ class TalentManagerDialog(QDialog):
         # Delete file
         try:
             os.remove(data["file"])
-            print(f"   [TalentManager] Deleted {data['file']}")
+            log.info(f"[TalentManager] Deleted {data['file']}")
         except Exception as e:
-            print(f"   [TalentManager] Delete failed: {e}")
+            log.error(f"[TalentManager] Delete failed: {e}")
 
         self._refresh_list()
         self._editor.clear()

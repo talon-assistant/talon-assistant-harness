@@ -51,6 +51,9 @@ import traceback
 from datetime import datetime
 from pathlib import Path
 
+import logging
+log = logging.getLogger(__name__)
+
 # Lazy imports for heavy deps — only loaded when training actually starts
 # so Talon boots quickly even if unsloth isn't installed.
 
@@ -100,7 +103,7 @@ class LoRATrainer:
         )
         self._auto_thread.start()
         interval_h = self._cfg.get("auto_train_interval_hours", 24)
-        print(f"   [LoRA] Auto-training scheduler started — checks every {interval_h}h.")
+        log.info(f"[LoRA] Auto-training scheduler started — checks every {interval_h}h.")
 
     def stop_auto_scheduler(self) -> None:
         self._stop.set()
@@ -116,14 +119,14 @@ class LoRATrainer:
                 new_count = self._count_new_examples()
                 min_required = self._cfg.get("min_new_examples", 20)
                 if new_count >= min_required:
-                    print(f"   [LoRA] Auto-train triggered — {new_count} new examples "
+                    log.info(f"[LoRA] Auto-train triggered — {new_count} new examples "
                           f"(threshold: {min_required}).")
                     self.train()
                 else:
-                    print(f"   [LoRA] Auto-check — {new_count}/{min_required} "
+                    log.info(f"[LoRA] Auto-check — {new_count}/{min_required} "
                           f"new examples, not enough yet.")
             except Exception:
-                print(f"   [LoRA] Auto-train error:\n{traceback.format_exc()}")
+                log.error(f"[LoRA] Auto-train error:\n{traceback.format_exc()}")
 
             self._stop.wait(interval_s)
 
@@ -143,7 +146,7 @@ class LoRATrainer:
             return self._train_pipeline()
         except Exception as e:
             msg = f"Training failed: {e}\n{traceback.format_exc()}"
-            print(f"   [LoRA] {msg}")
+            log.info(f"[LoRA] {msg}")
             self._emit_status(msg)
             if self.on_complete:
                 self.on_complete(False, str(e))
@@ -186,7 +189,7 @@ class LoRATrainer:
         with open(curated_path, "w", encoding="utf-8") as f:
             for ex in examples:
                 f.write(json.dumps(ex, ensure_ascii=False) + "\n")
-        print(f"   [LoRA] Curated {len(examples)} training examples → {curated_path}")
+        log.info(f"[LoRA] Curated {len(examples)} training examples → {curated_path}")
 
         # Step 2: Check dependencies
         self._emit_status("Checking dependencies...")
@@ -203,7 +206,7 @@ class LoRATrainer:
         server_mgr = getattr(self._assistant, "llm_server", None)
         if server_mgr and server_mgr.is_running():
             self._emit_status("Putting Talon to sleep for training...")
-            print("   [LoRA] Stopping inference server for training...")
+            log.info("[LoRA] Stopping inference server for training...")
             server_mgr.stop()
             server_was_running = True
             time.sleep(2)  # Let GPU memory free up
@@ -216,7 +219,7 @@ class LoRATrainer:
         except Exception as e:
             # Restart server if we stopped it
             if server_was_running and server_mgr:
-                print("   [LoRA] Restarting inference server after failed training...")
+                log.error("[LoRA] Restarting inference server after failed training...")
                 server_mgr.start()
             raise
 
@@ -226,7 +229,7 @@ class LoRATrainer:
         try:
             self._convert_to_gguf(peft_dir, gguf_path)
         except Exception as e:
-            print(f"   [LoRA] GGUF conversion failed: {e}")
+            log.error(f"[LoRA] GGUF conversion failed: {e}")
             # Still usable with llama-server's native PEFT support in some builds
             gguf_path = None
 
@@ -234,9 +237,9 @@ class LoRATrainer:
         if server_was_running and server_mgr:
             if gguf_path and gguf_path.exists():
                 server_mgr.lora_path = str(gguf_path)
-                print(f"   [LoRA] Set lora_path to {gguf_path}")
+                log.info(f"[LoRA] Set lora_path to {gguf_path}")
             self._emit_status("Waking Talon up with new adapter...")
-            print("   [LoRA] Restarting inference server with LoRA adapter...")
+            log.info("[LoRA] Restarting inference server with LoRA adapter...")
             server_mgr.start()
 
         # Step 7: Log the training event
@@ -249,7 +252,7 @@ class LoRATrainer:
         msg = (f"Training complete! {len(examples)} examples, "
                f"adapter saved to {adapter_dir}")
         self._emit_status(msg)
-        print(f"   [LoRA] {msg}")
+        log.info(f"[LoRA] {msg}")
         if self.on_complete:
             self.on_complete(True, msg)
 
@@ -330,7 +333,7 @@ class LoRATrainer:
             seeds = self._load_seed_examples(seeds_path)
             examples.extend(seeds)
 
-        print(f"   [LoRA] Data sources: {len(examples)} total examples")
+        log.info(f"[LoRA] Data sources: {len(examples)} total examples")
         return examples
 
     def _load_harvested_pairs(self) -> list[dict]:
@@ -350,7 +353,7 @@ class LoRATrainer:
                         continue
         except OSError:
             return []
-        print(f"   [LoRA] Loaded {len(pairs)} harvested pairs")
+        log.info(f"[LoRA] Loaded {len(pairs)} harvested pairs")
         return pairs
 
     def _load_quality_reflections(self) -> list[dict]:
@@ -363,7 +366,7 @@ class LoRATrainer:
             t for t in thoughts
             if t.get("valence") is not None and t["valence"] >= min_valence
         ]
-        print(f"   [LoRA] Found {len(quality)} reflections with valence >= {min_valence} "
+        log.info(f"[LoRA] Found {len(quality)} reflections with valence >= {min_valence} "
               f"(of {len(thoughts)} total)")
         return quality
 
@@ -375,7 +378,7 @@ class LoRATrainer:
         toward contemplative/abstract monologue.
         """
         if not os.path.exists(path):
-            print(f"   [LoRA] No seed file at {path}")
+            log.info(f"[LoRA] No seed file at {path}")
             return []
         seeds = []
         try:
@@ -394,7 +397,7 @@ class LoRATrainer:
                         continue
         except OSError:
             return []
-        print(f"   [LoRA] Loaded {len(seeds)} seed training examples")
+        log.info(f"[LoRA] Loaded {len(seeds)} seed training examples")
         return seeds
 
     def _load_preferences(self) -> list[str]:
@@ -406,10 +409,10 @@ class LoRATrainer:
                 include=["documents"],
             )
             docs = results.get("documents", [])
-            print(f"   [LoRA] Loaded {len(docs)} user preferences")
+            log.info(f"[LoRA] Loaded {len(docs)} user preferences")
             return docs
         except Exception as e:
-            print(f"   [LoRA] Could not load preferences: {e}")
+            log.error(f"[LoRA] Could not load preferences: {e}")
             return []
 
     # ── training ──────────────────────────────────────────────────────────────
@@ -435,12 +438,12 @@ class LoRATrainer:
 
         if is_vision:
             from unsloth import FastVisionModel as ModelClass
-            print(f"   [LoRA] Vision model detected — using FastVisionModel")
+            log.info(f"[LoRA] Vision model detected — using FastVisionModel")
         else:
             from unsloth import FastLanguageModel as ModelClass
-            print(f"   [LoRA] Text model — using FastLanguageModel")
+            log.info(f"[LoRA] Text model — using FastLanguageModel")
 
-        print(f"   [LoRA] Loading base model: {base_model}")
+        log.info(f"[LoRA] Loading base model: {base_model}")
         self._emit_status(f"Loading base model ({base_model})...")
 
         model, tokenizer = ModelClass.from_pretrained(
@@ -450,7 +453,7 @@ class LoRATrainer:
             dtype=None,  # auto-detect
         )
 
-        print(f"   [LoRA] Applying LoRA adapter (rank={rank}, alpha={lora_alpha})")
+        log.info(f"[LoRA] Applying LoRA adapter (rank={rank}, alpha={lora_alpha})")
         self._emit_status("Applying LoRA configuration...")
 
         if is_vision:
@@ -485,13 +488,13 @@ class LoRATrainer:
         # If resuming from a previous adapter, load it
         prev_adapter = output_dir / "adapter_model.safetensors"
         if prev_adapter.exists():
-            print("   [LoRA] Resuming from previous adapter checkpoint...")
+            log.info("[LoRA] Resuming from previous adapter checkpoint...")
             self._emit_status("Loading previous adapter for incremental training...")
             from peft import PeftModel
             model = PeftModel.from_pretrained(model, str(output_dir))
 
         # Prepare dataset
-        print(f"   [LoRA] Preparing dataset ({len(examples)} conversations)...")
+        log.info(f"[LoRA] Preparing dataset ({len(examples)} conversations)...")
         self._emit_status(f"Preparing {len(examples)} training examples...")
 
         from datasets import Dataset
@@ -512,7 +515,7 @@ class LoRATrainer:
         # Training
         from trl import SFTTrainer, SFTConfig
 
-        print(f"   [LoRA] Starting training: {epochs} epochs, lr={lr}, "
+        log.info(f"[LoRA] Starting training: {epochs} epochs, lr={lr}, "
               f"batch_size={batch_size}")
         self._emit_status(f"Training... ({epochs} epochs)")
 
@@ -550,13 +553,13 @@ class LoRATrainer:
 
         # Train
         train_result = trainer.train()
-        print(f"   [LoRA] Training complete! Loss: {train_result.training_loss:.4f}")
+        log.info(f"[LoRA] Training complete! Loss: {train_result.training_loss:.4f}")
         self._emit_status(f"Training complete! Loss: {train_result.training_loss:.4f}")
 
         # Save the adapter
         model.save_pretrained(str(output_dir))
         tokenizer.save_pretrained(str(output_dir))
-        print(f"   [LoRA] PEFT adapter saved to {output_dir}")
+        log.info(f"[LoRA] PEFT adapter saved to {output_dir}")
 
         # Free GPU memory
         del model, tokenizer, trainer
@@ -572,7 +575,7 @@ class LoRATrainer:
         Uses llama.cpp's convert_lora_to_gguf.py script. Falls back to
         the gguf Python package if the script isn't available.
         """
-        print(f"   [LoRA] Converting PEFT adapter → GGUF...")
+        log.info(f"[LoRA] Converting PEFT adapter → GGUF...")
 
         # Strategy 1: Try llama.cpp's conversion script
         # Check common locations
@@ -594,15 +597,15 @@ class LoRATrainer:
                 "--outfile", str(output_path),
                 str(peft_dir),
             ]
-            print(f"   [LoRA] Running: {' '.join(cmd)}")
+            log.info(f"[LoRA] Running: {' '.join(cmd)}")
             result = subprocess.run(
                 cmd, capture_output=True, text=True, timeout=300
             )
             if result.returncode == 0:
-                print(f"   [LoRA] GGUF adapter written to {output_path}")
+                log.info(f"[LoRA] GGUF adapter written to {output_path}")
                 return
             else:
-                print(f"   [LoRA] Converter failed: {result.stderr[:500]}")
+                log.error(f"[LoRA] Converter failed: {result.stderr[:500]}")
                 # Fall through to strategy 2
 
         # Strategy 2: Try using the gguf package directly
@@ -617,7 +620,7 @@ class LoRATrainer:
             converter_path = Path("bin") / "convert_lora_to_gguf.py"
             converter_path.parent.mkdir(parents=True, exist_ok=True)
             urllib.request.urlretrieve(converter_url, str(converter_path))
-            print(f"   [LoRA] Downloaded converter to {converter_path}")
+            log.info(f"[LoRA] Downloaded converter to {converter_path}")
 
             cmd = [
                 sys.executable,
@@ -629,14 +632,14 @@ class LoRATrainer:
                 cmd, capture_output=True, text=True, timeout=300
             )
             if result.returncode == 0:
-                print(f"   [LoRA] GGUF adapter written to {output_path}")
+                log.info(f"[LoRA] GGUF adapter written to {output_path}")
                 return
             else:
                 raise RuntimeError(
                     f"GGUF conversion failed: {result.stderr[:500]}")
         except Exception as e:
-            print(f"   [LoRA] GGUF conversion unavailable: {e}")
-            print(f"   [LoRA] PEFT adapter is saved at {peft_dir} — "
+            log.warning(f"[LoRA] GGUF conversion unavailable: {e}")
+            log.info(f"[LoRA] PEFT adapter is saved at {peft_dir} — "
                   f"convert manually with convert_lora_to_gguf.py")
             raise
 
@@ -725,9 +728,9 @@ class LoRATrainer:
             settings["llm_server"]["lora_path"] = gguf_path
             with open(settings_path, "w", encoding="utf-8") as f:
                 json.dump(settings, f, indent=2, ensure_ascii=False)
-            print(f"   [LoRA] Updated settings.json → llm_server.lora_path = {gguf_path}")
+            log.info(f"[LoRA] Updated settings.json → llm_server.lora_path = {gguf_path}")
         except Exception as e:
-            print(f"   [LoRA] Could not update settings.json: {e}")
+            log.error(f"[LoRA] Could not update settings.json: {e}")
 
     def _emit_status(self, msg: str) -> None:
         """Emit a status update to the GUI callback."""

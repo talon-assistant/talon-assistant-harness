@@ -2,7 +2,9 @@ import sys
 import os
 import json
 import signal
+import logging
 import traceback
+import atexit
 
 # Ensure project root is on path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -10,6 +12,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 # Windows DLL fix
 if sys.platform == 'win32':
     os.add_dll_directory(os.path.dirname(os.path.abspath(__file__)))
+
+from core.logging_config import setup_logging
+from core.config import deep_merge
+
+log = logging.getLogger(__name__)
 
 
 def _install_exception_hook():
@@ -27,8 +34,40 @@ def _install_exception_hook():
 
     sys.excepthook = _hook
 
+_lock_file = None
 
-from core.config import deep_merge
+
+def _acquire_lock(data_dir="data"):
+    """Acquire a lockfile to prevent concurrent instances."""
+    global _lock_file
+    lock_path = os.path.join(data_dir, ".talon.lock")
+    os.makedirs(data_dir, exist_ok=True)
+
+    try:
+        # On Windows, opening a file exclusively prevents other processes
+        _lock_file = open(lock_path, 'w')
+        if sys.platform == 'win32':
+            import msvcrt
+            msvcrt.locking(_lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(_lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        _lock_file.write(str(os.getpid()))
+        _lock_file.flush()
+        atexit.register(_release_lock)
+        return True
+    except (IOError, OSError):
+        return False
+
+
+def _release_lock():
+    global _lock_file
+    if _lock_file:
+        try:
+            _lock_file.close()
+        except Exception:
+            pass
+        _lock_file = None
 
 
 def _load_settings(config_dir="config"):
@@ -96,14 +135,14 @@ def _setup_builtin_server(settings, config_dir="config"):
             pass
 
     if manager.needs_download():
-        print("\n   [LLMServer] llama-server.exe not found.")
-        print("   Use File > LLM Server... to download it.\n")
+        log.warning("[LLMServer] llama-server.exe not found.")
+        log.info("Use File > LLM Server... to download it.\n")
         return manager
 
     model_path = server_config.get("model_path", "")
     if not model_path or not os.path.isfile(model_path):
-        print("\n   [LLMServer] No model file configured or file not found.")
-        print("   Use File > LLM Server... to configure it.\n")
+        log.warning("[LLMServer] No model file configured or file not found.")
+        log.info("Use File > LLM Server... to configure it.\n")
         return manager
 
     # Override LLM settings for builtin mode
@@ -113,19 +152,29 @@ def _setup_builtin_server(settings, config_dir="config"):
     settings["llm"]["api_format"] = "llamacpp"
 
     # Start the server (non-blocking — health poll runs in background)
-    print("\n   [LLMServer] Starting built-in server...")
+    log.info("[LLMServer] Starting built-in server...")
     manager.start()
 
     return manager
 
 
 def main():
+    setup_logging()
+
     mode = "gui"
     if len(sys.argv) > 1:
         mode = sys.argv[1].lower()
 
     if mode == "gui":
         _install_exception_hook()
+
+        # ── Instance lock: only one Talon can run at a time ──
+        if not _acquire_lock():
+            from PyQt6.QtWidgets import QApplication, QMessageBox
+            app = QApplication(sys.argv)
+            QMessageBox.warning(None, "Talon Assistant",
+                                "Another instance is already running.")
+            sys.exit(1)
 
         # ── Step 0: Load settings and optionally start built-in LLM server ──
         settings = _load_settings("config")
@@ -135,8 +184,8 @@ def main():
         # CTranslate2 (used by faster-whisper) segfaults when WhisperModel
         # is created after QApplication has initialised its platform plugins.
         # Loading all models first avoids the conflict entirely.
-        print("Loading Talon (models + services)...")
-        print("  This may take 10-30 seconds on first launch.\n")
+        log.info("Loading Talon (models + services)...")
+        log.info("  This may take 10-30 seconds on first launch.\n")
         assistant = None
         init_error = None
         try:
@@ -185,7 +234,7 @@ def main():
                     assistant.llm.api_format = "llamacpp"
                     # Wire ready-check so LLMClient can warn before the model loads
                     assistant.llm.server_manager = server_manager
-                    print(f"   [LLMServer] LLM client endpoint updated → "
+                    log.info(f"[LLMServer] LLM client endpoint updated → "
                           f"{new_endpoint} (api_format: llamacpp)")
 
         window = MainWindow(bridge, theme_manager=theme_manager,
@@ -233,7 +282,7 @@ def main():
         talon.run(mode=mode)
 
     else:
-        print(f"Unknown mode: {mode}. Use gui, voice, text, or both.")
+        log.info(f"Unknown mode: {mode}. Use gui, voice, text, or both.")
         sys.exit(1)
 
 

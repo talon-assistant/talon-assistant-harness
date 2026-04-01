@@ -24,6 +24,9 @@ from datetime import datetime, timedelta
 from talents.base import BaseTalent
 from core.llm_client import LLMError
 
+import logging
+log = logging.getLogger(__name__)
+
 
 class SchedulerTalent(BaseTalent):
     name = "scheduler"
@@ -310,20 +313,20 @@ Examples:
                 max_length=300,
             )
         except LLMError as exc:
-            print(f"   [SchedulerTalent] LLM unavailable: {exc}")
+            log.warning(f"[SchedulerTalent] LLM unavailable: {exc}")
             return None
         except Exception as exc:
-            print(f"   [SchedulerTalent] LLM error: {exc}")
+            log.error(f"[SchedulerTalent] LLM error: {exc}")
             return None
 
         try:
             match = re.search(r'\{.*\}', raw, re.DOTALL)
             if not match:
-                print(f"   [SchedulerTalent] No JSON in LLM response: {raw[:200]}")
+                log.debug(f"[SchedulerTalent] No JSON in LLM response: {raw[:200]}")
                 return None
             return json.loads(match.group())
         except json.JSONDecodeError as exc:
-            print(f"   [SchedulerTalent] JSON parse error: {exc} — raw: {raw[:200]}")
+            log.error(f"[SchedulerTalent] JSON parse error: {exc} — raw: {raw[:200]}")
             return None
 
     # ── Helpers ───────────────────────────────────────────────────────────────

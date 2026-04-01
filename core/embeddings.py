@@ -24,6 +24,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import logging
+log = logging.getLogger(__name__)
+
 _model = None
 _model_name: str | None = None
 
@@ -39,7 +42,7 @@ def _get_model(model_name: str):
         # Run on CPU by default — KoboldCpp holds the GPU for inference.
         _model = SentenceTransformer(model_name, device="cpu")
         _model_name = model_name
-        print(f"   [Embeddings] Loaded {model_name} on cpu")
+        log.info(f"[Embeddings] Loaded {model_name} on cpu")
     return _model
 
 
