@@ -1,6 +1,69 @@
 import os
 import re
 from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
+from typing import Any
+
+from core.llm_client import LLMError
+
+
+@dataclass
+class TalentContext:
+    """Typed context passed to talent.execute().
+
+    Supports dict-style access (context["llm"]) for backward compatibility.
+    """
+
+    llm: Any = None
+    memory: Any = None
+    vision: Any = None
+    voice: Any = None
+    config: dict = field(default_factory=dict)
+    memory_context: str = ""
+    speak_response: bool = True
+    assistant: Any = None
+    server_manager: Any = None
+    rag_explicit: bool = False
+    command_source: str = "user"
+    notify: Any = None
+    attachments: list = field(default_factory=list)
+    _planner_substep: bool = False
+
+    # Backward compat with context["key"] access
+    def __getitem__(self, key):
+        return getattr(self, key)
+
+    def __setitem__(self, key, value):
+        setattr(self, key, value)
+
+    def get(self, key, default=None):
+        return getattr(self, key, default)
+
+    def __contains__(self, key):
+        return hasattr(self, key)
+
+
+@dataclass
+class TalentResult:
+    """Typed result from talent.execute().
+
+    Supports dict-style access (result["success"]) for backward compatibility.
+    """
+
+    success: bool = False
+    response: str = ""
+    actions_taken: list = field(default_factory=list)
+    spoken: bool = False
+
+    # Backward compat with result["key"] access
+    def __getitem__(self, key):
+        return getattr(self, key)
+
+    def get(self, key, default=None):
+        return getattr(self, key, default)
+
+    def __contains__(self, key):
+        return hasattr(self, key)
 
 
 class BaseTalent(ABC):
@@ -263,5 +326,7 @@ class BaseTalent(ABC):
             if not result or result.upper() == "NONE":
                 return fallback
             return result
+        except LLMError:
+            return None
         except Exception:
             return fallback

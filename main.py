@@ -28,16 +28,7 @@ def _install_exception_hook():
     sys.excepthook = _hook
 
 
-def _deep_merge(base: dict, override: dict) -> dict:
-    """Recursively merge override into base, returning a new dict.
-    Keys present in base but missing from override keep their base value."""
-    result = base.copy()
-    for key, value in override.items():
-        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
-            result[key] = _deep_merge(result[key], value)
-        else:
-            result[key] = value
-    return result
+from core.config import deep_merge
 
 
 def _load_settings(config_dir="config"):
@@ -77,7 +68,7 @@ def _load_settings(config_dir="config"):
     except (FileNotFoundError, json.JSONDecodeError):
         pass
 
-    return _deep_merge(defaults, user_settings)
+    return deep_merge(defaults, user_settings)
 
 
 def _setup_builtin_server(settings, config_dir="config"):

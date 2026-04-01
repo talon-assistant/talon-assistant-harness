@@ -19,6 +19,7 @@ import time
 import threading
 from datetime import datetime, timedelta
 from talents.base import BaseTalent
+from core.llm_client import LLMError
 
 # Try to import plyer for native notifications; fall back to print
 try:
@@ -339,11 +340,14 @@ class ReminderTalent(BaseTalent):
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         system_prompt = self._SYSTEM_PROMPT.replace("{now}", now_str)
 
-        response = llm.generate(
-            f"Parse this reminder request:\n\n{command}",
-            system_prompt=system_prompt,
-            temperature=0.1,
-        )
+        try:
+            response = llm.generate(
+                f"Parse this reminder request:\n\n{command}",
+                system_prompt=system_prompt,
+                temperature=0.1,
+            )
+        except LLMError:
+            return None
 
         # Extract JSON from response
         try:

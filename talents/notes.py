@@ -16,7 +16,8 @@ Examples:
 import re
 import json
 from talents.base import BaseTalent
-from core.assistant import _wrap_external, _INJECTION_DEFENSE_CLAUSE
+from core.llm_client import LLMError
+from core.security import wrap_external, INJECTION_DEFENSE_CLAUSE
 
 
 class NotesTalent(BaseTalent):
@@ -62,7 +63,7 @@ class NotesTalent(BaseTalent):
         "(single words or two-word phrases) that categorize the note. "
         "Return ONLY a JSON array of strings, nothing else.\n"
         'Example: ["meeting", "bob", "afternoon"]'
-        + _INJECTION_DEFENSE_CLAUSE
+        + INJECTION_DEFENSE_CLAUSE
     )
 
     # ── Config schema ──────────────────────────────────────────────
@@ -366,11 +367,14 @@ class NotesTalent(BaseTalent):
             return []
 
         try:
-            response = llm.generate(
-                f"Generate tags for this note:\n\n{_wrap_external(content, 'note content')}",
-                system_prompt=self._TAG_SYSTEM_PROMPT,
-                temperature=0.2,
-            )
+            try:
+                response = llm.generate(
+                    f"Generate tags for this note:\n\n{wrap_external(content, 'note content')}",
+                    system_prompt=self._TAG_SYSTEM_PROMPT,
+                    temperature=0.2,
+                )
+            except LLMError:
+                return []
 
             # Extract JSON array
             match = re.search(r'\[.*?\]', response, re.DOTALL)

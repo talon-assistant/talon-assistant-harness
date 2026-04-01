@@ -21,6 +21,7 @@ Example commands
 import pyperclip
 
 from talents.base import BaseTalent
+from core.llm_client import LLMError
 
 
 class ClipboardTransformTalent(BaseTalent):
@@ -110,6 +111,13 @@ class ClipboardTransformTalent(BaseTalent):
         try:
             result = llm.generate(prompt, max_length=700, temperature=0.7)
             result = result.strip()
+        except LLMError as e:
+            return {
+                "success": False,
+                "response": f"LLM unavailable: {e}",
+                "actions_taken": [],
+                "spoken": False,
+            }
         except Exception as e:
             return {
                 "success": False,

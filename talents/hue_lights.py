@@ -2,6 +2,7 @@ import json
 import re
 import os
 from talents.base import BaseTalent
+from core.llm_client import LLMError
 from phue import Bridge
 
 
@@ -82,7 +83,10 @@ class HueLightsTalent(BaseTalent):
 
         # Ask LLM to generate hue action JSON
         prompt = self._build_hue_prompt(command, memory_context)
-        response = llm.generate(prompt)
+        try:
+            response = llm.generate(prompt)
+        except LLMError as e:
+            return {"success": False, "response": f"LLM unavailable: {e}", "actions_taken": [], "spoken": False}
 
         # Parse action JSON
         action_plan = self._parse_action_json(response)

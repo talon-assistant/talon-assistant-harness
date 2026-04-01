@@ -4,6 +4,7 @@ import time
 import subprocess
 import pyautogui
 from talents.base import BaseTalent
+from core.llm_client import LLMError
 
 
 class DesktopControlTalent(BaseTalent):
@@ -222,11 +223,14 @@ class DesktopControlTalent(BaseTalent):
         if memory_context:
             prompt = f"{memory_context}\n{prompt}"
 
-        response = llm.generate(
-            prompt,
-            use_vision=True,
-            screenshot_b64=screenshot_b64,
-        )
+        try:
+            response = llm.generate(
+                prompt,
+                use_vision=True,
+                screenshot_b64=screenshot_b64,
+            )
+        except LLMError as e:
+            return {"success": False, "response": f"LLM unavailable: {e}", "actions_taken": [], "spoken": False}
 
         description = (response or "").strip()
         if not description:
@@ -266,9 +270,12 @@ class DesktopControlTalent(BaseTalent):
             prompt = f"{memory_context}{prompt}"
         prompt = self._append_action_schema(prompt)
 
-        response = llm.generate(
-            prompt, use_vision=needs_vision, screenshot_b64=screenshot_b64,
-            max_length=1024, temperature=0.3)
+        try:
+            response = llm.generate(
+                prompt, use_vision=needs_vision, screenshot_b64=screenshot_b64,
+                max_length=1024, temperature=0.3)
+        except LLMError as e:
+            return {"success": False, "response": f"LLM unavailable: {e}", "actions_taken": [], "spoken": False}
 
         # Debug: log raw LLM response for troubleshooting
         print(f"   [desktop_control] Raw LLM response ({len(response or '')} chars): "
@@ -543,7 +550,7 @@ Respond ONLY with valid JSON, no additional text."""
                         elif char == '/':
                             pyautogui.press('divide')
                         elif char == '=':
-                            pyautogui.press('equals')
+                            pyautogui.press('enter')
                         elif char == '.':
                             pyautogui.press('decimal')
                         elif char == ' ':
@@ -552,7 +559,7 @@ Respond ONLY with valid JSON, no additional text."""
                             # Use press() not write() — UWP Calculator
                             # drops keystrokes from write() reliably
                             pyautogui.press(char)
-                        time.sleep(0.15)
+                        time.sleep(0.25)
                 else:
                     # Normal text mode: paste via clipboard for reliability
                     # pyautogui.write() drops spaces and non-ASCII chars
@@ -581,7 +588,7 @@ Respond ONLY with valid JSON, no additional text."""
                     'minus': 'subtract',
                     'multiply': 'multiply',
                     'divide': 'divide',
-                    'equals': 'equals'
+                    'equals': 'enter'
                 }
                 actual_key = key_map.get(key.lower(), key)
                 pyautogui.press(actual_key)

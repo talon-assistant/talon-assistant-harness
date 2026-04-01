@@ -16,6 +16,7 @@ Examples:
 import json
 import re
 from talents.base import BaseTalent
+from core.llm_client import LLMError
 
 
 class PlannerTalent(BaseTalent):
@@ -97,12 +98,15 @@ If single-step:
         roster = self._build_roster(assistant)
         system_prompt = self._PLANNER_SYSTEM_PROMPT.format(roster=roster)
 
-        raw = llm.generate(
-            f"User request: {command}",
-            system_prompt=system_prompt,
-            temperature=0.2,
-            max_length=512,
-        )
+        try:
+            raw = llm.generate(
+                f"User request: {command}",
+                system_prompt=system_prompt,
+                temperature=0.2,
+                max_length=512,
+            )
+        except LLMError as e:
+            return {"success": False, "response": f"LLM unavailable: {e}", "actions_taken": [], "spoken": False}
 
         plan = self._parse_plan(raw)
 

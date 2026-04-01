@@ -1,5 +1,6 @@
 import requests
 from talents.base import BaseTalent
+from core.llm_client import LLMError
 
 
 # WMO weather interpretation codes -> human descriptions
@@ -123,11 +124,14 @@ class WeatherTalent(BaseTalent):
             f"Focus on the {time_scope} data."
         )
 
-        response = llm.generate(
-            user_message,
-            system_prompt=self._SYSTEM_PROMPT,
-            temperature=0.3,
-        )
+        try:
+            response = llm.generate(
+                user_message,
+                system_prompt=self._SYSTEM_PROMPT,
+                temperature=0.3,
+            )
+        except LLMError as e:
+            return {"success": False, "response": f"LLM unavailable: {e}", "actions_taken": [], "spoken": False}
 
         return {
             "success": True,

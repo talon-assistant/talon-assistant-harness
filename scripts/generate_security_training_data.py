@@ -26,7 +26,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from core.llm_client import LLMClient
+from core.llm_client import LLMClient, LLMError
 
 # ── Artifact type definitions ──────────────────────────────────────────────
 
@@ -289,6 +289,8 @@ def _generate_batch(
             if items:
                 return items[:batch_size]
             print(f"      [warn] Could not parse JSON array (attempt {attempt + 1})")
+        except LLMError as e:
+            print(f"      [warn] LLM unavailable (attempt {attempt + 1}): {e}")
         except Exception as e:
             print(f"      [warn] LLM call failed (attempt {attempt + 1}): {e}")
         time.sleep(1)

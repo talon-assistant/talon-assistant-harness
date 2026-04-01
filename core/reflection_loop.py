@@ -39,6 +39,8 @@ from datetime import datetime
 from urllib.request import urlopen
 from urllib.error import URLError
 
+from core.llm_client import LLMError
+
 
 _SYSTEM_PROMPT = (
     "You are Talon, a desktop AI assistant. Right now, no user is waiting for you. "
@@ -222,6 +224,8 @@ class ReflectionLoop:
             return None
         try:
             return self._assistant.llm.generate(*args, **kwargs)
+        except LLMError:
+            return None
         finally:
             lock.release()
 
@@ -349,8 +353,8 @@ class ReflectionLoop:
         context_parts = [f"The time is {time_str}."]
 
         # Session context
-        if assistant._session_summary:
-            context_parts.append(f"Earlier today: {assistant._session_summary}")
+        if assistant._conversation._session_summary:
+            context_parts.append(f"Earlier today: {assistant._conversation._session_summary}")
         elif assistant.conversation_buffer:
             turns = list(assistant.conversation_buffer)[-2:]
             for t in turns:

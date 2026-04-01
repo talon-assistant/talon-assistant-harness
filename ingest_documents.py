@@ -4,6 +4,7 @@ import json
 import base64
 import time
 from pathlib import Path
+from core.llm_client import LLMError
 import chromadb
 from core import embeddings as _emb
 import pymupdf4llm
@@ -488,7 +489,11 @@ class DocumentIngester:
         """
         try:
             prompt = METADATA_EXTRACT_PROMPT + "\n\nText to index:\n" + chunk_text[:1500]
-            raw = llm_client.generate(prompt, max_length=512, temperature=0.0)
+            try:
+                raw = llm_client.generate(prompt, max_length=512, temperature=0.0)
+            except LLMError as exc:
+                print(f"      LLM unavailable for metadata p{page_num} {filename}: {exc}")
+                return None
             raw = _strip_thinking(raw)
             # Extract the outermost JSON object from the response
             start = raw.index("{")
@@ -510,14 +515,18 @@ class DocumentIngester:
         so we can drop those without storing empty chunks.
         """
         try:
-            desc = llm_client.generate(
-                VISION_EXTRACT_PROMPT,
-                use_vision=True,
-                screenshot_b64=img_b64,
-                temperature=0.0,
-            )
-            if not desc or desc.startswith("Error:"):
-                print(f"      ⚠ Vision failed p{page_num}: {desc}")
+            try:
+                desc = llm_client.generate(
+                    VISION_EXTRACT_PROMPT,
+                    use_vision=True,
+                    screenshot_b64=img_b64,
+                    temperature=0.0,
+                )
+            except LLMError as exc:
+                print(f"      LLM unavailable for vision p{page_num}: {exc}")
+                return ""
+            if not desc:
+                print(f"      Vision failed p{page_num}: empty response")
                 return ""
             if desc.strip().upper() == "SKIP":
                 return ""

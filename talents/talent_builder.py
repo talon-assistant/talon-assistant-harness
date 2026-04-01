@@ -42,6 +42,7 @@ import textwrap
 from pathlib import Path
 
 from talents.base import BaseTalent
+from core.llm_client import LLMError
 
 
 # ── Module-level imports that every assembled talent gets ─────────────────────
@@ -361,6 +362,8 @@ class TalentBuilderTalent(BaseTalent):
             m = re.search(r'\{.*\}', clean, re.DOTALL)
             if m:
                 return json.loads(m.group())
+        except LLMError as e:
+            print(f"   [TalentBuilder] LLM unavailable: {e}")
         except Exception as e:
             print(f"   [TalentBuilder] Requirements error: {e}")
         return None
@@ -396,6 +399,9 @@ class TalentBuilderTalent(BaseTalent):
                 temperature=0.1,
             )
             return self._extract_code_block(raw)
+        except LLMError as e:
+            print(f"   [TalentBuilder] LLM unavailable: {e}")
+            return ""
         except Exception as e:
             print(f"   [TalentBuilder] Body gen error: {e}")
             return ""
@@ -544,6 +550,9 @@ class TalentBuilderTalent(BaseTalent):
         try:
             raw = llm.generate(fix_prompt, max_length=1200, temperature=0.0)
             return self._extract_code_block(raw)
+        except LLMError as e:
+            print(f"   [TalentBuilder] LLM unavailable: {e}")
+            return body
         except Exception as e:
             print(f"   [TalentBuilder] Fix error: {e}")
             return body

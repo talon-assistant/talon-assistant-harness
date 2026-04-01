@@ -394,6 +394,7 @@ to route commands to it &mdash; no keyword matching needed.</p>
 <h3>Basic Structure</h3>
 <pre>
 from talents.base import BaseTalent
+from core.llm_client import LLMError
 
 class MyTalent(BaseTalent):
     name = "my_talent"
@@ -405,7 +406,11 @@ class MyTalent(BaseTalent):
 
     def execute(self, command, context):
         llm = context["llm"]
-        response = llm.generate(command)
+        try:
+            response = llm.generate(command)
+        except LLMError as e:
+            return {"success": False, "response": f"LLM unavailable: {e}",
+                    "actions_taken": [], "spoken": False}
         return {
             "success": True,
             "response": response,

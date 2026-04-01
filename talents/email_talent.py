@@ -28,7 +28,8 @@ from email.mime.multipart import MIMEMultipart
 from email.header import decode_header
 from datetime import datetime
 from talents.base import BaseTalent
-from core.assistant import _wrap_external, _INJECTION_DEFENSE_CLAUSE
+from core.llm_client import LLMError
+from core.security import wrap_external, INJECTION_DEFENSE_CLAUSE
 
 
 class EmailTalent(BaseTalent):
@@ -70,7 +71,7 @@ class EmailTalent(BaseTalent):
         "Using ONLY the email data provided, give a concise summary. "
         "Include sender name, subject, and a 1-2 sentence summary of the body. "
         "Do NOT add information not in the data."
-        + _INJECTION_DEFENSE_CLAUSE
+        + INJECTION_DEFENSE_CLAUSE
     )
 
     _SYSTEM_PROMPT_COMPOSE = (
@@ -89,7 +90,7 @@ class EmailTalent(BaseTalent):
         "Given the original email and the user's instruction, write ONLY the reply body text. "
         "Do not repeat or quote the original email. Keep it concise and professional. "
         "Return ONLY the reply body text — no subject line, no greeting headers."
-        + _INJECTION_DEFENSE_CLAUSE
+        + INJECTION_DEFENSE_CLAUSE
     )
 
     def __init__(self):
@@ -303,15 +304,18 @@ class EmailTalent(BaseTalent):
                         return {"response": "[Email content blocked by security filter]",
                                 "actions_taken": [], "success": False}
                 user_msg = (
-                    f"{_wrap_external(email_block, 'email content')}\n\n"
+                    f"{wrap_external(email_block, 'email content')}\n\n"
                     f"User asked: {command}\n\n"
                     f"Summarize this email concisely."
                 )
-                response = llm.generate(
-                    user_msg,
-                    system_prompt=self._SYSTEM_PROMPT_READ,
-                    temperature=0.3,
-                )
+                try:
+                    response = llm.generate(
+                        user_msg,
+                        system_prompt=self._SYSTEM_PROMPT_READ,
+                        temperature=0.3,
+                    )
+                except LLMError as e:
+                    return {"success": False, "response": f"LLM unavailable: {e}", "actions_taken": [], "spoken": False}
             else:
                 response = (
                     f"From: {email_data['from']}\n"
@@ -367,11 +371,14 @@ class EmailTalent(BaseTalent):
         # substitution) so they can be attached rather than pasted into the body.
         attach_paths = self._extract_attach_paths(command)
 
-        response = llm.generate(
-            f"Compose an email based on this request:\n\n{command}",
-            system_prompt=self._SYSTEM_PROMPT_COMPOSE,
-            temperature=0.3,
-        )
+        try:
+            response = llm.generate(
+                f"Compose an email based on this request:\n\n{command}",
+                system_prompt=self._SYSTEM_PROMPT_COMPOSE,
+                temperature=0.3,
+            )
+        except LLMError as e:
+            return {"success": False, "response": f"LLM unavailable: {e}", "actions_taken": [], "spoken": False}
 
         composed = self._parse_json_draft(response)
         if not composed or "to" not in composed:
@@ -500,15 +507,18 @@ class EmailTalent(BaseTalent):
                         return {"response": "[Email content blocked by security filter]",
                                 "actions_taken": [], "success": False}
                 prompt = (
-                    f"{_wrap_external(original_block, 'original email to reply to')}\n\n"
+                    f"{wrap_external(original_block, 'original email to reply to')}\n\n"
                     f"User instruction: {command}\n\n"
                     f"Write the reply body."
                 )
-                reply_body = llm.generate(
-                    prompt,
-                    system_prompt=self._SYSTEM_PROMPT_REPLY,
-                    temperature=0.4,
-                )
+                try:
+                    reply_body = llm.generate(
+                        prompt,
+                        system_prompt=self._SYSTEM_PROMPT_REPLY,
+                        temperature=0.4,
+                    )
+                except LLMError as e:
+                    return {"success": False, "response": f"LLM unavailable: {e}", "actions_taken": [], "spoken": False}
 
             # Confirmation gate: external_send
             # Signal-originated commands bypass the desktop compose dialog;

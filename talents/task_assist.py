@@ -27,6 +27,7 @@ import pyperclip
 from PIL import Image
 
 from talents.base import BaseTalent
+from core.llm_client import LLMError
 
 
 class TaskAssistTalent(BaseTalent):
@@ -164,6 +165,13 @@ Respond ONLY with a JSON object — no markdown, no explanation:
                 system_prompt=system_prompt,
             )
             draft = (draft or "").strip()
+        except LLMError as e:
+            return {
+                "success": False,
+                "response": f"LLM unavailable: {e}",
+                "actions_taken": [],
+                "spoken": False,
+            }
         except Exception as e:
             return {
                 "success": False,
@@ -239,6 +247,13 @@ Respond ONLY with a JSON object — no markdown, no explanation:
                 temperature=0.3,
                 system_prompt=system_prompt,
             )
+        except LLMError as e:
+            return {
+                "success": False,
+                "response": f"LLM unavailable: {e}",
+                "actions_taken": [],
+                "spoken": False,
+            }
         except Exception as e:
             return {
                 "success": False,

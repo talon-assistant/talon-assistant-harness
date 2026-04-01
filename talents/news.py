@@ -2,8 +2,9 @@ import logging
 from datetime import datetime
 import requests
 from talents.base import BaseTalent
+from core.llm_client import LLMError
 from ddgs import DDGS
-from core.assistant import _wrap_external, _INJECTION_DEFENSE_CLAUSE
+from core.security import wrap_external, INJECTION_DEFENSE_CLAUSE
 
 log = logging.getLogger(__name__)
 
@@ -43,7 +44,7 @@ class NewsTalent(BaseTalent):
         "If the articles don't cover the requested topic, say "
         "\"I couldn't find recent news about that topic.\" "
         "NEVER make up news. NEVER guess. NEVER say 'check website X'."
-        + _INJECTION_DEFENSE_CLAUSE
+        + INJECTION_DEFENSE_CLAUSE
     )
 
     def can_handle(self, command: str) -> bool:
@@ -105,7 +106,7 @@ class NewsTalent(BaseTalent):
 
         # Build user message — wrap results in structural injection-defence markers
         user_message = (
-            f"{_wrap_external(news_results, 'news articles')}\n\n"
+            f"{wrap_external(news_results, 'news articles')}\n\n"
             f"Request: {command}\n\n"
             f"Summarize the most important headlines using ONLY the articles above. "
             f"Include specific details — names, events, dates — from the articles."
@@ -113,11 +114,14 @@ class NewsTalent(BaseTalent):
 
         # Ask LLM to synthesize with system prompt + low temperature
         llm = context["llm"]
-        response = llm.generate(
-            user_message,
-            system_prompt=self._NEWS_SYSTEM_PROMPT,
-            temperature=0.3,
-        )
+        try:
+            response = llm.generate(
+                user_message,
+                system_prompt=self._NEWS_SYSTEM_PROMPT,
+                temperature=0.3,
+            )
+        except LLMError as e:
+            return {"success": False, "response": f"LLM unavailable: {e}", "actions_taken": [], "spoken": False}
 
         print(f"   -> LLM response: {response[:200]}...")
 

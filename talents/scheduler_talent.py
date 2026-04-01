@@ -22,6 +22,7 @@ import re
 from datetime import datetime, timedelta
 
 from talents.base import BaseTalent
+from core.llm_client import LLMError
 
 
 class SchedulerTalent(BaseTalent):
@@ -308,6 +309,9 @@ Examples:
                 temperature=0.1,
                 max_length=300,
             )
+        except LLMError as exc:
+            print(f"   [SchedulerTalent] LLM unavailable: {exc}")
+            return None
         except Exception as exc:
             print(f"   [SchedulerTalent] LLM error: {exc}")
             return None

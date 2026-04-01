@@ -14,6 +14,14 @@ import json
 from urllib.parse import urlparse
 
 
+class LLMError(Exception):
+    """Raised when an LLM generation request fails."""
+
+    def __init__(self, message: str, status_code: int | None = None):
+        super().__init__(message)
+        self.status_code = status_code
+
+
 class LLMClient:
     """Multi-format LLM API wrapper for inference."""
 
@@ -191,11 +199,14 @@ class LLMClient:
                 if result and 'results' in result and len(result['results']) > 0:
                     return result['results'][0]['text'].strip()
                 else:
-                    return "Error: Unexpected response format"
+                    raise LLMError("Unexpected response format")
             else:
-                return f"Error: Status {response.status_code}"
+                raise LLMError(f"Status {response.status_code}",
+                               status_code=response.status_code)
+        except LLMError:
+            raise
         except Exception as e:
-            return f"Error: {str(e)}"
+            raise LLMError(str(e)) from e
 
     # ── llama.cpp Backend ─────────────────────────────────────
 
@@ -210,9 +221,9 @@ class LLMClient:
             if status == "starting":
                 return "I'm still loading the language model. Please try again in a moment."
             if status == "error":
-                return "Error: LLM server failed to start. Check the LLM Server settings."
+                raise LLMError("LLM server failed to start. Check the LLM Server settings.")
             if status == "stopped":
-                return "Error: LLM server is not running."
+                raise LLMError("LLM server is not running.")
 
         effective_max_length = max_length or self.max_length
         effective_temperature = (temperature if temperature is not None
@@ -246,11 +257,17 @@ class LLMClient:
                 content = result.get("content", "")
                 if content:
                     return content.strip()
-                return result.get("text", "Error: Unexpected response format").strip()
+                text = result.get("text", "").strip()
+                if text:
+                    return text
+                raise LLMError("Unexpected response format")
             else:
-                return f"Error: Status {response.status_code}"
+                raise LLMError(f"Status {response.status_code}",
+                               status_code=response.status_code)
+        except LLMError:
+            raise
         except Exception as e:
-            return f"Error: {str(e)}"
+            raise LLMError(str(e)) from e
 
     # ── OpenAI-Compatible Backend ─────────────────────────────
 
@@ -296,11 +313,14 @@ class LLMClient:
                 if choices:
                     message = choices[0].get("message", {})
                     return message.get("content", "").strip()
-                return "Error: No choices in response"
+                raise LLMError("No choices in response")
             else:
-                return f"Error: Status {response.status_code}"
+                raise LLMError(f"Status {response.status_code}",
+                               status_code=response.status_code)
+        except LLMError:
+            raise
         except Exception as e:
-            return f"Error: {str(e)}"
+            raise LLMError(str(e)) from e
 
     # ── Prompt Building ───────────────────────────────────────
 

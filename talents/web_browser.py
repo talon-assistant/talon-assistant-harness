@@ -12,6 +12,7 @@ from __future__ import annotations
 import re
 import os
 from talents.base import BaseTalent
+from core.llm_client import LLMError
 
 # ── constants ────────────────────────────────────────────────────────────────
 
@@ -348,7 +349,10 @@ class WebBrowserTalent(BaseTalent):
             f"--- FETCHED CONTENT ---\n{content}\n--- END CONTENT ---\n\n"
             f"User request: {display_command}"
         )
-        response = llm.generate(prompt, max_length=600)
+        try:
+            response = llm.generate(prompt, max_length=600)
+        except LLMError as e:
+            return {"success": False, "response": f"LLM unavailable: {e}", "actions_taken": [], "spoken": False}
 
         if speak_response and voice:
             voice.speak(response)

@@ -2,6 +2,8 @@ import threading
 import numpy as np
 from PyQt6.QtCore import QThread, pyqtSignal
 
+from core.llm_client import LLMError
+
 
 class InitWorker(QThread):
     """Initializes TalonAssistant off the GUI thread.
@@ -385,6 +387,8 @@ class TaskAssistReviseWorker(QThread):
                 temperature=0.7,
             )
             self.revised.emit((result or "").strip())
+        except LLMError as e:
+            self.error.emit(f"LLM unavailable: {e}")
         except Exception as e:
             self.error.emit(str(e))
 
@@ -430,6 +434,8 @@ class ContextHintWorker(QThread):
             hint = (result or "").strip().strip('"').strip("'")
             if hint:
                 self.hint.emit(f"e.g. {hint}")
+        except LLMError as e:
+            self.error.emit(f"LLM unavailable: {e}")
         except Exception as e:
             self.error.emit(str(e))
 

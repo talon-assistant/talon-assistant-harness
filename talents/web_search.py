@@ -1,8 +1,9 @@
 import logging
 import requests
 from talents.base import BaseTalent
+from core.llm_client import LLMError
 from ddgs import DDGS
-from core.assistant import _wrap_external, _INJECTION_DEFENSE_CLAUSE
+from core.security import wrap_external, INJECTION_DEFENSE_CLAUSE
 
 log = logging.getLogger(__name__)
 
@@ -39,7 +40,7 @@ class WebSearchTalent(BaseTalent):
         "If the search results do NOT contain enough information, say "
         "\"I couldn't find specific information about that in the search results.\" "
         "NEVER make up data. NEVER guess. NEVER omit URLs for sources you cite."
-        + _INJECTION_DEFENSE_CLAUSE
+        + INJECTION_DEFENSE_CLAUSE
     )
 
     # Conversational openers to strip before prefix detection
@@ -185,7 +186,7 @@ class WebSearchTalent(BaseTalent):
 
         # Build the user message — wrap results in structural injection-defence markers
         user_message = (
-            f"{_wrap_external(web_results, 'web search results')}\n\n"
+            f"{wrap_external(web_results, 'web search results')}\n\n"
             f"Question: {command}\n\n"
             f"Answer the question using ONLY the search results above. "
             f"Include specific facts, numbers, and data found in the results."
@@ -193,11 +194,14 @@ class WebSearchTalent(BaseTalent):
 
         # Ask LLM to synthesize — use system prompt + low temperature for factual grounding
         llm = context["llm"]
-        response = llm.generate(
-            user_message,
-            system_prompt=self._SEARCH_SYSTEM_PROMPT,
-            temperature=0.3,  # low temp = stick to the facts in the prompt
-        )
+        try:
+            response = llm.generate(
+                user_message,
+                system_prompt=self._SEARCH_SYSTEM_PROMPT,
+                temperature=0.3,  # low temp = stick to the facts in the prompt
+            )
+        except LLMError as e:
+            return {"success": False, "response": f"LLM unavailable: {e}", "actions_taken": [], "spoken": False}
 
         print(f"   -> LLM response: {response[:200]}...")
 
