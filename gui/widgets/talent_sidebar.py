@@ -140,22 +140,35 @@ class TalentSidebar(QScrollArea):
         self._layout.insertStretch(self._layout.count() - 2)
 
     def highlight_talent(self, talent_name):
-        """Highlight which talent handled the last command (auto-clear after 3s)."""
-        self._highlight_generation += 1
-        gen = self._highlight_generation
+        """Highlight which talent handled the last command (auto-clear after 3s).
 
-        for name, item in self._items.items():
-            item.set_highlighted(name == talent_name)
+        Deferred to the next event-loop tick via QTimer.singleShot(0) to
+        avoid access violations when called during signal delivery from a
+        QThread — gives Qt time to finish processing pending events.
+        """
+        QTimer.singleShot(0, lambda: self._do_highlight(talent_name))
 
-        # Capture current generation — if it changes before timer fires,
-        # the callback becomes a no-op (items may have been replaced).
-        QTimer.singleShot(3000, lambda g=gen: self._clear_highlights(g))
+    def _do_highlight(self, talent_name):
+        try:
+            self._highlight_generation += 1
+            gen = self._highlight_generation
+
+            for name, item in list(self._items.items()):
+                try:
+                    item.set_highlighted(name == talent_name)
+                except RuntimeError:
+                    # C++ object deleted — skip stale widget
+                    pass
+
+            QTimer.singleShot(3000, lambda g=gen: self._clear_highlights(g))
+        except Exception as e:
+            print(f"   [Sidebar] highlight error: {e}")
 
     def _clear_highlights(self, generation):
         """Clear highlights only if no newer highlight has been requested."""
         if generation != self._highlight_generation:
             return
-        for item in self._items.values():
+        for item in list(self._items.values()):
             try:
                 item.set_highlighted(False)
             except RuntimeError:
