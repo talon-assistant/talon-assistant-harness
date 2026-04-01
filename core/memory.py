@@ -1,8 +1,14 @@
+import os
 import re
 import sqlite3
 import json
 import time
 from datetime import datetime
+
+# Disable ChromaDB's PostHog telemetry — its background thread does SSL I/O
+# that causes heap corruption / GIL crashes on Python 3.10 + PyQt6.
+os.environ.setdefault("ANONYMIZED_TELEMETRY", "false")
+
 import chromadb
 from core import embeddings as _emb
 from core import reranker as _reranker
