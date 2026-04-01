@@ -1399,7 +1399,13 @@ class TalonAssistant:
 
             if talent:
                 print(f"   [Routing] -> {talent.name}")
-                result = talent.execute(command, context)
+                if getattr(talent, "subprocess_isolated", False):
+                    from talents.base import run_talent_isolated
+                    print(f"   [Isolation] running {talent.name} in subprocess")
+                    result = run_talent_isolated(
+                        talent, command, context.get("config", {}))
+                else:
+                    result = talent.execute(command, context)
 
                 # If talent explicitly declined (success=False, blank response,
                 # no actions taken), fall through to conversation rather than

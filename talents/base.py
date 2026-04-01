@@ -1,6 +1,8 @@
 import os
 import re
+import traceback
 from abc import ABC, abstractmethod
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -91,6 +93,12 @@ class BaseTalent(ABC):
     keywords: list[str] = []
     examples: list[str] = []  # Natural-language example commands for LLM routing
     priority: int = 50
+
+    # Set True in talents that load C-extension libraries (yfinance, pandas,
+    # numpy, etc.) whose GIL / destructor behaviour can corrupt the host
+    # process.  When True, execute() is run in a child process via
+    # _run_isolated() so all native state is discarded on exit.
+    subprocess_isolated: bool = False
 
     # Declare settings.json keys (dot-notation) or OS env vars that must be
     # present for this talent to operate.  Missing entries auto-disable the
@@ -330,3 +338,70 @@ class BaseTalent(ABC):
             return None
         except Exception:
             return fallback
+
+
+# ── Subprocess isolation helpers ─────────────────────────────────────────────
+# Must be module-level so multiprocessing can pickle them.
+
+def _isolated_execute(module_path: str, class_name: str,
+                      command: str, config: dict) -> dict:
+    """Run a talent's execute() in a fresh child process.
+
+    Imports the talent module, instantiates the class, calls initialize()
+    with the config dict, then calls execute() with a minimal context
+    containing only serialisable data.  Returns the result dict.
+
+    All C-extension state (yfinance, pandas, numpy, etc.) is destroyed
+    when the child process exits, preventing GIL / heap corruption in the
+    host process.
+    """
+    import importlib
+    mod = importlib.import_module(module_path)
+    cls = getattr(mod, class_name)
+    talent = cls()
+    talent.initialize(config)
+    # Minimal context — no LLM, memory, voice, or other non-picklable objects
+    minimal_context = {"config": config}
+    result = talent.execute(command, minimal_context)
+    # Normalise to plain dict for cross-process serialisation
+    if not isinstance(result, dict):
+        result = {
+            "success": getattr(result, "success", False),
+            "response": getattr(result, "response", ""),
+            "actions_taken": getattr(result, "actions_taken", []),
+            "spoken": getattr(result, "spoken", False),
+        }
+    return result
+
+
+def run_talent_isolated(talent, command: str, config: dict,
+                        timeout: float = 30.0) -> dict:
+    """Execute *talent* in a child process and return the result dict.
+
+    Args:
+        talent:  A BaseTalent instance (used to resolve module/class).
+        command: The user command string.
+        config:  The full settings dict (JSON-serialisable).
+        timeout: Maximum seconds to wait for the child process.
+
+    Returns:
+        dict with success/response/actions_taken/spoken keys.
+    """
+    cls = type(talent)
+    module_path = cls.__module__
+    class_name = cls.__name__
+
+    try:
+        with ProcessPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(_isolated_execute, module_path,
+                                 class_name, command, config)
+            return future.result(timeout=timeout)
+    except Exception:
+        tb = traceback.format_exc()
+        print(f"   [Isolation] subprocess failed:\n{tb}")
+        return {
+            "success": False,
+            "response": "That operation failed in the background worker.",
+            "actions_taken": [],
+            "spoken": False,
+        }
