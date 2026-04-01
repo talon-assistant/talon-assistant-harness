@@ -48,6 +48,17 @@ class MemorySystem:
             metadata={"description": "Behavioral rules: trigger phrase semantic matching"}
         )
 
+        # Sync check: if SQLite has rules but ChromaDB is empty (e.g. after
+        # a crash that wiped ChromaDB storage), rebuild the index now.
+        if self.rules_collection.count() == 0:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM rules WHERE enabled = 1")
+            sql_count = cursor.fetchone()[0]
+            conn.close()
+            if sql_count > 0:
+                self._rebuild_rules_collection()
+
         # Collection for correction learning (previous command → what user actually wanted)
         self.corrections_collection = self.chroma_client.get_or_create_collection(
             name="talon_corrections",
@@ -1074,8 +1085,21 @@ class MemorySystem:
             )
 
             if not results["documents"] or not results["documents"][0]:
-                print(f"   [Rules] No rules in database to match against")
-                return None
+                # ChromaDB empty but SQLite may have rules — try rebuild
+                if self._check_rules_exist():
+                    print("   [Rules] ChromaDB empty but SQLite has rules — rebuilding...")
+                    self._rebuild_rules_collection()
+                    results = self.rules_collection.query(
+                        query_embeddings=_emb.embed_queries([command], self._embed_model),
+                        n_results=1,
+                        include=["documents", "metadatas", "distances"],
+                    )
+                    if not results["documents"] or not results["documents"][0]:
+                        print("   [Rules] Still empty after rebuild")
+                        return None
+                else:
+                    print("   [Rules] No rules in database to match against")
+                    return None
 
             closest_trigger = results["documents"][0][0]
             distance = results["distances"][0][0]
