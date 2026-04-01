@@ -113,6 +113,10 @@ class BaseTalent(ABC):
     required_config: list[str] = []
     required_env: list[str] = []
 
+    # Pip packages this talent needs beyond the base requirements.
+    # Checked at load time; if missing, talent is disabled with a message.
+    required_packages: list[str] = []
+
     def __init__(self):
         self._enabled = True
         self._config = {}  # Per-talent config from talents.json
@@ -131,6 +135,11 @@ class BaseTalent(ABC):
         for env_name in self.required_env:
             if not os.environ.get(env_name):
                 problems.append(f"env var '{env_name}' is not set")
+        for pkg in self.required_packages:
+            try:
+                __import__(pkg.replace("-", "_"))
+            except ImportError:
+                problems.append(f"pip package '{pkg}' is not installed (pip install {pkg})")
         return problems
 
     @staticmethod

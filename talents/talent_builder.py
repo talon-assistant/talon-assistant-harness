@@ -1,36 +1,11 @@
-"""TalentBuilder — self-writing talent plugin generator.
+"""TalentBuilder — generate talent plugins from plain-English descriptions.
 
-The user describes what they want in plain English; this talent generates,
-validates, writes, and hot-loads a new talent plugin without restarting.
-
-Strategy: Template Assembly (not free-form class generation)
-------------------------------------------------------------
-Small models (4/8B) struggle to reliably produce a correct Python class in one
-shot — wrong return dict, missing imports, truncated code, bad indentation, etc.
-
-Instead the responsibility is split:
-
-  Python builds:   class header, all class attributes, can_handle(), the full
-                   execute() wrapper (try/except, return dict), get_config_schema(),
-                   and all module-level imports — all deterministic, always correct.
-
-  LLM generates:   ONLY the ~10-40 line body of execute() logic.
-                   Task: "fetch/compute data, end with response = '...'"
-                   No class structure, no return, no try/except needed.
-
-This makes the LLM's job radically simpler and nearly impossible to structurally fail.
-
-Flow
-----
-1. _extract_arg()             → short description from the user's command
-2. LLM call 1 (requirements)  → structured JSON spec (name, keywords, config…)
-3. LLM call 2 (execute body)  → ~20-40 lines of logic ending with response = "..."
-4. Body sanity check           → response= present, no forbidden patterns
-5. _assemble_talent_file()     → Python builds the complete .py file
-6. Syntax check (py_compile)   + safety scan
-7. Optional fix pass           → one attempt on the body if assembly fails
-8. Write to talents/user/<name>.py
-9. Hot-load via context["assistant"].load_user_talent()
+Conversational flow:
+1. User: "create a talent that checks Bitcoin prices"
+2. LLM generates complete .py file
+3. Talon shows the code and asks: "install it, or describe changes"
+4. User: "install it" → writes + hot-loads
+   OR "change it to use USD" → LLM refines → show again
 """
 
 import json
@@ -38,7 +13,6 @@ import os
 import py_compile
 import re
 import tempfile
-import textwrap
 from pathlib import Path
 
 from talents.base import BaseTalent
@@ -48,93 +22,240 @@ import logging
 log = logging.getLogger(__name__)
 
 
-# ── Module-level imports that every assembled talent gets ─────────────────────
-# All commonly needed stdlib + requests are pre-imported so the model never
-# needs to write import statements.
-
-_TEMPLATE_IMPORTS = """\
-import datetime
-import json
-import os
-import random
-import re
-import time
-
-import requests
-from talents.base import BaseTalent
-"""
-
-# ── System prompts ─────────────────────────────────────────────────────────────
-
-_REQUIREMENTS_SYSTEM_PROMPT = """\
-You are designing a plugin specification for Talon, a personal AI desktop assistant.
-Given a plain-English description of what a new plugin should do, infer a complete
-specification and return it as a JSON object.
-
-Return ONLY valid JSON, no explanation, no markdown.
-"""
-
-_EXEC_BODY_SYSTEM_PROMPT = """\
-You are writing the body of a Python execute() function for a Talon voice assistant plugin.
-
-Variables already available — do NOT re-declare or import these:
-  llm         call: llm.generate(prompt, max_length=150, temperature=0.7) -> str
-  command     the user's voice command string
-  self.talent_config   dict of user credentials/settings — read with .get("key", "")
-  self._extract_arg(llm, command, "what to extract", max_length=20) -> str or None
-  requests    for HTTP calls — always use timeout=10
-
-Pre-imported, use freely without import statements:
-  datetime, json, os, random, re, time
-
-Rules (follow all of them):
-  1. The LAST line of your code must be:  response = "..."
-  2. Do NOT write:  return  /  try  /  except  /  def  /  class  /  import
-  3. Keep it under 40 lines
-  4. If credentials needed: check self.talent_config.get("key",""), set response
-     to a config reminder message if the value is empty
-
---- EXAMPLE 1: Extract topic from command and ask LLM ---
-topic = self._extract_arg(llm, command, "topic to explain", max_length=30) or "that"
-response = llm.generate(
-    f"Explain '{topic}' clearly in 2 short sentences.",
-    max_length=150,
-    temperature=0.7,
-)
-
---- EXAMPLE 2: HTTP API call with credential guard ---
-api_key = self.talent_config.get("api_key", "")
-if not api_key:
-    response = "API key not configured. Go to Settings → Talent Config to add it."
-else:
-    r = requests.get(
-        "https://api.example.com/v1/data",
-        headers={"Authorization": f"Bearer {api_key}"},
-        timeout=10,
-    )
-    data = r.json()
-    value = data.get("result", "No data found")
-    response = f"Result: {value}"
-
-Write ONLY the body code. No imports, no def, no class, no return, no try/except.
-Final line must be:  response = "..."
-"""
-
+# Dangerous patterns that are never allowed in generated code
 _FORBIDDEN_PATTERNS = [
-    "import subprocess",
     "os.system(",
     "os.popen(",
-    "os.execv(",
-    "os.execl(",
-    "os.execle(",
+    "os.execv(", "os.execl(", "os.execle(",
     "__import__(",
     "eval(",
     "exec(",
+    "subprocess.call(", "subprocess.run(",  # but subprocess.Popen is OK if no shell=True
+    "shutil.rmtree(",
+    "open('/etc", "open('C:\\\\Windows",
 ]
+
+# System prompt with BaseTalent API + 3 working examples
+_GENERATION_SYSTEM_PROMPT = """\
+You are a Python code generator for Talon, a desktop voice assistant. Generate a complete, working talent plugin file.
+
+## BaseTalent API
+
+Every talent must:
+- Subclass `BaseTalent` (from `talents.base import BaseTalent`)
+- Set class attributes: `name` (snake_case), `description` (one line), `keywords` (list), `examples` (3+ example commands), `priority` (int, 50 is default)
+- Implement `execute(self, command: str, context: dict) -> dict`
+- Return dict: `{"success": True/False, "response": "text for user", "actions_taken": [...], "spoken": False}`
+
+Available in execute():
+- `context["llm"]` — LLM client. Call: `llm.generate(prompt, max_length=200, temperature=0.7)` returns str
+- `self._extract_arg(llm, command, "what to extract", max_length=30)` — extract a value from the command via LLM
+- `self.talent_config` — dict of per-talent config (API keys, settings). Read with `.get("key", "")`
+- `self._config` — same as talent_config
+
+For config, define `get_config_schema()` returning `{"fields": [{"key": "api_key", "label": "API Key", "type": "password", "default": ""}]}`
+
+For heavy C-extension libraries (pandas, numpy, yfinance), set `subprocess_isolated = True`.
+
+For pip packages beyond stdlib, set `required_packages = ["package_name"]`.
+
+## Rules
+1. Write a COMPLETE Python file with imports at top, class definition, all methods
+2. Use try/except for network calls and error-prone operations
+3. Return the standard result dict from execute()
+4. If config (API keys) is needed, check for empty values and return a helpful config reminder
+5. Keep the code clean, concise, and well-structured
+6. Do NOT use: os.system(), eval(), exec(), __import__()
+
+## Example 1: Simple API talent with config
+
+```python
+import requests
+from talents.base import BaseTalent
+
+
+class BitcoinPriceTalent(BaseTalent):
+    name = "bitcoin_price"
+    description = "Check current Bitcoin and cryptocurrency prices"
+    keywords = ["bitcoin", "btc", "crypto", "cryptocurrency", "coin price"]
+    examples = [
+        "what's the Bitcoin price",
+        "check BTC price",
+        "how much is Ethereum worth",
+    ]
+    priority = 50
+
+    def can_handle(self, command: str) -> bool:
+        return self.keyword_match(command)
+
+    def execute(self, command: str, context: dict) -> dict:
+        llm = context.get("llm")
+        coin = self._extract_arg(llm, command, "cryptocurrency name", max_length=20) or "bitcoin"
+        coin = coin.lower().strip()
+
+        try:
+            resp = requests.get(
+                f"https://api.coingecko.com/api/v3/simple/price",
+                params={"ids": coin, "vs_currencies": "usd", "include_24hr_change": "true"},
+                timeout=10,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+            if coin not in data:
+                return {"success": False, "response": f"Couldn't find '{coin}'. Try 'bitcoin', 'ethereum', etc.",
+                        "actions_taken": [], "spoken": False}
+
+            price = data[coin]["usd"]
+            change = data[coin].get("usd_24h_change", 0)
+            arrow = "\\u2191" if change >= 0 else "\\u2193"
+            return {
+                "success": True,
+                "response": f"{coin.title()}: ${price:,.2f} ({arrow} {change:+.1f}% 24h)",
+                "actions_taken": [{"action": "crypto_price", "coin": coin}],
+                "spoken": False,
+            }
+        except Exception as e:
+            return {"success": False, "response": f"Error fetching price: {e}",
+                    "actions_taken": [], "spoken": False}
+```
+
+## Example 2: LLM-powered text tool
+
+```python
+import pyperclip
+from talents.base import BaseTalent
+
+
+class SummarizeClipboardTalent(BaseTalent):
+    name = "summarize_clipboard"
+    description = "Summarize or transform text from the clipboard using the LLM"
+    keywords = ["summarize clipboard", "summarize text", "clipboard summary", "rewrite clipboard"]
+    examples = [
+        "summarize my clipboard",
+        "rewrite the clipboard text to be more formal",
+        "translate clipboard to Spanish",
+    ]
+    priority = 45
+
+    def can_handle(self, command: str) -> bool:
+        return self.keyword_match(command)
+
+    def execute(self, command: str, context: dict) -> dict:
+        llm = context.get("llm")
+        if not llm:
+            return {"success": False, "response": "LLM not available.", "actions_taken": [], "spoken": False}
+
+        try:
+            text = pyperclip.paste()
+        except Exception:
+            text = ""
+
+        if not text or len(text.strip()) < 10:
+            return {"success": False, "response": "Clipboard is empty or too short to summarize.",
+                    "actions_taken": [], "spoken": False}
+
+        # Truncate if very long
+        if len(text) > 3000:
+            text = text[:3000] + "..."
+
+        task = self._extract_arg(llm, command, "what to do with the text", max_length=50) or "summarize"
+
+        prompt = f"Task: {task}\\n\\nText:\\n{text}\\n\\nProvide the result:"
+        try:
+            result = llm.generate(prompt, max_length=500, temperature=0.5)
+            return {
+                "success": True,
+                "response": result,
+                "actions_taken": [{"action": "clipboard_transform", "task": task}],
+                "spoken": False,
+            }
+        except Exception as e:
+            return {"success": False, "response": f"Error: {e}", "actions_taken": [], "spoken": False}
+```
+
+## Example 3: Local automation
+
+```python
+import os
+import glob
+from talents.base import BaseTalent
+
+
+class RecentFilesTotalent(BaseTalent):
+    name = "recent_files"
+    description = "List recently modified files in a directory"
+    keywords = ["recent files", "latest files", "new files", "modified files"]
+    examples = [
+        "show recent files on my desktop",
+        "what files were modified today in Downloads",
+        "list latest files in Documents",
+    ]
+    priority = 45
+
+    def can_handle(self, command: str) -> bool:
+        return self.keyword_match(command)
+
+    def execute(self, command: str, context: dict) -> dict:
+        llm = context.get("llm")
+        folder = self._extract_arg(llm, command, "folder name like Desktop, Downloads, Documents", max_length=30)
+
+        # Map common names to paths
+        home = os.path.expanduser("~")
+        folder_map = {
+            "desktop": os.path.join(home, "Desktop"),
+            "downloads": os.path.join(home, "Downloads"),
+            "documents": os.path.join(home, "Documents"),
+        }
+        path = folder_map.get((folder or "desktop").lower(), os.path.join(home, folder or "Desktop"))
+
+        if not os.path.isdir(path):
+            return {"success": False, "response": f"Folder not found: {path}",
+                    "actions_taken": [], "spoken": False}
+
+        try:
+            files = []
+            for f in os.listdir(path):
+                full = os.path.join(path, f)
+                if os.path.isfile(full):
+                    mtime = os.path.getmtime(full)
+                    files.append((f, mtime))
+
+            files.sort(key=lambda x: x[1], reverse=True)
+            top = files[:10]
+
+            if not top:
+                return {"success": True, "response": f"No files found in {path}",
+                        "actions_taken": [], "spoken": False}
+
+            import datetime
+            lines = [f"Recent files in {os.path.basename(path)}:\\n"]
+            for name, mtime in top:
+                dt = datetime.datetime.fromtimestamp(mtime)
+                lines.append(f"  {name}  ({dt.strftime('%b %d %H:%M')})")
+
+            return {
+                "success": True,
+                "response": "\\n".join(lines),
+                "actions_taken": [{"action": "list_files", "path": path}],
+                "spoken": False,
+            }
+        except Exception as e:
+            return {"success": False, "response": f"Error: {e}", "actions_taken": [], "spoken": False}
+```
+
+Return ONLY the Python code for the talent file. No explanation, no markdown fences around the whole thing.
+"""
 
 
 class TalentBuilderTalent(BaseTalent):
-    """Generate, validate, and hot-load new talent plugins from plain-English descriptions."""
+    """Generate, validate, and hot-load new talent plugins from plain-English descriptions.
+
+    Supports a conversational flow:
+    - "create a talent that..." → generates code, shows for review
+    - "install it" / "looks good" → writes to disk and hot-loads
+    - "change X" / "fix Y" → refines and shows again
+    """
 
     name = "talent_builder"
     description = "Create new talent plugins from a plain-English description"
@@ -149,374 +270,263 @@ class TalentBuilderTalent(BaseTalent):
         "build a talent that can send Slack messages",
         "make a talent that reads my RSS feeds",
         "create a plugin that monitors my server uptime",
-        "build a talent that shows me stock prices",
-        "make a talent that tells me trivia questions",
     ]
-    priority = 82   # High — just below planner (85)
+    priority = 82
 
-    # ── public interface ──────────────────────────────────────────────────────
+    # Pending code state for review/install flow
+    _pending_code: str | None = None
+    _pending_name: str | None = None
+    _pending_description: str | None = None
+
+    # Phrases that mean "install the pending code"
+    _INSTALL_PHRASES = [
+        "install it", "install that", "save it", "save that",
+        "looks good", "looks great", "perfect", "do it",
+        "load it", "activate it", "yes", "yep", "yeah",
+    ]
+
+    # Phrases that mean "refine the pending code"
+    _REFINE_INDICATORS = [
+        "change", "fix", "update", "modify", "add", "remove",
+        "instead", "actually", "but", "also", "don't", "wrong",
+        "should", "shouldn't", "needs to", "make it",
+    ]
 
     def can_handle(self, command: str) -> bool:
+        # If we have pending code, intercept install/refine commands
+        if self._pending_code:
+            cmd = command.lower().strip()
+            if any(p in cmd for p in self._INSTALL_PHRASES):
+                return True
+            if any(p in cmd for p in self._REFINE_INDICATORS):
+                return True
         return self.keyword_match(command)
 
     def execute(self, command: str, context: dict) -> dict:
-        llm = context["llm"]
+        llm = context.get("llm")
         assistant = context.get("assistant")
+        cmd_lower = command.lower().strip()
 
-        # ── Step 1: extract what the user wants ───────────────────────────────
+        if not llm:
+            return self._fail("LLM not available.")
+
+        # ── Handle pending code: install or refine ──
+        if self._pending_code:
+            if any(p in cmd_lower for p in self._INSTALL_PHRASES):
+                return self._install_pending(assistant)
+            if any(p in cmd_lower for p in self._REFINE_INDICATORS):
+                return self._refine_pending(llm, command)
+            # If neither, clear pending and treat as new request
+            self._clear_pending()
+
+        # ── New talent request ──
         description = self._extract_arg(
             llm, command,
             "description of what the new talent or plugin should do",
-            max_length=100, temperature=0.0,
+            max_length=120, temperature=0.0,
         )
         if not description:
-            return {
-                "success": False,
-                "response": "What should the new talent do? Describe it and I'll build it.",
-                "actions_taken": [],
-            }
-        log.info(f"[TalentBuilder] Description: {description}")
+            return self._fail("What should the new talent do? Describe it and I'll build it.")
 
-        # ── Step 2: LLM call 1 — requirements JSON ────────────────────────────
-        requirements = self._extract_requirements(llm, description)
-        if not requirements:
-            return {
-                "success": False,
-                "response": "Couldn't determine requirements. Try describing the talent more specifically.",
-                "actions_taken": [],
-            }
+        log.info(f"[TalentBuilder] Generating: {description}")
 
-        # Sanitise and normalise the name
-        talent_name = self._safe_name(
-            requirements.get("name", ""), description
-        )
-        requirements["name"] = talent_name
-        requirements["class_name"] = self._class_name(
-            requirements.get("class_name", ""), talent_name
-        )
-        log.info(f"[TalentBuilder] Building '{talent_name}' "
-              f"(needs_config={requirements.get('needs_config')})")
+        # Generate complete talent code
+        code = self._generate_talent_code(llm, description)
+        if not code:
+            return self._fail("Couldn't generate the talent code. Try describing it differently.")
 
-        # Resolve name collision by appending _2
-        dest_path = Path("talents/user") / f"{talent_name}.py"
-        if dest_path.exists():
-            talent_name += "_2"
-            requirements["name"] = talent_name
-            requirements["class_name"] = requirements["class_name"][:-6] + "2Talent"
-            dest_path = Path("talents/user") / f"{talent_name}.py"
-
-        # ── Step 3: generate, validate, refine loop (up to 3 attempts) ──────
-        max_attempts = 3
-        code = ""
-        valid = False
-        error = ""
-        test_error = ""
-
-        for attempt in range(1, max_attempts + 1):
-            log.info(f"[TalentBuilder] Attempt {attempt}/{max_attempts}")
-
-            # Generate execute body (with error context on retries)
-            if attempt == 1:
-                execute_body = self._generate_execute_body(llm, requirements)
-            else:
-                # Refine: send the previous body + error back
-                fix_context = error or test_error
-                log.error(f"[TalentBuilder] Refining — error: {fix_context}")
-                execute_body = self._fix_execute_body(
-                    llm, execute_body, fix_context
-                )
-
-            if not execute_body:
-                error = "Empty execute body"
-                continue
-
-            # Body sanity check
-            body_ok, body_err = self._validate_execute_body(execute_body)
-            if not body_ok:
-                log.info(f"[TalentBuilder] Body issue: {body_err}")
-                execute_body = self._fix_execute_body(
-                    llm, execute_body, body_err
-                )
-
-            # Assemble + syntax check
-            code = self._assemble_talent_file(requirements, execute_body)
+        # Validate
+        valid, error = self._validate_code(code)
+        if not valid:
+            # Try one fix attempt
+            log.warning(f"[TalentBuilder] Validation failed: {error}, attempting fix")
+            code = self._fix_code(llm, code, error)
             valid, error = self._validate_code(code)
 
-            if not valid:
-                log.error(f"[TalentBuilder] Syntax error: {error}")
-                continue
-
-            # Self-test: write to temp, import, try can_handle + execute
-            test_ok, test_error = self._self_test(
-                code, requirements, llm, assistant
-            )
-            if test_ok:
-                log.info(f"[TalentBuilder] Self-test passed on attempt {attempt}")
-                break
-            else:
-                log.error(f"[TalentBuilder] Self-test failed: {test_error}")
-                # On last attempt, keep the code anyway — user can fix in manager
-                if attempt < max_attempts:
-                    valid = True  # Code compiles, just test failed
-
-        # ── Write to disk ───────────────────────────────────────────────────
-        dest_path.parent.mkdir(parents=True, exist_ok=True)
-        dest_path.write_text(code, encoding="utf-8")
-        log.info(f"[TalentBuilder] Written to {dest_path}")
-
-        # ── Hot-load ────────────────────────────────────────────────────────
-        if valid and assistant and hasattr(assistant, "load_user_talent"):
-            load_result = assistant.load_user_talent(str(dest_path))
-            if load_result.get("success"):
-                resp = self._success_response(
-                    load_result, requirements, dest_path
-                )
-                if test_error:
-                    resp["response"] += (
-                        f"\n\nNote: self-test had an issue: {test_error}\n"
-                        "You can edit it in Tools > Talent Manager."
-                    )
-                return resp
-            return {
-                "success": True,
-                "response": (
-                    f"Wrote '{talent_name}' to {dest_path} but couldn't "
-                    f"load it: {load_result.get('error', 'unknown')}. "
-                    "Open Tools > Talent Manager to edit and reload."
-                ),
-                "actions_taken": [
-                    {"action": "write_talent", "result": str(dest_path),
-                     "success": True}
-                ],
-            }
-
         if not valid:
-            return {
-                "success": True,
-                "response": (
-                    f"Saved '{talent_name}' to {dest_path} but validation "
-                    f"failed: {error}\n"
-                    "Open Tools > Talent Manager to edit and fix it."
-                ),
-                "actions_taken": [
-                    {"action": "write_talent", "result": str(dest_path),
-                     "success": False}
-                ],
-            }
+            return self._fail(f"Generated code has issues: {error}\nTry describing the talent differently.")
+
+        # Extract talent name from code
+        name = self._extract_name_from_code(code) or self._safe_name("", description)
+
+        # Store as pending and show for review
+        self._pending_code = code
+        self._pending_name = name
+        self._pending_description = description
 
         return {
             "success": True,
             "response": (
-                f"Created '{talent_name}' and saved to {dest_path}. "
-                "Restart Talon to activate it, or use Tools > Talent Manager."
+                f"Here's the **{name}** talent I generated:\n\n"
+                f"```python\n{code}\n```\n\n"
+                "Say **install it** to save and activate, or describe what to change."
             ),
-            "actions_taken": [
-                {"action": "write_talent", "result": str(dest_path),
-                 "success": True}
-            ],
+            "actions_taken": [{"action": "talent_draft", "name": name}],
+            "spoken": False,
         }
 
-    # ── private helpers ───────────────────────────────────────────────────────
+    # ── Install pending code ──
 
-    @staticmethod
-    def _safe_name(raw: str, description: str) -> str:
-        """Return a valid snake_case talent name."""
-        name = raw.strip().lower().replace(" ", "_").replace("-", "_")
-        if name and re.match(r'^[a-z][a-z0-9_]*$', name):
-            return name
-        # Fallback: derive from first 20 chars of description
-        fallback = re.sub(r'[^a-z0-9_]', '_', description.lower()[:20]).strip('_')
-        return fallback or "custom_talent"
+    def _install_pending(self, assistant) -> dict:
+        code = self._pending_code
+        name = self._pending_name or "custom_talent"
 
-    @staticmethod
-    def _class_name(raw: str, talent_name: str) -> str:
-        """Return a valid PascalCase class name ending in Talent."""
-        if raw and re.match(r'^[A-Z][A-Za-z0-9]+Talent$', raw):
-            return raw
-        return "".join(w.capitalize() for w in talent_name.split("_")) + "Talent"
+        # Resolve destination
+        dest_path = Path("talents/user") / f"{name}.py"
+        if dest_path.exists():
+            name += "_2"
+            dest_path = Path("talents/user") / f"{name}.py"
+            # Update the class name in code too
+            code = self._update_name_in_code(code, name)
 
-    def _extract_requirements(self, llm, description: str) -> dict | None:
-        """LLM call 1 — infer a structured JSON spec from the description."""
-        user_prompt = (
-            f'Given this description of a new Talon talent plugin:\n\n"{description}"\n\n'
-            "Return ONLY valid JSON with this exact structure:\n"
-            '{\n'
-            '  "class_name": "PascalCaseTalent",\n'
-            '  "name": "snake_case",\n'
-            '  "priority": 50,\n'
-            '  "description": "one-line description",\n'
-            '  "keywords": ["keyword1", "keyword2"],\n'
-            '  "examples": ["example command 1", "example command 2", "example command 3"],\n'
-            '  "needs_config": false,\n'
-            '  "config_fields": [],\n'
-            '  "external_api": "brief description or none",\n'
-            '  "execute_logic": "step-by-step plain English of what execute() should do"\n'
-            '}'
+        # Write
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        dest_path.write_text(code, encoding="utf-8")
+        log.info(f"[TalentBuilder] Written to {dest_path}")
+
+        # Hot-load
+        loaded = False
+        if assistant and hasattr(assistant, "load_user_talent"):
+            result = assistant.load_user_talent(str(dest_path))
+            loaded = result.get("success", False)
+            if not loaded:
+                err = result.get("error", "unknown")
+                self._clear_pending()
+                return {
+                    "success": True,
+                    "response": (
+                        f"Saved '{name}' to {dest_path} but couldn't load it: {err}\n"
+                        "Open Tools > Talent Manager to edit and reload."
+                    ),
+                    "actions_taken": [{"action": "create_talent", "result": str(dest_path)}],
+                    "spoken": False,
+                }
+
+        self._clear_pending()
+
+        examples = self._extract_examples_from_code(code)
+        ex_str = ", ".join(f'"{e}"' for e in examples[:3])
+
+        lines = [f"Installed and loaded '{name}' talent!"]
+        if ex_str:
+            lines.append(f"Try: {ex_str}")
+        if "get_config_schema" in code:
+            lines.append(f"This talent needs configuration — go to Settings > Talent Config > {name}")
+
+        return {
+            "success": True,
+            "response": "\n".join(lines),
+            "actions_taken": [{"action": "create_talent", "result": str(dest_path), "success": True}],
+            "spoken": False,
+        }
+
+    # ── Refine pending code ──
+
+    def _refine_pending(self, llm, feedback: str) -> dict:
+        log.info(f"[TalentBuilder] Refining: {feedback}")
+
+        prompt = (
+            f"Here is a Talon talent plugin:\n\n```python\n{self._pending_code}\n```\n\n"
+            f"The user wants this change: {feedback}\n\n"
+            "Generate the complete updated file. Return ONLY Python code."
         )
+
         try:
             raw = llm.generate(
-                user_prompt,
-                system_prompt=_REQUIREMENTS_SYSTEM_PROMPT,
-                max_length=350,
-                temperature=0.0,
+                prompt,
+                system_prompt=_GENERATION_SYSTEM_PROMPT,
+                max_length=2048,
+                temperature=0.1,
             )
-            clean = re.sub(r'^```[a-z]*\n?', '', raw.strip())
-            clean = re.sub(r'\n?```$', '', clean.strip())
-            m = re.search(r'\{.*\}', clean, re.DOTALL)
-            if m:
-                return json.loads(m.group())
+            code = self._extract_code_block(raw)
         except LLMError as e:
-            log.warning(f"[TalentBuilder] LLM unavailable: {e}")
-        except Exception as e:
-            log.error(f"[TalentBuilder] Requirements error: {e}")
-        return None
+            return self._fail(f"LLM unavailable: {e}")
 
-    def _generate_execute_body(self, llm, requirements: dict) -> str:
-        """LLM call 2 — generate ONLY the execute() body (~10-40 lines).
+        if not code:
+            return self._fail("Couldn't generate the updated code. Try describing the change differently.")
 
-        The model writes pure logic: no class, no def, no return, no try/except.
-        It must end with:  response = "..."
-        """
-        config_fields = requirements.get("config_fields", [])
-        config_hint = ""
-        if config_fields:
-            keys = [f'self.talent_config.get({f["key"]!r}, "") → {f["label"]}'
-                    for f in config_fields]
-            config_hint = "\nConfig keys:\n  " + "\n  ".join(keys) + "\n"
+        valid, error = self._validate_code(code)
+        if not valid:
+            code = self._fix_code(llm, code, error)
+            valid, error = self._validate_code(code)
 
-        logic = requirements.get("execute_logic") or requirements.get("description", "")
+        if not valid:
+            return self._fail(f"Updated code has issues: {error}")
 
-        user_prompt = (
-            f"Write the execute() body for a talent that does this:\n\n"
-            f"{logic}\n"
-            f"{config_hint}\n"
-            "Remember:\n"
-            "  - End with  response = \"...\"\n"
-            "  - No imports, no def, no class, no return, no try/except"
+        name = self._extract_name_from_code(code) or self._pending_name
+        self._pending_code = code
+        self._pending_name = name
+
+        return {
+            "success": True,
+            "response": (
+                f"Updated **{name}**:\n\n"
+                f"```python\n{code}\n```\n\n"
+                "Say **install it** to save, or describe more changes."
+            ),
+            "actions_taken": [{"action": "talent_refined", "name": name}],
+            "spoken": False,
+        }
+
+    # ── Generation ──
+
+    def _generate_talent_code(self, llm, description: str) -> str | None:
+        prompt = (
+            f"Create a Talon talent plugin that does this:\n\n{description}\n\n"
+            "Generate the complete Python file. Return ONLY the code, no markdown fences."
         )
         try:
             raw = llm.generate(
-                user_prompt,
-                system_prompt=_EXEC_BODY_SYSTEM_PROMPT,
-                max_length=1200,
+                prompt,
+                system_prompt=_GENERATION_SYSTEM_PROMPT,
+                max_length=2048,
                 temperature=0.1,
             )
             return self._extract_code_block(raw)
         except LLMError as e:
             log.warning(f"[TalentBuilder] LLM unavailable: {e}")
-            return ""
+            return None
         except Exception as e:
-            log.error(f"[TalentBuilder] Body gen error: {e}")
-            return ""
+            log.error(f"[TalentBuilder] Generation error: {e}")
+            return None
 
-    @staticmethod
-    def _extract_code_block(raw: str) -> str:
-        """Pull Python code from model output, stripping markdown and prose."""
-        text = raw.strip()
-        # Prefer an explicit fenced code block
-        m = re.search(r'```(?:python)?\n?(.*?)```', text, re.DOTALL)
-        if m:
-            return m.group(1).strip()
-        # Otherwise drop leading prose: find first code-like line
-        lines = text.split("\n")
-        for i, line in enumerate(lines):
-            s = line.strip()
-            if s and re.match(r'^[a-zA-Z_#]', s):
-                return "\n".join(lines[i:]).strip()
-        return text
-
-    @staticmethod
-    def _validate_execute_body(body: str) -> tuple[bool, str]:
-        """Quick checks on the raw body before assembly."""
-        if not body.strip():
-            return False, "Empty execute body"
-        if "response" not in body:
-            return False, "Body does not set 'response' variable"
-        for p in _FORBIDDEN_PATTERNS:
-            if p in body:
-                return False, f"Forbidden pattern: {p!r}"
-        return True, ""
-
-    @staticmethod
-    def _assemble_talent_file(requirements: dict, execute_body: str) -> str:
-        """Build the complete Python file from the fixed template + LLM body.
-
-        Python is responsible for all boilerplate — only the execute logic is
-        LLM-generated.  The result is always structurally correct.
-        """
-        name        = requirements["name"]
-        class_name  = requirements["class_name"]
-        description = requirements.get("description", "Custom generated talent")
-        keywords    = requirements.get("keywords", [name.replace("_", " ")])
-        examples    = requirements.get("examples", [])
-        priority    = int(requirements.get("priority", 50))
-        needs_cfg   = requirements.get("needs_config", False)
-        cfg_fields  = requirements.get("config_fields", [])
-
-        # Strip any import lines the model may have added to the body
-        # (all needed imports are already in _TEMPLATE_IMPORTS)
-        raw_lines   = execute_body.strip().split("\n")
-        body_lines  = [l for l in raw_lines
-                       if not re.match(r'^\s*(import |from \w+ import )', l)]
-        clean_body  = "\n".join(body_lines)
-
-        # Dedent model output, then re-indent to 12 spaces (class→method→try block)
-        dedented    = textwrap.dedent(clean_body)
-        body_block  = "\n".join(
-            ("            " + line) if line.strip() else ""
-            for line in dedented.split("\n")
+    def _fix_code(self, llm, code: str, error: str) -> str:
+        prompt = (
+            f"This Talon talent plugin has an error:\n\n"
+            f"Error: {error}\n\n"
+            f"```python\n{code}\n```\n\n"
+            "Fix the error and return the complete corrected file. Return ONLY Python code."
         )
+        try:
+            raw = llm.generate(prompt, max_length=2048, temperature=0.0)
+            fixed = self._extract_code_block(raw)
+            return fixed if fixed else code
+        except Exception:
+            return code
 
-        # Build the parts list — avoids f-string escaping of literal { }
-        parts = [_TEMPLATE_IMPORTS, "\n\n"]
-
-        # Class header + attributes
-        parts += [
-            f"class {class_name}(BaseTalent):\n",
-            f"    name = {name!r}\n",
-            f"    description = {description!r}\n",
-            f"    keywords = {keywords!r}\n",
-            f"    examples = {examples!r}\n",
-            f"    priority = {priority}\n",
-        ]
-
-        # Optional config schema (only when talent needs credentials / settings)
-        if needs_cfg and cfg_fields:
-            # repr() produces valid Python literals from the JSON-parsed dicts
-            parts += [
-                "\n",
-                "    def get_config_schema(self) -> dict:\n",
-                f"        return {{'fields': {cfg_fields!r}}}\n",
-            ]
-
-        # can_handle (always keyword_match)
-        parts += [
-            "\n",
-            "    def can_handle(self, command: str) -> bool:\n",
-            "        return self.keyword_match(command)\n",
-        ]
-
-        # execute() with LLM body wrapped in try/except + return
-        # Note: the {e} below is plain string content — not an f-string expression
-        parts += [
-            "\n",
-            "    def execute(self, command: str, context: dict) -> dict:\n",
-            '        llm = context["llm"]\n',
-            "        try:\n",
-            body_block, "\n",
-            "        except Exception as e:\n",
-            '            return {"success": False, "response": f"Error: {e}", "actions_taken": []}\n',
-            '        return {"success": True, "response": response, "actions_taken": []}\n',
-        ]
-
-        return "".join(parts)
+    # ── Validation ──
 
     @staticmethod
     def _validate_code(code: str) -> tuple[bool, str]:
-        """Syntax check (py_compile) + safety scan on the assembled file."""
-        if not code.strip():
+        if not code or not code.strip():
             return False, "Empty code"
 
+        # Must have a BaseTalent subclass
+        if "BaseTalent" not in code:
+            return False, "No BaseTalent subclass found"
+        if "def execute(" not in code:
+            return False, "No execute() method found"
+
+        # Forbidden patterns
+        for p in _FORBIDDEN_PATTERNS:
+            if p in code:
+                return False, f"Forbidden pattern: {p!r}"
+
+        # Check for shell=True in subprocess calls (but allow subprocess without shell)
+        if "shell=True" in code and "subprocess" in code:
+            return False, "subprocess with shell=True is not allowed"
+
+        # Syntax check via py_compile
         tmp = None
         try:
             with tempfile.NamedTemporaryFile(
@@ -526,143 +536,66 @@ class TalentBuilderTalent(BaseTalent):
                 tmp = f.name
             py_compile.compile(tmp, doraise=True)
         except py_compile.PyCompileError as e:
-            return False, str(e)
+            return False, f"Syntax error: {e}"
         except Exception as e:
             return False, str(e)
         finally:
             if tmp and os.path.exists(tmp):
                 os.unlink(tmp)
 
-        for p in _FORBIDDEN_PATTERNS:
-            if p in code:
-                return False, f"Forbidden pattern: {p!r}"
-
-        if "BaseTalent" not in code:
-            return False, "No BaseTalent subclass found"
-
         return True, ""
 
-    def _fix_execute_body(self, llm, body: str, error: str) -> str:
-        """One-shot fix attempt: send the body + error back to the model."""
-        fix_prompt = (
-            f"Fix this Python code. Error: {error}\n\n"
-            "Rules: No imports, no def, no class, no return, no try/except.\n"
-            "Final line must be:  response = \"...\"\n\n"
-            f"Broken code:\n{body}\n\nFixed code:"
-        )
-        try:
-            raw = llm.generate(fix_prompt, max_length=1200, temperature=0.0)
-            return self._extract_code_block(raw)
-        except LLMError as e:
-            log.warning(f"[TalentBuilder] LLM unavailable: {e}")
-            return body
-        except Exception as e:
-            log.error(f"[TalentBuilder] Fix error: {e}")
-            return body
-
-    def _self_test(self, code: str, requirements: dict,
-                   llm, assistant) -> tuple[bool, str]:
-        """Import the assembled code in isolation and run a basic smoke test.
-
-        Returns (success, error_message).
-        """
-        import importlib
-        import sys
-
-        tmp = None
-        module_name = f"_talent_test_{requirements['name']}"
-
-        try:
-            # Write to temp file
-            with tempfile.NamedTemporaryFile(
-                suffix=".py", mode="w", delete=False, encoding="utf-8",
-                dir=str(Path("talents/user")),
-            ) as f:
-                f.write(code)
-                tmp = f.name
-
-            # Import the module
-            spec = importlib.util.spec_from_file_location(module_name, tmp)
-            if not spec or not spec.loader:
-                return False, "Could not create module spec"
-            module = importlib.util.module_from_spec(spec)
-            sys.modules[module_name] = module
-            spec.loader.exec_module(module)
-
-            # Find the BaseTalent subclass
-            talent_cls = None
-            for attr_name in dir(module):
-                obj = getattr(module, attr_name)
-                if (isinstance(obj, type) and issubclass(obj, BaseTalent)
-                        and obj is not BaseTalent):
-                    talent_cls = obj
-                    break
-
-            if not talent_cls:
-                return False, "No BaseTalent subclass found in generated code"
-
-            # Instantiate
-            talent = talent_cls()
-            talent.initialize({})
-
-            # Test can_handle with first example
-            examples = requirements.get("examples", [])
-            if examples:
-                test_cmd = examples[0]
-                if not talent.can_handle(test_cmd):
-                    return False, (
-                        f"can_handle('{test_cmd}') returned False — "
-                        "keywords may not match examples"
-                    )
-
-            # Test execute with a simple command (skip if no assistant/llm)
-            if llm and examples:
-                context = {
-                    "llm": llm,
-                    "config": assistant.config if assistant else {},
-                    "assistant": assistant,
-                    "speak_response": False,
-                    "command_source": "test",
-                }
-                result = talent.execute(examples[0], context)
-                if not result.get("success"):
-                    resp = result.get("response", "unknown error")
-                    return False, f"execute() failed: {resp}"
-
-            return True, ""
-
-        except Exception as e:
-            return False, str(e)
-        finally:
-            # Cleanup
-            if module_name in sys.modules:
-                del sys.modules[module_name]
-            if tmp and os.path.exists(tmp):
-                try:
-                    os.unlink(tmp)
-                except Exception:
-                    pass
+    # ── Helpers ──
 
     @staticmethod
-    def _success_response(load_result: dict, requirements: dict, dest_path: Path) -> dict:
-        """Build the human-readable success confirmation."""
-        name        = load_result["name"]
-        examples    = load_result.get("examples") or requirements.get("examples", [])
-        ex_str      = ", ".join(f'"{e}"' for e in examples[:3])
-        needs_cfg   = load_result.get("needs_config") or requirements.get("needs_config", False)
+    def _extract_code_block(raw: str) -> str:
+        text = raw.strip()
+        # Prefer explicit fenced block
+        m = re.search(r'```(?:python)?\n?(.*?)```', text, re.DOTALL)
+        if m:
+            return m.group(1).strip()
+        # If it starts with import or from or a comment, treat as raw code
+        if text.startswith(("import ", "from ", "#", '"""', "'")):
+            return text
+        # Find first code-like line
+        lines = text.split("\n")
+        for i, line in enumerate(lines):
+            s = line.strip()
+            if s and re.match(r'^(import |from |#|class |def |""")', s):
+                return "\n".join(lines[i:]).strip()
+        return text
 
-        lines = [f"Created and loaded '{name}' talent!"]
-        if ex_str:
-            lines.append(f"Try: {ex_str}")
-        if needs_cfg:
-            lines.append(
-                f"⚙️  Needs configuration — Settings → Talent Config → {name}"
-            )
+    @staticmethod
+    def _extract_name_from_code(code: str) -> str | None:
+        m = re.search(r'name\s*=\s*["\']([a-z_][a-z0-9_]*)["\']', code)
+        return m.group(1) if m else None
 
-        return {
-            "success": True,
-            "response": "\n".join(lines),
-            "actions_taken": [
-                {"action": "create_talent", "result": str(dest_path), "success": True}
-            ],
-        }
+    @staticmethod
+    def _extract_examples_from_code(code: str) -> list[str]:
+        m = re.search(r'examples\s*=\s*\[(.*?)\]', code, re.DOTALL)
+        if m:
+            return re.findall(r'["\']([^"\']+)["\']', m.group(1))
+        return []
+
+    @staticmethod
+    def _update_name_in_code(code: str, new_name: str) -> str:
+        code = re.sub(r'(name\s*=\s*["\'])[a-z_][a-z0-9_]*(["\'])',
+                       rf'\g<1>{new_name}\g<2>', code, count=1)
+        return code
+
+    @staticmethod
+    def _safe_name(raw: str, description: str) -> str:
+        name = raw.strip().lower().replace(" ", "_").replace("-", "_")
+        if name and re.match(r'^[a-z][a-z0-9_]*$', name):
+            return name
+        fallback = re.sub(r'[^a-z0-9_]', '_', description.lower()[:20]).strip('_')
+        return fallback or "custom_talent"
+
+    def _clear_pending(self):
+        self._pending_code = None
+        self._pending_name = None
+        self._pending_description = None
+
+    @staticmethod
+    def _fail(msg: str) -> dict:
+        return {"success": False, "response": msg, "actions_taken": [], "spoken": False}
