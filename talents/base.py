@@ -344,7 +344,8 @@ class BaseTalent(ABC):
 # Must be module-level so multiprocessing can pickle them.
 
 def _isolated_execute(module_path: str, class_name: str,
-                      command: str, config: dict) -> dict:
+                      command: str, config: dict,
+                      talent_config: dict | None = None) -> dict:
     """Run a talent's execute() in a fresh child process.
 
     Imports the talent module, instantiates the class, calls initialize()
@@ -360,6 +361,9 @@ def _isolated_execute(module_path: str, class_name: str,
     cls = getattr(mod, class_name)
     talent = cls()
     talent.initialize(config)
+    # Restore per-talent config from talents.json (not in app-level config)
+    if talent_config:
+        talent._config.update(talent_config)
     # Minimal context — no LLM, memory, voice, or other non-picklable objects
     minimal_context = {"config": config}
     result = talent.execute(command, minimal_context)
@@ -391,10 +395,14 @@ def run_talent_isolated(talent, command: str, config: dict,
     module_path = cls.__module__
     class_name = cls.__name__
 
+    # Pass per-talent config so the child process has watchlist, API keys, etc.
+    talent_config = dict(getattr(talent, "_config", {}))
+
     try:
         with ProcessPoolExecutor(max_workers=1) as pool:
             future = pool.submit(_isolated_execute, module_path,
-                                 class_name, command, config)
+                                 class_name, command, config,
+                                 talent_config)
             return future.result(timeout=timeout)
     except Exception:
         tb = traceback.format_exc()
