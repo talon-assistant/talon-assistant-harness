@@ -116,6 +116,16 @@ def execute_plan_steps(
             last_result = resp
         if not ok:
             log.error(f"[PlanExecutor] Step {i} failed: {resp}")
+            # Check if any remaining step depends on {last_result} —
+            # if so, abort because the dependency chain is broken.
+            remaining = steps[i:]  # steps after the current one
+            if any("{last_result}" in s for s in remaining):
+                log.warning("[PlanExecutor] Aborting — later steps depend "
+                            "on {last_result} from this failed step")
+                result_dict["response"] += " (remaining steps skipped — dependency failed)"
+                if on_step_complete:
+                    on_step_complete(i, step, result_dict)
+                break
 
         if on_step_complete:
             on_step_complete(i, step, result_dict)
