@@ -84,17 +84,19 @@ class VoicePanel(QWidget):
         """Update the audio level bar (0.0 to 1.0)."""
         self.level_bar.setValue(int(level * 100))
 
+    @staticmethod
+    def _restyle(widget):
+        widget.setStyleSheet(widget.styleSheet())
+
     def flash_wake_indicator(self):
         """Briefly turn indicator green when wake word detected."""
         self.wake_indicator.setObjectName("wake_indicator_on")
-        self.wake_indicator.style().unpolish(self.wake_indicator)
-        self.wake_indicator.style().polish(self.wake_indicator)
+        self._restyle(self.wake_indicator)
         QTimer.singleShot(2000, self._reset_wake_indicator)
 
     def _reset_wake_indicator(self):
         self.wake_indicator.setObjectName("wake_indicator_off")
-        self.wake_indicator.style().unpolish(self.wake_indicator)
-        self.wake_indicator.style().polish(self.wake_indicator)
+        self._restyle(self.wake_indicator)
 
     def on_tts_started(self):
         """Show the stop button while Talon is speaking."""

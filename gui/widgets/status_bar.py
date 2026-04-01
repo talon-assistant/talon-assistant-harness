@@ -1,6 +1,15 @@
 from PyQt6.QtWidgets import QWidget, QHBoxLayout, QLabel
 
 
+def _restyle(widget):
+    """Force Qt to re-evaluate object-name stylesheet rules.
+
+    Avoids style().unpolish/polish which can cause heap corruption
+    on PyQt6 + Python 3.10 (GIL released during C++ destructor).
+    """
+    widget.setStyleSheet(widget.styleSheet())
+
+
 class StatusBarWidget(QWidget):
     """Custom status bar content with colored status indicators."""
 
@@ -50,8 +59,7 @@ class StatusBarWidget(QWidget):
             obj_name = "status_llm_disconnected"
         self.llm_indicator.setText(text)
         self.llm_indicator.setObjectName(obj_name)
-        self.llm_indicator.style().unpolish(self.llm_indicator)
-        self.llm_indicator.style().polish(self.llm_indicator)
+        _restyle(self.llm_indicator)
 
     def set_server_status(self, status):
         """Update the LLM indicator for built-in server status changes."""
@@ -65,19 +73,16 @@ class StatusBarWidget(QWidget):
             status, (f"LLM: Built-in ({status})", "status_llm_unknown"))
         self.llm_indicator.setText(text)
         self.llm_indicator.setObjectName(obj_name)
-        self.llm_indicator.style().unpolish(self.llm_indicator)
-        self.llm_indicator.style().polish(self.llm_indicator)
+        _restyle(self.llm_indicator)
 
     def set_voice_status(self, status):
         self.voice_indicator.setText(f"Voice: {status.capitalize()}")
         obj_name = f"status_voice_{status}"
         self.voice_indicator.setObjectName(obj_name)
-        self.voice_indicator.style().unpolish(self.voice_indicator)
-        self.voice_indicator.style().polish(self.voice_indicator)
+        _restyle(self.voice_indicator)
 
     def set_activity(self, activity):
         self.activity_label.setText(f"Activity: {activity.capitalize()}")
         obj_name = f"status_{activity}"
         self.activity_label.setObjectName(obj_name)
-        self.activity_label.style().unpolish(self.activity_label)
-        self.activity_label.style().polish(self.activity_label)
+        _restyle(self.activity_label)

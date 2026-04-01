@@ -365,8 +365,7 @@ class LLMSetupDialog(QDialog):
         self._start_btn.setEnabled(False)
         self._builtin_status.setText("Status: Starting...")
         self._builtin_status.setObjectName("llm_status_dot_starting")
-        self._builtin_status.style().unpolish(self._builtin_status)
-        self._builtin_status.style().polish(self._builtin_status)
+        self._builtin_status.setStyleSheet(self._builtin_status.styleSheet())
 
         from gui.workers import ServerStartWorker
         self._start_worker = ServerStartWorker(self._server_manager)
@@ -384,8 +383,7 @@ class LLMSetupDialog(QDialog):
         self._start_btn.setEnabled(True)
         self._builtin_status.setText(f"Status: Error - {error_msg}")
         self._builtin_status.setObjectName("llm_status_dot_error")
-        self._builtin_status.style().unpolish(self._builtin_status)
-        self._builtin_status.style().polish(self._builtin_status)
+        self._builtin_status.setStyleSheet(self._builtin_status.styleSheet())
 
     def _stop_server(self):
         if self._server_manager:
@@ -436,8 +434,7 @@ class LLMSetupDialog(QDialog):
             self._external_status.setText(f"Status: Error - {e}")
             self._external_status.setObjectName("llm_status_dot_error")
 
-        self._external_status.style().unpolish(self._external_status)
-        self._external_status.style().polish(self._external_status)
+        self._external_status.setStyleSheet(self._external_status.styleSheet())
         self._test_btn.setEnabled(True)
 
     def _update_server_status(self):
@@ -467,8 +464,7 @@ class LLMSetupDialog(QDialog):
                 "Status: No binary (download required)")
             self._builtin_status.setObjectName("llm_status_dot_stopped")
 
-        self._builtin_status.style().unpolish(self._builtin_status)
-        self._builtin_status.style().polish(self._builtin_status)
+        self._builtin_status.setStyleSheet(self._builtin_status.styleSheet())
 
         if not has_binary:
             self._download_status.setText(

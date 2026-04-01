@@ -154,8 +154,7 @@ class TalentCard(QFrame):
         self.action_btn.setText("Remove")
         self.action_btn.setObjectName("marketplace_remove_btn")
         self.action_btn.setEnabled(True)
-        self.action_btn.style().unpolish(self.action_btn)
-        self.action_btn.style().polish(self.action_btn)
+        self.action_btn.setStyleSheet(self.action_btn.styleSheet())
         try:
             self.action_btn.clicked.disconnect()
         except TypeError:
@@ -168,8 +167,7 @@ class TalentCard(QFrame):
         self.action_btn.setText("Install")
         self.action_btn.setObjectName("marketplace_install_btn")
         self.action_btn.setEnabled(True)
-        self.action_btn.style().unpolish(self.action_btn)
-        self.action_btn.style().polish(self.action_btn)
+        self.action_btn.setStyleSheet(self.action_btn.styleSheet())
         try:
             self.action_btn.clicked.disconnect()
         except TypeError:
