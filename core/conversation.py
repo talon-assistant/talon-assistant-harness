@@ -75,30 +75,49 @@ class ConversationEngine:
         + INJECTION_DEFENSE_CLAUSE
     )
 
+    # Sentence terminators: period, comma, exclamation, question, dash, semicolon,
+    # "for you", "for that", or end-of-string.  The broader set prevents
+    # over-capturing meta-commentary like "...tutorials, which are useful".
+    _END = r'(?:[.,!?;—–-]|\bfor (?:you|that)\b|$)'
+
     _PROMISE_PATTERNS = [
-        (r"(?i)\bi(?:'ll| will) search (?:the web |online |the internet )?for (.+?)(?:\.|!|\?|$)",
+        # "I'll search (the web) for X"
+        (r"(?i)\bi(?:'ll| will) search (?:the web |online |the internet )?for (.+?)" + _END,
          "search the web for {0}"),
-        (r"(?i)\blet me (?:search|look up|find) (.+?)(?:\.|!|\?|$)",
+        # "Let me search/look up/find X"  — note "for" is already in command, don't double it
+        (r"(?i)\blet me (?:search for|look up|find) (.+?)" + _END,
          "search the web for {0}"),
-        (r"(?i)\bi(?:'ll| will) (?:look that up|check that online|find that online)(?:\.|!|\?|$)?",
-         None),  # too vague — skip
-        (r"(?i)\bi(?:'ll| will) open (.+?)(?:\.|!|\?|$)",
+        # "I'll look that up" — too vague, skip
+        (r"(?i)\bi(?:'ll| will) (?:look that up|check that online|find that online)",
+         None),
+        # "I'll open X" / "let me open X"
+        (r"(?i)\bi(?:'ll| will) open (.+?)" + _END,
          "open {0}"),
-        (r"(?i)\blet me (?:open|launch|start) (.+?)(?:\.|!|\?|$)",
+        (r"(?i)\blet me (?:open|launch|start) (.+?)" + _END,
          "open {0}"),
-        (r"(?i)\bi(?:'ll| will) (?:navigate|go) to (.+?)(?:\.|!|\?|$)",
+        # "I'll navigate/go to X" — keep URL dots by using line-end only
+        (r"(?i)\bi(?:'ll| will) (?:navigate|go) to (.+?)(?:[!?;]|\bfor you\b|$)",
          "go to {0}"),
-        (r"(?i)\bi(?:'ll| will) (?:pull up|bring up) (.+?)(?:\.|!|\?|$)",
+        # "I'll pull up / bring up X"
+        (r"(?i)\bi(?:'ll| will) (?:pull up|bring up) (.+?)" + _END,
          "open {0}"),
-        (r"(?i)\bi(?:'ll| will) (?:play|put on) (.+?)(?:\.|!|\?|$)",
+        # "I'll play X"
+        (r"(?i)\bi(?:'ll| will) (?:play|put on) (.+?)" + _END,
          "play {0}"),
-        (r"(?i)\bi(?:'ll| will) check (?:on |the )?(.+?) for you(?:\.|!|\?|$)",
+        # "I'll check X for you"
+        (r"(?i)\bi(?:'ll| will) check (.+?)\s+for you",
          "search the web for {0}"),
-        (r"(?i)\bi(?:'ll| will) (?:retrieve|fetch|get) (?:the |that )?(.+?)(?:\.|!|\?|$)",
+        # "I'll retrieve/fetch/get X"
+        (r"(?i)\bi(?:'ll| will) (?:retrieve|fetch|get) (?:the |that )?(.+?)" + _END,
          "search the web for {0}"),
-        (r"(?i)\bi(?:'ll| will) find (?:you )?(.+?)(?:\.|!|\?|$)",
+        # "I'll find (you) X"
+        (r"(?i)\bi(?:'ll| will) find (?:you )?(.+?)" + _END,
          "search the web for {0}"),
-        (r"(?i)\bi(?:'ll| will) (?:look for|hunt down|track down) (.+?)(?:\.|!|\?|$)",
+        # "I'll look for / track down X"
+        (r"(?i)\bi(?:'ll| will) (?:look for|hunt down|track down) (.+?)" + _END,
+         "search the web for {0}"),
+        # "I'm going to search/look for X"
+        (r"(?i)\bi'm going to (?:search for|look for|look up|find) (.+?)" + _END,
          "search the web for {0}"),
     ]
 
@@ -447,18 +466,26 @@ class ConversationEngine:
         Scans the LLM's reply for phrases like "I'll search the web for X" or
         "let me open Chrome" and extracts an actionable command string.
 
+        When multiple patterns match, the one that appears earliest in the
+        response wins (not the first in declaration order).
+
         Returns the implied command to execute, or None if nothing actionable
         was found.
         """
+        best_action = None
+        best_pos = len(response) + 1
+
         for pattern, template in self._PROMISE_PATTERNS:
             m = re.search(pattern, response)
-            if m and template is not None:
+            if m and template is not None and m.start() < best_pos:
                 groups = m.groups()
                 action = template.format(*[g.strip() if g else "" for g in groups])
-                action = action.strip().rstrip(".,!")
+                action = action.strip().rstrip(".,!;-")
                 if action:
-                    return action
-        return None
+                    best_action = action
+                    best_pos = m.start()
+
+        return best_action
 
     def check_documents_exist(self) -> bool:
         """Return True if at least one document chunk has been indexed.
