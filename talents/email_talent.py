@@ -89,7 +89,10 @@ class EmailTalent(BaseTalent):
         "You are an email reply assistant. "
         "Given the original email and the user's instruction, write ONLY the reply body text. "
         "Do not repeat or quote the original email. Keep it concise and professional. "
-        "Return ONLY the reply body text — no subject line, no greeting headers."
+        "Return ONLY the reply body text — no subject line, no greeting headers. "
+        "IMPORTANT: You are writing a reply ON BEHALF of the recipient (the user), "
+        "NOT as the original sender. Never use the sender's name, title, or signature. "
+        "Do not add any sign-off name or signature — the user will add their own."
         + INJECTION_DEFENSE_CLAUSE
     )
 
