@@ -62,8 +62,11 @@ class TalentItem(QFrame):
     def set_highlighted(self, highlighted):
         """Visual feedback when this talent handles a command."""
         self.setObjectName("talent_item_active" if highlighted else "talent_item")
-        self.style().unpolish(self)
-        self.style().polish(self)
+        # setStyleSheet("") forces Qt to re-evaluate the object-name-based
+        # stylesheet rules without calling style().unpolish/polish, which can
+        # trigger heap corruption on PyQt6 + Python 3.10 (GIL release during
+        # C++ destructor).
+        self.setStyleSheet(self.styleSheet())
 
 
 class TalentSidebar(QScrollArea):
