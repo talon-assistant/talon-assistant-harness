@@ -5,7 +5,7 @@ A local-first desktop AI assistant for Windows with voice control, smart home in
 You should install [CUDA 12 SDK](https://developer.nvidia.com/cuda-12-0-0-download-archive?target_os=Windows) prior to installing this!
 
 THIS IS AN ALPHA RELEASE!
-Definitely works in Python 3.10.6, probably works in 3.11 and 3.12 branches, after that it gets dicey with chromadb and ctranslate2.
+Requires Python 3.10+. Tested on 3.10, 3.11, and 3.12. Python 3.13 may work; 3.14 is not yet supported (ChromaDB compatibility).
 
 Talon runs entirely on your machine. It connects to a local LLM server for inference, uses Whisper for speech recognition, and provides a modular talent system for extending functionality. No cloud accounts required.
 
@@ -52,6 +52,8 @@ pip install -r requirements.txt
 python setup.py
 python main.py
 ```
+
+For reproducible installs, use `pip install -r requirements.lock` which pins exact versions.
 
 ### What setup.py does
 
@@ -155,35 +157,50 @@ Create a Python file that subclasses `BaseTalent`:
 
 ```python
 from talents.base import BaseTalent
+from core.llm_client import LLMError
 
 class MyTalent(BaseTalent):
     name = "my_talent"
     description = "Does something useful"
-    keywords = ["my", "custom", "trigger"]
+    examples = ["do the useful thing", "run my talent"]
     priority = 50
 
-    def can_handle(self, command):
-        return self.keyword_match(command)
+    # Run in a subprocess if your talent loads C-extension libraries
+    # (numpy, pandas, yfinance, etc.) that can corrupt the host process.
+    subprocess_isolated = False
+
+    # Pip packages beyond base requirements (checked at load time).
+    required_packages = []
 
     def execute(self, command, context):
         llm = context["llm"]
-        response = llm.generate(command)
+
+        # Extract a single value from the command using the LLM:
+        color = self._extract_arg(llm, command, "color name",
+                                  options=["red", "green", "blue"])
+
+        try:
+            response = llm.generate(command)
+        except LLMError:
+            return {"success": False, "response": "LLM unavailable."}
+
         return {
             "success": True,
             "response": response,
-            "actions_taken": [],
+            "actions_taken": ["did_something"],
         }
 ```
+
+You can also ask Talon to build a talent for you: say "create a talent that does X" and the talent builder will generate the code, ask you to review it, and install it into `talents/user/`.
 
 ### Required interface
 
 | Attribute / Method | Description |
 |--------------------|-------------|
 | `name` | Unique string identifier |
-| `description` | Human-readable description |
-| `keywords` | List of trigger words for routing |
+| `description` | Human-readable description (used by the LLM router) |
+| `examples` | Natural-language example commands (primary routing signal) |
 | `priority` | Integer; higher = checked first (default 50) |
-| `can_handle(command)` | Return `True` if this talent should handle the command |
 | `execute(command, context)` | Perform the action and return a result dict |
 
 ### Context dict
@@ -276,15 +293,20 @@ main.py                    Entry point (loads models before QApplication)
 core/
   assistant.py             TalonAssistant: command routing, talent orchestration,
                            correction detection, buffer eviction consolidation
+  conversation.py          Conversation engine (extracted from assistant.py)
   llm_client.py            Multi-backend LLM API client
   llm_server.py            Built-in llama.cpp server manager
   voice.py                 Whisper STT, edge-tts TTS, wake-word detection
   memory.py                SQLite + ChromaDB memory, corrections, semantic search
+  document_retriever.py    RAG retrieval pipeline with RRF fusion and reranking
   training_harvester.py    Silently appends training pairs to data/training_pairs.jsonl
   vision.py                Screenshot capture and multimodal analysis
   chat_store.py            Conversation save/load/export
   marketplace.py           Talent marketplace client (GitHub catalog)
   credential_store.py      OS keyring credential management
+  config.py                Configuration utilities (deep merge)
+  logging_config.py        Centralized logging with rotating file output
+  security.py              Prompt injection defense, input/output filtering, security alerts
 scripts/
   train_lora.py            Standalone LoRA fine-tuning script (Unsloth + trl)
   ingest_documents.py      Document ingestion for RAG (--vision flag for multimodal)
@@ -311,16 +333,39 @@ talents/
   lora_train.py            LoRA fine-tuning trigger talent (disabled by default)
   desktop_control.py       Desktop automation (PyAutoGUI)
   user/                    User-installed talents (auto-discovered)
+tests/                     97-test pytest suite covering core modules
 data/
   talon_memory.db          SQLite: commands, corrections, rules, preferences
   training_pairs.jsonl     Accumulated training pairs (Alpaca format)
   chroma_db/               ChromaDB: memory, documents, notes, rules, corrections
   lora_adapters/           LoRA adapter output (after training)
+  logs/                    Rotating log files (talon.log)
 config/
   settings.example.json    Configuration template
   hue_config.example.json
   talents.example.json
 ```
+
+## Testing
+
+Run the test suite:
+
+```
+python -m pytest tests/ -v
+```
+
+97 tests cover config, security, LLM client, talent base, memory, conversation, and routing.
+
+## Logging
+
+Talon uses centralized logging via `core/logging_config.py`.
+
+| Output | Level | Details |
+|--------|-------|---------|
+| Console | INFO+ | Condensed output for interactive use |
+| File | DEBUG+ | Full detail written to `data/logs/talon.log` |
+
+The file handler uses a rotating strategy: 5 MB max per file, 3 backups retained.
 
 ## Disclaimer
 
@@ -341,4 +386,4 @@ services it integrates with.
 
 ## License
 
-This project is licensed under the [GNU General Public License v3.0](https://www.gnu.org/licenses/gpl-3.0.en.html).
+Licensed under the GNU General Public License v3.0. See [LICENSE](LICENSE).

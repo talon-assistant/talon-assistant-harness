@@ -1,6 +1,36 @@
 # Talon Assistant — Roadmap
 
 ## Recently Completed
+
+### Architecture & Code Quality
+- Structured logging system — 46 files converted from print() to Python logging module, rotating file handler at data/logs/talon.log
+- ConversationEngine extracted from assistant.py (633 lines -> core/conversation.py)
+- DocumentRetriever extracted from memory.py (417 lines -> core/document_retriever.py)
+- TalentContext + TalentResult dataclasses with backward-compat dict access
+- LLMError exceptions replace error-string returns across 36 callers
+- Security utilities (wrap_external, injection patterns) moved to core/security.py
+- deep_merge moved to core/config.py (breaks circular import)
+- 97-test pytest suite covering config, security, LLM client, talents, memory, conversation, routing
+- requirements.lock for reproducible builds, version-pinned requirements.txt
+- GPL-3.0 LICENSE file
+- Instance locking (data/.talon.lock) prevents concurrent runs / DB corruption
+
+### Talent System
+- Talent builder complete rewrite — full-file generation, code review before install, iterative refinement loop
+- Subprocess isolation for talents with C-extension libraries (subprocess_isolated = True)
+- required_packages attribute for declaring pip dependencies
+- pynput replaced with Win32 RegisterHotKey for global hotkeys
+
+### Bug Fixes
+- Desktop control calculator fix (enter not equals key, increased keystroke delay)
+- Email reply no longer adopts sender's identity/signature
+- Signal attachment flag fixed (--attachment not -a)
+- ChromaDB rules collection sync on startup (rebuild from SQLite when empty)
+- Heap corruption eliminated (all style().unpolish/polish calls removed)
+- ChromaDB PostHog telemetry disabled (background thread caused GIL crashes)
+- Stock talent lazy imports + subprocess isolation to prevent heap corruption
+
+### Earlier
 - Vision-enhanced PDF ingestion (`--vision` flag, one chunk per page via Qwen3-VL)
 - Multi-query RAG retrieval with alt_queries expansion
 - Text-match `$contains` fallback for sparse stat-block chunks
@@ -91,7 +121,6 @@ This bridges the one-shot review path to the permanent RAG ingest pipeline.
 ### Other Queued Items
 - RAG: corpus-frequency stop words for `$contains` — skip generic terms like
   "damage" or "shadowrun" that match too broadly across the corpus
-- Self-writing talents — Talon generates new talent plugins from a user description
 - **Configurable `--mdextract` domain schema** — The metadata extraction prompt is
   hardwired for RPG content (creatures, spells, stats, locations). Add a `--domain`
   flag (e.g. `--domain security`, `--domain networking`, `--domain programming`) that

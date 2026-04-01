@@ -77,8 +77,16 @@ speaks responses aloud using the configured voice (default: en-US-AriaNeural).</
 HELP_TOPICS["Talents"] = """
 <h2>Talents</h2>
 <p>Talents are plugins that handle specific types of commands. When you send a
-message, the LLM router classifies your intent and routes to the best-matching
-talent based on its description and examples.</p>
+message, the routing cascade works as follows:</p>
+<ol>
+<li><b>Embedding pre-filter</b> &mdash; your command is compared against each talent's
+example phrases using sentence embeddings. Only talents above the similarity
+threshold are included as candidates.</li>
+<li><b>LLM intent classification</b> &mdash; the LLM picks the best-matching talent
+from the filtered candidate list based on its description and examples.</li>
+<li><b>Keyword fallback</b> &mdash; if the LLM is unavailable, talents are matched by
+their <code>keywords</code> list instead.</li>
+</ol>
 
 <h3>Managing Talents</h3>
 <ul>
@@ -86,6 +94,17 @@ talent based on its description and examples.</p>
 <li><b>Configure</b> a talent by clicking the gear icon next to its name.</li>
 <li>Disabled talents are skipped during command routing.</li>
 </ul>
+
+<h3>Subprocess Isolation</h3>
+<p>Talents that depend on heavy C extensions (e.g. numpy, pandas) can declare
+<code>subprocess_isolated = True</code> in their class definition. These talents
+run in a separate Python process to prevent C-library conflicts from crashing
+the main application.</p>
+
+<h3>Talent Builder</h3>
+<p>You can ask Talon to create a custom talent in plain English. Say something like
+"create a talent that checks disk usage" and Talon will generate the code, let you
+review it, and install it when you confirm.</p>
 
 <h3>Built-in Talents</h3>
 <table cellpadding="4" cellspacing="0" border="0" width="100%">
@@ -391,6 +410,15 @@ HELP_TOPICS["Creating Talents"] = """
 your talent's <code>description</code> and <code>examples</code> to decide when
 to route commands to it &mdash; no keyword matching needed.</p>
 
+<h3>Talent Builder (Easiest Way)</h3>
+<p>You can ask Talon to create a talent for you in plain English:</p>
+<ol>
+<li>Say something like <b>"create a talent that checks disk usage"</b>.</li>
+<li>Talon generates the code and shows it for your review.</li>
+<li>Say <b>"install it"</b> to save it, or describe changes to refine it first.</li>
+</ol>
+<p>The builder handles imports, structure, and installation automatically.</p>
+
 <h3>Basic Structure</h3>
 <pre>
 from talents.base import BaseTalent
@@ -431,6 +459,8 @@ class MyTalent(BaseTalent):
 <tr><td><b>Attribute</b></td><td><b>Type</b></td><td><b>Description</b></td></tr>
 <tr><td>keywords</td><td>list</td><td>Fallback trigger words (used only when LLM is unavailable)</td></tr>
 <tr><td>priority</td><td>int</td><td>Sidebar display order (higher = listed first, default 50)</td></tr>
+<tr><td>subprocess_isolated</td><td>bool</td><td>Run in a separate process to avoid C-extension crashes (default False)</td></tr>
+<tr><td>required_packages</td><td>list</td><td>Packages needed by the talent (e.g. <code>["pandas", "numpy"]</code>)</td></tr>
 </table>
 
 <h3>Required Methods</h3>
@@ -446,6 +476,12 @@ class MyTalent(BaseTalent):
 <tr><td>routing_available</td><td>Property: return False to hide from the LLM router</td></tr>
 </table>
 
+<h3>Available Helpers</h3>
+<table cellpadding="4" cellspacing="0" border="0" width="100%">
+<tr><td><b>Helper</b></td><td><b>Description</b></td></tr>
+<tr><td>self._extract_arg(llm, command, what, options=None)</td><td>Use the LLM to extract a single value from the command (e.g. a city name, a color). Returns str or None.</td></tr>
+</table>
+
 <h3>Context Dict Keys</h3>
 <table cellpadding="4" cellspacing="0" border="0" width="100%">
 <tr><td><b>Key</b></td><td><b>Type</b></td><td><b>Description</b></td></tr>
@@ -459,6 +495,12 @@ class MyTalent(BaseTalent):
 <tr><td>server_manager</td><td>LLMServerManager | None</td><td>Stop/start the built-in server (builtin mode only)</td></tr>
 <tr><td>assistant</td><td>TalonAssistant</td><td>The main assistant instance</td></tr>
 </table>
+
+<h3>Error Handling</h3>
+<p>Always import and catch <code>LLMError</code> from <code>core.llm_client</code>
+when calling <code>llm.generate()</code>. This exception is raised when the LLM
+server is unreachable or returns an error. Return a result dict with
+<code>success=False</code> so the router can fall back gracefully.</p>
 
 <h3>Optional: GUI-Configurable Settings</h3>
 <p>Implement <code>get_config_schema()</code> to expose settings in the GUI:</p>
@@ -481,12 +523,57 @@ def get_config_schema(self):
 <ul>
 <li>Place the <code>.py</code> file in <code>talents/user/</code></li>
 <li>Or use <b>File &gt; Import Talent</b> from the GUI</li>
+<li>Or use the <b>talent builder</b>: ask Talon to "create a talent that..." and say "install it" when ready</li>
 <li>Talon auto-discovers talents on startup</li>
 </ul>
 """
 
+HELP_TOPICS["Logging & Debugging"] = """
+<h2>Logging &amp; Debugging</h2>
+<p>Talon maintains a rotating log file that captures detailed diagnostic information
+useful for troubleshooting issues and crashes.</p>
+
+<h3>Log File Location</h3>
+<p>The log file is at <code>data/logs/talon.log</code>. A rotating file handler
+keeps the file from growing indefinitely &mdash; older entries are automatically
+rotated out.</p>
+
+<h3>Log Levels</h3>
+<table cellpadding="4" cellspacing="0" border="0" width="100%">
+<tr><td><b>Output</b></td><td><b>Level</b></td><td><b>What you see</b></td></tr>
+<tr><td>Console (stdout)</td><td>INFO</td><td>Normal operational messages, warnings, and errors</td></tr>
+<tr><td>Log file</td><td>DEBUG</td><td>Everything above plus detailed debug traces, LLM prompts, routing decisions</td></tr>
+</table>
+
+<h3>Checking Logs After an Issue</h3>
+<p>If something goes wrong or the app crashes:</p>
+<ol>
+<li>Open <code>data/logs/talon.log</code> in any text editor.</li>
+<li>Scroll to the bottom for the most recent entries.</li>
+<li>Look for <code>ERROR</code> or <code>WARNING</code> lines near the timestamp of the issue.</li>
+<li>Stack traces from unhandled exceptions are captured in the log file at DEBUG level.</li>
+</ol>
+
+<h3>Activity Log Panel</h3>
+<p>The GUI includes a built-in activity log panel (toggle with <b>Ctrl+L</b>) that
+shows a live stream of recent log messages. This is useful for watching talent
+routing, LLM calls, and command processing in real time without opening the log file.</p>
+"""
+
 HELP_TOPICS["Troubleshooting"] = """
 <h2>Troubleshooting</h2>
+
+<h3>General</h3>
+<ul>
+<li>Check <code>data/logs/talon.log</code> for detailed error messages &mdash; the
+log file captures DEBUG-level output that is not shown in the console.</li>
+<li>If the app won't start, another instance may already be running. Check for
+<code>data/.talon.lock</code> and delete it if the previous instance crashed
+without cleaning up.</li>
+<li>If a talent crashes the app on startup or during use, it may need
+<code>subprocess_isolated = True</code> in its class definition to run in a
+separate process.</li>
+</ul>
 
 <h3>LLM Connection Failed</h3>
 <ul>
