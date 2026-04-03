@@ -79,14 +79,18 @@ class JobSearchTalent(BaseTalent):
         "track new postings and hand matches to Cowork for fit analysis"
     )
     keywords = [
-        "job search", "job hunt", "hunt for jobs", "search for jobs",
-        "find jobs", "check linkedin", "check dice", "new job listings",
-        "search url", "search urls",
+        "job search", "job searches", "job hunt", "job hunting",
+        "hunt for jobs", "search for jobs", "find jobs", "find job",
+        "check linkedin", "check dice", "new job listings",
+        "search url", "search urls", "job listings",
+        "todays job", "today's job", "do a job",
     ]
     examples = [
         "search for jobs",
         "run a job hunt",
+        "do todays job searches",
         "check for new job listings",
+        "find me some jobs",
         "add a search URL https://dice.com/jobs?q=...",
         "show my search URLs",
         "remove the first search URL",

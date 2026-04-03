@@ -1409,25 +1409,46 @@ class TalonAssistant:
                     result = talent.execute(command, context)
 
                 # If talent explicitly declined (success=False, blank response,
-                # no actions taken), fall through to conversation rather than
-                # returning a blank response. This lets PlannerTalent hand off
-                # single-step commands without leaving the user with silence.
+                # no actions taken), re-route excluding the declining talent.
+                # This lets PlannerTalent hand off single-step commands to
+                # the correct talent instead of falling to conversation.
                 if (not result.get("success")
                         and not result.get("response", "").strip()
                         and not result.get("actions_taken")):
                     log.info(f"[Routing] {talent.name} declined — "
-                          f"falling through to conversation")
-                    response = self._handle_conversation(command, context)
-                    response = self._security_filter_response(
-                        response, context="conversation")
-                    if speak_response and response:
-                        self.voice.speak(response)
-                    elif response:
-                        log.info(f"Talon: {response}")
-                    if not _executing_rule and response:
-                        self._conversation.buffer_turn(command, response.strip())
-                    log.info(f"{'=' * 50}\n")
-                    return {"response": response or "", "talent": "", "success": True}
+                          f"re-routing without {talent.name}")
+                    # Try keyword fallback first (fast, no LLM call)
+                    fallback = None
+                    for t in self.talents:
+                        if (t is not talent and t.enabled
+                                and t.routing_available
+                                and t.can_handle(command)):
+                            fallback = t
+                            break
+                    if fallback:
+                        log.info(f"[Routing] Re-routed to {fallback.name}")
+                        if getattr(fallback, "subprocess_isolated", False):
+                            from talents.base import run_talent_isolated
+                            result = run_talent_isolated(
+                                fallback, command,
+                                context.get("config", {}))
+                        else:
+                            result = fallback.execute(command, context)
+                        talent = fallback
+                        # Fall through to normal result handling below
+                    else:
+                        # No other talent matched — conversation fallback
+                        response = self._handle_conversation(command, context)
+                        response = self._security_filter_response(
+                            response, context="conversation")
+                        if speak_response and response:
+                            self.voice.speak(response)
+                        elif response:
+                            log.info(f"Talon: {response}")
+                        if not _executing_rule and response:
+                            self._conversation.buffer_turn(command, response.strip())
+                        log.info(f"{'=' * 50}\n")
+                        return {"response": response or "", "talent": "", "success": True}
 
                 # Step 4: Log to memory (skip for reflection/rule sub-steps
                 # so autonomous searches don't pollute user behaviour patterns)
