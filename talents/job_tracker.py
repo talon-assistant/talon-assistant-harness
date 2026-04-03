@@ -356,11 +356,13 @@ class JobTrackerTalent(BaseTalent):
     name = "job_tracker"
     description = (
         "Track job applications, update statuses, manage follow-ups, "
-        "view statistics, and export reports for job searches"
+        "view statistics, and export reports for tracked applications"
     )
     keywords = [
-        "job", "application", "applied", "job tracker", "job search",
+        "application", "applied", "job tracker", "tracker",
         "follow up", "interview", "applications",
+        "active applications", "job application",
+        "export my job", "import my job",
     ]
     examples = [
         "add a job application at Netflix for VP of Engineering",
@@ -371,7 +373,7 @@ class JobTrackerTalent(BaseTalent):
         "how many applications this week",
         "export my job tracker",
     ]
-    priority = 60
+    priority = 55
 
     def __init__(self) -> None:
         super().__init__()

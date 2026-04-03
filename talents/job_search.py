@@ -96,7 +96,7 @@ class JobSearchTalent(BaseTalent):
         "remove the first search URL",
         "job search login",
     ]
-    priority = 58
+    priority = 62
     required_packages = ["selenium"]
 
     def __init__(self) -> None:
