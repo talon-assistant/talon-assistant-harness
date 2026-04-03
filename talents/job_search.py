@@ -159,10 +159,14 @@ class JobSearchTalent(BaseTalent):
         if "login" in cmd:
             return self._handle_login()
 
-        # "show top jobs" / "best matches" belong to job_tracker — decline
+        # "show top jobs" / "best matches" — handle directly
         if re.search(r'\b(top jobs|best match|top candidates|best jobs|'
-                     r'top match|strongest|highest fit|best fit|ranked|'
-                     r'cover letter)\b', cmd):
+                     r'top match|strongest|highest fit|best fit|ranked)\b',
+                     cmd):
+            return self._handle_top_candidates()
+
+        # "cover letter" — delegate to job_tracker via decline
+        if "cover letter" in cmd:
             return {"success": False, "response": "",
                     "actions_taken": [], "spoken": False}
 
@@ -266,6 +270,48 @@ class JobSearchTalent(BaseTalent):
                        "{get: () => undefined})"},
         )
         return driver
+
+    # ── Search orchestrator ──────────────────────────────────────────────────
+
+    # ── Top candidates (queries tracker DB directly) ───────────────────────
+
+    def _handle_top_candidates(self) -> dict:
+        """Show new jobs ranked by fit score from the tracker DB."""
+        from talents.job_tracker import _DB, _data_dir as tracker_data_dir
+
+        db_path = os.path.join(tracker_data_dir(), "job_tracker.db")
+        if not os.path.exists(db_path):
+            return _fail("No job tracker database found. Run a search first.")
+
+        db = _DB(db_path)
+        apps = db.list_top_candidates(limit=15)
+
+        if not apps:
+            return _ok(
+                "No scored candidates yet. Fit scores are added "
+                "automatically after a job search. Try 'search for jobs' "
+                "first, then check back in a few minutes."
+            )
+
+        lines = [f"**Top candidates** ({len(apps)}):\n"]
+        for app in apps:
+            loc = f" ({app['location']})" if app.get("location") else ""
+            rec = ""
+            notes = app.get("notes", "")
+            if "Recommendation:" in notes:
+                rec_part = notes.split("Recommendation:")[-1].strip()
+                rec = f" [{rec_part}]"
+            lines.append(
+                f"  #{app['id']} [{app['fit_score']}%] "
+                f"**{app['company']}** -- {app['position']}{loc}{rec}"
+            )
+
+        lines.append(
+            "\nSay 'write a cover letter for #ID' or "
+            "'write a cover letter for [company]' to generate one."
+        )
+
+        return _ok("\n".join(lines))
 
     # ── Search orchestrator ──────────────────────────────────────────────────
 
