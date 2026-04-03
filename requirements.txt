@@ -52,6 +52,10 @@ datasets>=2.14
 # Optional — Cowork Bridge browser_fetch (authenticated page scraping)
 playwright>=1.40.0
 
+# Optional — job_search talent (LinkedIn scraping)
+selenium>=4.10
+webdriver-manager>=4.0
+
 # Optional — scheduler talent cron support
 croniter>=1.3
 
