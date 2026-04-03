@@ -692,15 +692,29 @@ class TalonAssistant:
                 log.debug(f"[LLM Router] -> '{talent_name}' (unknown, falling back to keywords)")
                 return None
 
-            # ── Keyword/example cross-check (confirmation only) ───────────────
-            # Keywords confirm the LLM's choice — they do NOT override it.
-            # Overriding caused valid LLM picks (e.g. desktop_control for vision
-            # queries) to be replaced by whichever talent happened to share a
-            # common word with the command (web_search's "what is", etc.).
+            # ── Keyword/example cross-check ────────────────────────────────
+            # If the LLM's choice has keyword signal, trust it.
+            # If not, look for a higher-priority talent that DOES have signal.
+            # The priority guard prevents low-priority talents with broad
+            # keywords (e.g. web_search "what is") from stealing valid LLM
+            # picks from specialised talents (e.g. desktop_control for vision).
             if self._keyword_confidence(chosen, command):
                 log.debug(f"[LLM Router] -> {talent_name} (confirmed by keyword signal)")
-            else:
-                log.debug(f"[LLM Router] -> {talent_name} (no keyword signal, trusting LLM)")
+                return chosen
+
+            # LLM pick has no keyword signal — check for a better match
+            for candidate in self.talents:
+                if (candidate is not chosen
+                        and candidate.enabled
+                        and candidate.routing_available
+                        and candidate.priority > chosen.priority
+                        and self._keyword_confidence(candidate, command)):
+                    log.info(f"[LLM Router] Overriding {talent_name} → "
+                             f"{candidate.name} (keyword signal + higher priority)")
+                    return candidate
+
+            # No better candidate — trust the LLM
+            log.debug(f"[LLM Router] -> {talent_name} (no keyword signal, trusting LLM)")
             return chosen
 
         except Exception as e:
