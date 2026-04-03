@@ -936,37 +936,34 @@ class JobSearchTalent(BaseTalent):
         """Score a single batch of jobs via claude -p."""
         resume_path = Path.home() / "OneDrive" / "Documents" / "resume_master.md"
 
-        job_list_text = []
+        # Read resume content directly so Claude doesn't need file access
+        try:
+            resume_text = resume_path.read_text(encoding="utf-8")
+        except Exception as e:
+            log.error(f"[JobSearch] Cannot read resume: {e}")
+            return
+
+        job_lines = []
         for j in jobs:
-            loc = j.get("location", "")
-            url = j.get("job_url", "")
-            job_list_text.append(
-                f"- tracker_id: {j.get('id')}\n"
-                f"  company: {j.get('company', 'Unknown')}\n"
-                f"  position: {j.get('position', '')}\n"
-                f"  location: {loc}\n"
-                f"  job_url: {url}\n"
-                f"  source: {j.get('source', '')}"
-            )
+            parts = [f"tracker_id={j.get('id')}"]
+            parts.append(f"company={j.get('company', 'Unknown')}")
+            parts.append(f"position={j.get('position', '')}")
+            if j.get("location"):
+                parts.append(f"location={j['location']}")
+            job_lines.append(" | ".join(parts))
 
         prompt = (
-            f"Read the resume at: {resume_path}\n\n"
-            "Here are job listings to evaluate for fit:\n\n"
-            + "\n\n".join(job_list_text) + "\n\n"
-            "For each job:\n"
-            "1. If a job_url is provided, fetch the page to read the full "
-            "job description. If the URL fails, evaluate based on the "
-            "title/company alone.\n"
-            "2. Score fit (0-100) against the resume. 80+ means strong "
-            "match on experience, certs, and seniority. Below 50 means "
-            "poor alignment.\n"
-            "3. Write 2-3 sentences explaining the fit. Be specific about "
-            "which resume accomplishments match.\n"
-            "4. Recommend: apply, skip, or maybe.\n\n"
-            "Return ONLY a valid JSON array. No markdown fences, no "
-            "commentary outside the JSON. Each element:\n"
+            "TASK: Score each job listing for fit against this resume.\n\n"
+            f"RESUME:\n{resume_text}\n\n"
+            "JOB LISTINGS:\n"
+            + "\n".join(job_lines) + "\n\n"
+            "For each job, score fit 0-100 based on title, company, and "
+            "location match to the resume. 80+ = strong match on seniority "
+            "and domain. 50-79 = partial match. Below 50 = poor fit.\n\n"
+            "Return ONLY a JSON array, nothing else. Each element:\n"
             '{"tracker_id": <int>, "fit_score": <int>, '
-            '"analysis": "<string>", "recommendation": "<apply|skip|maybe>"}\n'
+            '"analysis": "<2-3 sentences>", '
+            '"recommendation": "<apply|skip|maybe>"}'
         )
 
         try:
@@ -980,7 +977,7 @@ class JobSearchTalent(BaseTalent):
                 input=prompt,
                 capture_output=True,
                 text=True,
-                timeout=300,  # 5 min max
+                timeout=120,
                 cwd=str(Path.home()),
             )
 
