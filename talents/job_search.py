@@ -88,6 +88,7 @@ class JobSearchTalent(BaseTalent):
         "check linkedin", "check dice", "new job listings",
         "search url", "search urls", "job listings",
         "todays job", "today's job", "do a job",
+        "cover letter",
     ]
     examples = [
         "search for jobs",
@@ -173,10 +174,9 @@ class JobSearchTalent(BaseTalent):
         if re.search(r'\b(score|fit analysis|analyze|evaluate)\b', cmd):
             return self._handle_score_existing()
 
-        # "cover letter" — delegate to job_tracker via decline
+        # Cover letter generation via Claude CLI
         if "cover letter" in cmd:
-            return {"success": False, "response": "",
-                    "actions_taken": [], "spoken": False}
+            return self._handle_cover_letter(command)
 
         # Default: run the search
         return self._handle_search(context)
@@ -318,6 +318,278 @@ class JobSearchTalent(BaseTalent):
             f"Scoring {count} unscored job(s) in the background. "
             f"Check back in a few minutes with 'show top jobs'."
         )
+
+    # ── Cover letter generation via Claude CLI ─────────────────────────────
+
+    def _handle_cover_letter(self, command: str) -> dict:
+        """Generate a cover letter for a tracked application."""
+        from talents.job_tracker import _DB, _data_dir as tracker_data_dir
+
+        db_path = os.path.join(tracker_data_dir(), "job_tracker.db")
+        if not os.path.exists(db_path):
+            return _fail("No job tracker database found.")
+
+        db = _DB(db_path)
+
+        # Find the application — try ID first, then company name search
+        app = None
+        id_match = re.search(r'#?(\d+)', command)
+        if id_match:
+            app = db.get_application(int(id_match.group(1)))
+
+        if not app:
+            # Try to extract company name from command
+            cmd_lower = command.lower()
+            for prefix in ("write a cover letter for",
+                           "cover letter for",
+                           "write cover letter for",
+                           "generate a cover letter for",
+                           "create a cover letter for"):
+                if prefix in cmd_lower:
+                    company = cmd_lower.split(prefix)[-1].strip()
+                    if company:
+                        matches = db.search(company)
+                        if matches:
+                            app = matches[0]
+                    break
+
+        if not app:
+            return _fail(
+                "Which job? Try: 'write a cover letter for #3' "
+                "or 'write a cover letter for OEC'"
+            )
+
+        # Read resume
+        resume_path = Path.home() / "OneDrive" / "Documents" / "resume_master.md"
+        try:
+            resume_text = resume_path.read_text(encoding="utf-8")
+        except Exception as e:
+            return _fail(f"Cannot read resume: {e}")
+
+        # Read style rules
+        claude_md = Path.home() / ".claude" / "CLAUDE.md"
+        style_rules = ""
+        try:
+            style_rules = claude_md.read_text(encoding="utf-8")
+        except Exception:
+            pass
+
+        # Scrape job description
+        job_url = app.get("job_url", "")
+        job_description = ""
+        if job_url:
+            job_description = self._fetch_job_description(job_url)
+
+        # Build prompt
+        prompt_parts = [
+            "TASK: Write a cover letter for the position below.",
+            "",
+            f"RESUME:\n{resume_text}",
+            "",
+            f"POSITION: {app['position']}",
+            f"COMPANY: {app['company']}",
+        ]
+        if app.get("location"):
+            prompt_parts.append(f"LOCATION: {app['location']}")
+        if job_description:
+            prompt_parts.append(f"\nJOB DESCRIPTION:\n{job_description}")
+        if app.get("notes"):
+            notes = app["notes"]
+            if "Recommendation:" in notes:
+                prompt_parts.append(f"\nFIT ANALYSIS: {notes}")
+
+        prompt_parts.extend([
+            "",
+            f"STYLE RULES:\n{style_rules}" if style_rules else "",
+            "",
+            "INSTRUCTIONS:",
+            "- Only promote matches and strengths. NEVER mention "
+            "weaknesses, gaps, or missing qualifications.",
+            "- No em dashes. Use commas, periods, or semicolons.",
+            "- No tricolon / parallel triplets.",
+            "- Plain language, direct executive tone.",
+            "- Open with a specific hook tied to the company or role.",
+            "- Pull specific metrics and accomplishments from the resume "
+            "that match this role.",
+            "- 3-4 paragraphs, under one page.",
+            "- Close with confidence, not desperation.",
+            "",
+            "Output ONLY the cover letter text. No commentary, no "
+            "preamble like 'Here is your cover letter', no markdown. "
+            "Just the letter itself, starting with 'Dear'.",
+        ])
+
+        prompt = "\n".join(p for p in prompt_parts if p)
+
+        # Call Claude CLI
+        claude_bin = shutil.which("claude")
+        if not claude_bin:
+            return _fail("Claude CLI not found in PATH.")
+
+        try:
+            result = subprocess.run(
+                [claude_bin, "-p", "--output-format", "text"],
+                input=prompt,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                timeout=120,
+                cwd=str(Path.home()),
+            )
+
+            if result.returncode != 0:
+                log.error(f"[JobSearch] Cover letter failed: {result.stderr[:200]}")
+                return _fail("Claude CLI failed to generate the cover letter.")
+
+            letter = result.stdout.strip()
+            if not letter or len(letter) < 50:
+                return _fail("Claude returned an empty or too-short response.")
+
+            # Sanity check
+            _bad = ["webfetch", "permission", "tool call", "blocked by",
+                    "approve the", "[your name]", "[your address]"]
+            if any(s in letter.lower() for s in _bad):
+                log.error(f"[JobSearch] Bad cover letter: {letter[:200]}")
+                return _fail("Cover letter generation produced bad output.")
+
+        except subprocess.TimeoutExpired:
+            return _fail("Cover letter generation timed out.")
+
+        # Save files
+        output_dir = Path.home() / "OneDrive" / "Documents" / "Cover Letters"
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        safe_company = re.sub(r'[^\w\s-]', '', app['company']).strip()
+        safe_position = re.sub(r'[^\w\s-]', '', app['position']).strip()[:40]
+        base_name = f"{safe_company} - {safe_position}"
+
+        counter = 0
+        suffix = ""
+        while (output_dir / f"{base_name}{suffix}.docx").exists():
+            counter += 1
+            suffix = f" ({counter})"
+
+        docx_path = output_dir / f"{base_name}{suffix}.docx"
+        pdf_path = output_dir / f"{base_name}{suffix}.pdf"
+        txt_path = output_dir / f"{base_name}{suffix}.txt"
+
+        txt_path.write_text(letter, encoding="utf-8")
+        saved = [str(txt_path)]
+
+        try:
+            self._write_cover_letter_docx(letter, docx_path, app)
+            saved.append(str(docx_path))
+
+            try:
+                import docx2pdf
+                docx2pdf.convert(str(docx_path), str(pdf_path))
+                saved.append(str(pdf_path))
+            except Exception as e:
+                log.warning(f"[JobSearch] PDF conversion failed: {e}")
+        except Exception as e:
+            log.warning(f"[JobSearch] DOCX generation failed: {e}")
+
+        # Update tracker DB
+        db.update_application(app["id"], cover_letter=1)
+        log.info(f"[JobSearch] Cover letter saved for #{app['id']} {app['company']}")
+
+        file_list = "\n".join(f"  {f}" for f in saved)
+        return _ok(
+            f"Cover letter for **{app['company']}** ({app['position']}) "
+            f"saved to:\n\n{file_list}\n\n"
+            f"DOCX and PDF ready for upload."
+        )
+
+    @staticmethod
+    def _fetch_job_description(job_url: str) -> str:
+        """Scrape job description text from a URL using selenium."""
+        try:
+            from selenium import webdriver
+            from selenium.webdriver.chrome.options import Options
+            from selenium.webdriver.chrome.service import Service
+            from selenium.webdriver.common.by import By
+
+            data_dir = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                "data", "job_search_chrome_profile",
+            )
+            options = Options()
+            options.add_argument(f"--user-data-dir={data_dir}")
+            options.add_argument("--headless=new")
+            options.add_argument("--disable-blink-features=AutomationControlled")
+            options.add_argument("--no-sandbox")
+            options.add_argument("--disable-dev-shm-usage")
+
+            try:
+                from webdriver_manager.chrome import ChromeDriverManager
+                service = Service(ChromeDriverManager().install())
+            except ImportError:
+                service = Service()
+
+            driver = webdriver.Chrome(service=service, options=options)
+            try:
+                driver.get(job_url)
+                time.sleep(4)
+                body = driver.find_element(By.TAG_NAME, "body").text
+                if len(body) > 5000:
+                    body = body[:5000] + "\n[truncated]"
+                log.info(f"[JobSearch] Fetched JD: {len(body)} chars")
+                return body
+            finally:
+                driver.quit()
+        except Exception as e:
+            log.warning(f"[JobSearch] Could not fetch JD: {e}")
+            return ""
+
+    @staticmethod
+    def _write_cover_letter_docx(letter_text: str, output_path: Path,
+                                  app: dict) -> None:
+        """Write a professionally formatted cover letter DOCX."""
+        from docx import Document
+        from docx.shared import Pt, Inches
+        from docx.enum.text import WD_ALIGN_PARAGRAPH
+
+        doc = Document()
+        for section in doc.sections:
+            section.top_margin = Inches(1)
+            section.bottom_margin = Inches(1)
+            section.left_margin = Inches(1)
+            section.right_margin = Inches(1)
+
+        style = doc.styles["Normal"]
+        font = style.font
+        font.name = "Calibri"
+        font.size = Pt(11)
+
+        header = doc.add_paragraph()
+        header.alignment = WD_ALIGN_PARAGRAPH.LEFT
+        run = header.add_run("Talon User")
+        run.bold = True
+        run.font.size = Pt(14)
+        header.paragraph_format.space_after = Pt(2)
+
+        contact = doc.add_paragraph()
+        contact.alignment = WD_ALIGN_PARAGRAPH.LEFT
+        run = contact.add_run(
+            "user@example.com | your phone | Your City, ST"
+        )
+        run.font.size = Pt(10)
+        contact.paragraph_format.space_after = Pt(12)
+
+        date_para = doc.add_paragraph()
+        date_para.add_run(date.today().strftime("%B %d, %Y"))
+        date_para.paragraph_format.space_after = Pt(12)
+
+        paragraphs = [p.strip() for p in letter_text.split("\n\n") if p.strip()]
+        for para_text in paragraphs:
+            lower = para_text.lower()
+            if lower.startswith("talon user"):
+                continue
+            clean_text = para_text.replace("\n", " ")
+            p = doc.add_paragraph(clean_text)
+            p.paragraph_format.space_after = Pt(8)
+
+        doc.save(str(output_path))
 
     # ── Search orchestrator ──────────────────────────────────────────────────
 
