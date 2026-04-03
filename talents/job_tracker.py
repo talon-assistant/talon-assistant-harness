@@ -836,47 +836,66 @@ class JobTrackerTalent(BaseTalent):
                 "or 'write a cover letter for Affirm'"
             )
 
-        # Build the prompt for Claude CLI
+        # Read resume inline
         resume_path = Path.home() / "OneDrive" / "Documents" / "resume_master.md"
+        try:
+            resume_text = resume_path.read_text(encoding="utf-8")
+        except Exception as e:
+            return self._fail(f"Cannot read resume: {e}")
+
+        # Read CLAUDE.md for style rules
+        claude_md_path = Path.home() / ".claude" / "CLAUDE.md"
+        style_rules = ""
+        try:
+            style_rules = claude_md_path.read_text(encoding="utf-8")
+        except Exception:
+            pass
+
+        # Scrape job description if URL available
         job_url = app.get("job_url", "")
+        job_description = ""
+        if job_url:
+            job_description = self._fetch_job_description(job_url)
 
         prompt_parts = [
-            f"Read the resume at: {resume_path}",
+            "TASK: Write a cover letter for the position below.",
             "",
-            f"Write a cover letter for this position:",
-            f"  Company: {app['company']}",
-            f"  Position: {app['position']}",
+            f"RESUME:\n{resume_text}",
+            "",
+            f"POSITION: {app['position']}",
+            f"COMPANY: {app['company']}",
         ]
         if app.get("location"):
-            prompt_parts.append(f"  Location: {app['location']}")
-        if job_url:
-            prompt_parts.append(f"  Job URL: {job_url}")
-            prompt_parts.append(
-                "\nFetch the job URL to read the full description."
-            )
+            prompt_parts.append(f"LOCATION: {app['location']}")
+        if job_description:
+            prompt_parts.append(f"\nJOB DESCRIPTION:\n{job_description}")
         if app.get("notes"):
             fit_notes = app["notes"]
             if "Recommendation:" in fit_notes:
-                prompt_parts.append(f"\nFit analysis: {fit_notes}")
+                prompt_parts.append(f"\nFIT ANALYSIS: {fit_notes}")
 
         prompt_parts.extend([
             "",
-            "Follow the writing style rules in ~/.claude/CLAUDE.md exactly.",
-            "Follow the cover letter rules in ~/.claude/CLAUDE.md exactly.",
+            f"STYLE RULES:\n{style_rules}" if style_rules else "",
             "",
-            "The cover letter should:",
-            "- Open with a specific hook tied to the company or role",
+            "INSTRUCTIONS:",
+            "- Only promote matches and strengths. NEVER mention "
+            "weaknesses, gaps, or missing qualifications.",
+            "- No em dashes. Use commas, periods, or semicolons.",
+            "- No tricolon / parallel triplets.",
+            "- Plain language, direct executive tone.",
+            "- Open with a specific hook tied to the company or role.",
             "- Pull specific metrics and accomplishments from the resume "
-            "that match this role",
-            "- Be 3-4 paragraphs, under one page",
-            "- Close with confidence, not desperation",
+            "that match this role.",
+            "- 3-4 paragraphs, under one page.",
+            "- Close with confidence, not desperation.",
             "",
-            "Output ONLY the cover letter text. No commentary, no headers "
-            "like 'Here is your cover letter', no markdown formatting. "
-            "Just the letter itself, ready to paste.",
+            "Output ONLY the cover letter text. No commentary, no "
+            "preamble like 'Here is your cover letter', no markdown. "
+            "Just the letter itself, starting with 'Dear'.",
         ])
 
-        prompt = "\n".join(prompt_parts)
+        prompt = "\n".join(p for p in prompt_parts if p is not None)
 
         # Run Claude CLI
         claude_bin = shutil.which("claude")
@@ -908,6 +927,18 @@ class JobTrackerTalent(BaseTalent):
             letter = result.stdout.strip()
             if not letter or len(letter) < 50:
                 return self._fail("Claude returned an empty or too-short response.")
+
+            # Sanity check — reject if Claude returned an error instead
+            # of a cover letter
+            _bad_signals = ["webfetch", "permission", "tool call",
+                            "blocked by", "approve the"]
+            if any(s in letter.lower() for s in _bad_signals):
+                log.error(f"[JobTracker] Cover letter looks like an error: "
+                          f"{letter[:200]}")
+                return self._fail(
+                    "Claude returned an error instead of a cover letter. "
+                    "This has been fixed — try again."
+                )
 
         except subprocess.TimeoutExpired:
             return self._fail("Cover letter generation timed out (120s).")
@@ -981,6 +1012,49 @@ class JobTrackerTalent(BaseTalent):
             }],
             "spoken": False,
         }
+
+    @staticmethod
+    def _fetch_job_description(job_url: str) -> str:
+        """Fetch job description text from a URL using selenium."""
+        try:
+            from selenium import webdriver
+            from selenium.webdriver.chrome.options import Options
+            from selenium.webdriver.chrome.service import Service
+            from selenium.webdriver.common.by import By
+            import time as _time
+
+            options = Options()
+            data_dir = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                "data", "job_search_chrome_profile",
+            )
+            options.add_argument(f"--user-data-dir={data_dir}")
+            options.add_argument("--headless=new")
+            options.add_argument("--disable-blink-features=AutomationControlled")
+            options.add_argument("--no-sandbox")
+            options.add_argument("--disable-dev-shm-usage")
+
+            try:
+                from webdriver_manager.chrome import ChromeDriverManager
+                service = Service(ChromeDriverManager().install())
+            except ImportError:
+                service = Service()
+
+            driver = webdriver.Chrome(service=service, options=options)
+            try:
+                driver.get(job_url)
+                _time.sleep(4)
+                body = driver.find_element(By.TAG_NAME, "body").text
+                # Trim to reasonable size for the prompt
+                if len(body) > 5000:
+                    body = body[:5000] + "\n[truncated]"
+                log.info(f"[JobTracker] Fetched JD: {len(body)} chars")
+                return body
+            finally:
+                driver.quit()
+        except Exception as e:
+            log.warning(f"[JobTracker] Could not fetch JD from {job_url}: {e}")
+            return ""
 
     @staticmethod
     def _write_cover_letter_docx(
