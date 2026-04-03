@@ -1009,9 +1009,12 @@ class JobSearchTalent(BaseTalent):
                     }
                     for j in jobs
                 ],
+                "resume_path": "~/OneDrive/Documents/resume_master.md",
                 "instructions": (
+                    "Read the user's master resume from resume_path. "
                     "For each job listing, visit the job URL to read the full "
-                    "description, then evaluate fit against the user's resume. "
+                    "description, then evaluate fit against the resume. "
+                    "Follow the writing style rules in ~/.claude/CLAUDE.md. "
                     "Return a JSON array where each element has: tracker_id, "
                     "fit_score (0-100), analysis (2-3 sentences), and "
                     "recommendation (apply / skip / maybe)."

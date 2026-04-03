@@ -1248,9 +1248,12 @@ class JobTrackerTalent(BaseTalent):
             "position": app["position"],
             "job_url": app.get("job_url", ""),
             "job_description": job_description[:5000],
+            "resume_path": "~/OneDrive/Documents/resume_master.md",
             "instructions": (
-                "Tailor the user's master resume for this position. "
-                "Also draft a cover letter. Return both as separate sections."
+                "Read the user's master resume from the resume_path. "
+                "Tailor it for this position. Also draft a cover letter. "
+                "Follow the writing style rules in ~/.claude/CLAUDE.md. "
+                "Return both as separate sections."
             ),
         })
         if task_id and self._db:
