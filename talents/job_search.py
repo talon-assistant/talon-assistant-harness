@@ -1,8 +1,8 @@
 """JobSearchTalent -- automated job search across LinkedIn, Dice, and Built In.
 
 Scrapes job listings from configured search URLs, identifies new postings
-not yet in the job tracker, adds them automatically, and optionally sends
-a batch to Cowork for resume-fit analysis.
+not yet in the job tracker, adds them automatically, and runs automated
+resume-fit analysis via Claude CLI in the background.
 
 Supported sites:
     - LinkedIn (requires one-time login via dedicated Chrome profile)
@@ -26,8 +26,11 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
 import time
+import threading
 from datetime import date, datetime
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 
@@ -131,7 +134,7 @@ class JobSearchTalent(BaseTalent):
             "fields": [
                 {
                     "key": "auto_cowork",
-                    "label": "Auto-send new listings to Cowork for fit analysis",
+                    "label": "Auto-run fit analysis on new listings via Claude CLI",
                     "type": "bool",
                     "default": True,
                 },
@@ -318,10 +321,10 @@ class JobSearchTalent(BaseTalent):
         # Add new jobs to tracker DB
         added = self._add_to_tracker(new_jobs)
 
-        # Cowork handoff
-        cowork_sent = 0
+        # Automated fit analysis via Claude CLI
+        fit_count = 0
         if self._search_config.get("auto_cowork") and added:
-            cowork_sent = self._send_to_cowork(added)
+            fit_count = self._run_fit_analysis(added)
 
         # Build response
         lines = [f"Found {len(all_jobs)} listings across {sites_label}, "
@@ -335,8 +338,10 @@ class JobSearchTalent(BaseTalent):
             )
         if len(added) > 10:
             lines.append(f"  \u2026 and {len(added) - 10} more")
-        if cowork_sent:
-            lines.append(f"\nSent {cowork_sent} to Cowork for fit analysis.")
+        if fit_count:
+            lines.append(
+                f"\nFit analysis running in background for {fit_count} listing(s)."
+            )
 
         notify = context.get("notify")
         if notify:
@@ -348,7 +353,7 @@ class JobSearchTalent(BaseTalent):
                 "action": "search",
                 "found": len(all_jobs),
                 "new": len(added),
-                "cowork": cowork_sent,
+                "fit_analysis": fit_count,
                 "sites": list(sites_searched),
             }],
         )
@@ -788,59 +793,139 @@ class JobSearchTalent(BaseTalent):
             log.info(f"[JobSearch] Added {len(added)} new applications to tracker")
         return added
 
-    # ── Cowork handoff ───────────────────────────────────────────────────────
+    # ── Automated fit analysis via Claude CLI ──────────────────────────────
+
+    def _run_fit_analysis(self, jobs: list[dict]) -> int:
+        """Run fit analysis in a background thread using claude -p.
+
+        Calls Claude CLI to score each job against the user's resume,
+        then writes fit_score, notes, and recommendation back to the
+        tracker database.  Runs in a daemon thread so it doesn't block
+        the user response.
+        """
+        if not jobs:
+            return 0
+
+        count = len(jobs)
+        thread = threading.Thread(
+            target=self._fit_analysis_worker,
+            args=(list(jobs),),
+            daemon=True,
+        )
+        thread.start()
+        log.info(f"[JobSearch] Fit analysis started in background ({count} jobs)")
+        return count
+
+    def _fit_analysis_worker(self, jobs: list[dict]) -> None:
+        """Background worker: call claude -p for fit analysis, store results."""
+        resume_path = Path.home() / "OneDrive" / "Documents" / "resume_master.md"
+
+        job_list_text = []
+        for j in jobs:
+            loc = j.get("location", "")
+            url = j.get("job_url", "")
+            job_list_text.append(
+                f"- tracker_id: {j.get('id')}\n"
+                f"  company: {j.get('company', 'Unknown')}\n"
+                f"  position: {j.get('position', '')}\n"
+                f"  location: {loc}\n"
+                f"  job_url: {url}\n"
+                f"  source: {j.get('source', '')}"
+            )
+
+        prompt = (
+            f"Read the resume at: {resume_path}\n\n"
+            "Here are job listings to evaluate for fit:\n\n"
+            + "\n\n".join(job_list_text) + "\n\n"
+            "For each job:\n"
+            "1. If a job_url is provided, fetch the page to read the full "
+            "job description. If the URL fails, evaluate based on the "
+            "title/company alone.\n"
+            "2. Score fit (0-100) against the resume. 80+ means strong "
+            "match on experience, certs, and seniority. Below 50 means "
+            "poor alignment.\n"
+            "3. Write 2-3 sentences explaining the fit. Be specific about "
+            "which resume accomplishments match.\n"
+            "4. Recommend: apply, skip, or maybe.\n\n"
+            "Return ONLY a valid JSON array. No markdown fences, no "
+            "commentary outside the JSON. Each element:\n"
+            '{"tracker_id": <int>, "fit_score": <int>, '
+            '"analysis": "<string>", "recommendation": "<apply|skip|maybe>"}\n'
+        )
+
+        try:
+            result = subprocess.run(
+                ["claude", "-p", "--output-format", "text"],
+                input=prompt,
+                capture_output=True,
+                text=True,
+                timeout=300,  # 5 min max
+                cwd=str(Path.home()),
+            )
+
+            if result.returncode != 0:
+                log.error(
+                    f"[JobSearch] claude -p failed (rc={result.returncode}): "
+                    f"{result.stderr[:200]}"
+                )
+                return
+
+            raw = result.stdout.strip()
+            # Strip markdown fences if Claude wraps them anyway
+            if raw.startswith("```"):
+                raw = re.sub(r"^```\w*\n?", "", raw)
+                raw = re.sub(r"\n?```$", "", raw)
+
+            scores = json.loads(raw)
+            if not isinstance(scores, list):
+                log.error("[JobSearch] Fit analysis returned non-list JSON")
+                return
+
+            self._store_fit_results(scores)
+
+        except subprocess.TimeoutExpired:
+            log.error("[JobSearch] claude -p timed out (300s)")
+        except json.JSONDecodeError as e:
+            log.error(f"[JobSearch] Fit analysis JSON parse error: {e}")
+            log.debug(f"[JobSearch] Raw output: {raw[:500]}")
+        except Exception as e:
+            log.error(f"[JobSearch] Fit analysis failed: {e}")
 
     @staticmethod
-    def _send_to_cowork(jobs: list[dict]) -> int:
-        """Batch-send newly found jobs to Cowork for fit analysis."""
-        import uuid
-        from pathlib import Path
+    def _store_fit_results(scores: list[dict]) -> None:
+        """Write fit analysis results back to the job tracker database."""
+        from talents.job_tracker import _DB, _data_dir as tracker_data_dir
 
-        bridge_tasks = Path.home() / "OneDrive" / "Documents" / "cowork_bridge" / "tasks"
-        bridge_tasks.mkdir(parents=True, exist_ok=True)
+        db_path = os.path.join(tracker_data_dir(), "job_tracker.db")
+        db = _DB(db_path)
 
-        task_id = f"job_fit_{uuid.uuid4().hex[:8]}"
-        task = {
-            "task_id": task_id,
-            "task_type": "job_fit_batch",
-            "created": datetime.now().isoformat(),
-            "payload": {
-                "jobs": [
-                    {
-                        "tracker_id": j.get("id"),
-                        "company": j.get("company"),
-                        "position": j.get("position"),
-                        "location": j.get("location", ""),
-                        "job_url": j.get("job_url", ""),
-                        "source": j.get("source", ""),
-                    }
-                    for j in jobs
-                ],
-                "resume_path": "~/OneDrive/Documents/resume_master.md",
-                "instructions": (
-                    "Read the user's master resume from resume_path. "
-                    "For each job listing, visit the job URL to read the full "
-                    "description, then evaluate fit against the resume. "
-                    "Follow the writing style rules in ~/.claude/CLAUDE.md. "
-                    "Return a JSON array where each element has: tracker_id, "
-                    "fit_score (0-100), analysis (2-3 sentences), and "
-                    "recommendation (apply / skip / maybe)."
-                ),
-            },
-        }
+        updated = 0
+        for entry in scores:
+            app_id = entry.get("tracker_id")
+            if not app_id:
+                continue
+            try:
+                fields = {}
+                if "fit_score" in entry:
+                    fields["fit_score"] = int(entry["fit_score"])
+                note_parts = []
+                if entry.get("analysis"):
+                    note_parts.append(entry["analysis"])
+                if entry.get("recommendation"):
+                    note_parts.append(
+                        f"Recommendation: {entry['recommendation']}"
+                    )
+                if note_parts:
+                    fields["notes"] = " | ".join(note_parts)
+                if fields:
+                    db.update_application(app_id, **fields)
+                    updated += 1
+            except Exception as e:
+                log.error(
+                    f"[JobSearch] Failed to store fit for #{app_id}: {e}"
+                )
 
-        task_path = bridge_tasks / f"{task_id}.json"
-        try:
-            with open(task_path, "w", encoding="utf-8") as f:
-                json.dump(task, f, indent=2)
-            log.info(
-                f"[JobSearch] Cowork fit-analysis task: "
-                f"{task_path.name} ({len(jobs)} jobs)"
-            )
-            return len(jobs)
-        except Exception as e:
-            log.error(f"[JobSearch] Failed to write Cowork task: {e}")
-            return 0
+        log.info(f"[JobSearch] Fit analysis complete: {updated}/{len(scores)} updated")
 
 
 # ── Response helpers ─────────────────────────────────────────────────────────
