@@ -95,6 +95,10 @@ class JobSearchTalent(BaseTalent):
         "do todays job searches",
         "check for new job listings",
         "find me some jobs",
+        "show top jobs",
+        "show best matches",
+        "score my jobs",
+        "run fit analysis",
         "add a search URL https://dice.com/jobs?q=...",
         "show my search URLs",
         "remove the first search URL",
@@ -164,6 +168,10 @@ class JobSearchTalent(BaseTalent):
                      r'top match|strongest|highest fit|best fit|ranked)\b',
                      cmd):
             return self._handle_top_candidates()
+
+        # "score my jobs" / "run fit analysis" — score unscored existing jobs
+        if re.search(r'\b(score|fit analysis|analyze|evaluate)\b', cmd):
+            return self._handle_score_existing()
 
         # "cover letter" — delegate to job_tracker via decline
         if "cover letter" in cmd:
@@ -270,6 +278,46 @@ class JobSearchTalent(BaseTalent):
                        "{get: () => undefined})"},
         )
         return driver
+
+    # ── Score existing unscored jobs ────────────────────────────────────────
+
+    def _handle_score_existing(self) -> dict:
+        """Run fit analysis on tracker jobs that haven't been scored yet."""
+        from talents.job_tracker import _DB, _data_dir as tracker_data_dir
+
+        db_path = os.path.join(tracker_data_dir(), "job_tracker.db")
+        if not os.path.exists(db_path):
+            return _fail("No job tracker database found. Run a search first.")
+
+        db = _DB(db_path)
+        with db._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM applications WHERE archived = 0 "
+                "AND status = 'new' AND fit_score = 0 "
+                "ORDER BY id DESC"
+            ).fetchall()
+        unscored = [dict(r) for r in rows]
+
+        if not unscored:
+            return _ok("All tracked jobs already have fit scores.")
+
+        # Convert to the format _run_fit_analysis expects
+        jobs = []
+        for app in unscored:
+            jobs.append({
+                "id": app["id"],
+                "company": app["company"],
+                "position": app["position"],
+                "location": app.get("location", ""),
+                "job_url": app.get("job_url", ""),
+                "source": app.get("source", ""),
+            })
+
+        count = self._run_fit_analysis(jobs)
+        return _ok(
+            f"Scoring {count} unscored job(s) in the background. "
+            f"Check back in a few minutes with 'show top jobs'."
+        )
 
     # ── Search orchestrator ──────────────────────────────────────────────────
 
