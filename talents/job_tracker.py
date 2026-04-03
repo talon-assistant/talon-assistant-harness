@@ -26,8 +26,11 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import sqlite3
+import subprocess
 from datetime import datetime, date, timedelta
+from pathlib import Path
 from typing import Any
 
 from talents.base import BaseTalent
@@ -808,9 +811,6 @@ class JobTrackerTalent(BaseTalent):
 
     def _handle_cover_letter(self, command: str, context: dict) -> dict:
         """Generate a cover letter for a specific application via Claude CLI."""
-        import subprocess
-        from pathlib import Path
-
         # Find the application - try ID first, then company name
         app = None
         id_match = re.search(r'#?(\d+)', command)
@@ -879,9 +879,15 @@ class JobTrackerTalent(BaseTalent):
         prompt = "\n".join(prompt_parts)
 
         # Run Claude CLI
+        claude_bin = shutil.which("claude")
+        if not claude_bin:
+            return self._fail(
+                "Claude CLI not found. Install with: "
+                "npm i -g @anthropic-ai/claude-code"
+            )
         try:
             result = subprocess.run(
-                ["claude", "-p", "--output-format", "text"],
+                [claude_bin, "-p", "--output-format", "text"],
                 input=prompt,
                 capture_output=True,
                 text=True,
@@ -1434,10 +1440,13 @@ class JobTrackerTalent(BaseTalent):
         Returns the response text, or None on failure.
         Uses the Claude CLI in pipe mode — works independently of Claude Code.
         """
-        import subprocess
+        claude_bin = shutil.which("claude")
+        if not claude_bin:
+            log.warning("[JobTracker] claude CLI not found in PATH")
+            return None
         try:
             result = subprocess.run(
-                ["claude", "-p", prompt],
+                [claude_bin, "-p", prompt],
                 capture_output=True, text=True, timeout=timeout,
             )
             if result.returncode == 0 and result.stdout.strip():
@@ -1525,7 +1534,6 @@ class JobTrackerTalent(BaseTalent):
         Returns the task_id, or None on failure.
         """
         import uuid
-        from pathlib import Path
 
         bridge_tasks = Path.home() / "OneDrive" / "Documents" / "cowork_bridge" / "tasks"
         bridge_tasks.mkdir(parents=True, exist_ok=True)

@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
 import time
 import threading
@@ -157,6 +158,13 @@ class JobSearchTalent(BaseTalent):
         # Login helper (LinkedIn only)
         if "login" in cmd:
             return self._handle_login()
+
+        # "show top jobs" / "best matches" belong to job_tracker — decline
+        if re.search(r'\b(top jobs|best match|top candidates|best jobs|'
+                     r'top match|strongest|highest fit|best fit|ranked|'
+                     r'cover letter)\b', cmd):
+            return {"success": False, "response": "",
+                    "actions_taken": [], "spoken": False}
 
         # Default: run the search
         return self._handle_search(context)
@@ -854,8 +862,13 @@ class JobSearchTalent(BaseTalent):
         )
 
         try:
+            claude_bin = shutil.which("claude")
+            if not claude_bin:
+                log.error("[JobSearch] claude CLI not found in PATH")
+                return
+
             result = subprocess.run(
-                ["claude", "-p", "--output-format", "text"],
+                [claude_bin, "-p", "--output-format", "text"],
                 input=prompt,
                 capture_output=True,
                 text=True,
