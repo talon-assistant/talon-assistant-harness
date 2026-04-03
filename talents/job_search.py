@@ -919,7 +919,21 @@ class JobSearchTalent(BaseTalent):
         return count
 
     def _fit_analysis_worker(self, jobs: list[dict]) -> None:
-        """Background worker: call claude -p for fit analysis, store results."""
+        """Background worker: call claude -p for fit analysis, store results.
+
+        Processes in batches of 5 to avoid output limits and URL fetch
+        timeouts from overwhelming a single call.
+        """
+        batch_size = 5
+        for i in range(0, len(jobs), batch_size):
+            batch = jobs[i:i + batch_size]
+            try:
+                self._score_batch(batch)
+            except Exception as e:
+                log.error(f"[JobSearch] Batch {i // batch_size + 1} failed: {e}")
+
+    def _score_batch(self, jobs: list[dict]) -> None:
+        """Score a single batch of jobs via claude -p."""
         resume_path = Path.home() / "OneDrive" / "Documents" / "resume_master.md"
 
         job_list_text = []
@@ -978,12 +992,28 @@ class JobSearchTalent(BaseTalent):
                 return
 
             raw = result.stdout.strip()
-            # Strip markdown fences if Claude wraps them anyway
-            if raw.startswith("```"):
-                raw = re.sub(r"^```\w*\n?", "", raw)
-                raw = re.sub(r"\n?```$", "", raw)
+            if not raw:
+                log.error(
+                    f"[JobSearch] claude -p returned empty output. "
+                    f"stderr: {result.stderr[:300]}"
+                )
+                return
 
-            scores = json.loads(raw)
+            # Strip markdown fences if Claude wraps them
+            raw = re.sub(r"^```\w*\n?", "", raw)
+            raw = re.sub(r"\n?```$", "", raw.strip())
+
+            # Extract JSON array from anywhere in the response
+            # (Claude sometimes adds preamble text before the JSON)
+            arr_match = re.search(r'\[.*\]', raw, re.DOTALL)
+            if not arr_match:
+                log.error(
+                    f"[JobSearch] No JSON array found in response. "
+                    f"First 500 chars: {raw[:500]}"
+                )
+                return
+
+            scores = json.loads(arr_match.group())
             if not isinstance(scores, list):
                 log.error("[JobSearch] Fit analysis returned non-list JSON")
                 return
@@ -993,8 +1023,10 @@ class JobSearchTalent(BaseTalent):
         except subprocess.TimeoutExpired:
             log.error("[JobSearch] claude -p timed out (300s)")
         except json.JSONDecodeError as e:
-            log.error(f"[JobSearch] Fit analysis JSON parse error: {e}")
-            log.debug(f"[JobSearch] Raw output: {raw[:500]}")
+            log.error(
+                f"[JobSearch] Fit analysis JSON parse error: {e}. "
+                f"First 500 chars: {raw[:500]}"
+            )
         except Exception as e:
             log.error(f"[JobSearch] Fit analysis failed: {e}")
 
