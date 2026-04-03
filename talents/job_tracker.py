@@ -230,6 +230,17 @@ class _DB:
             ).fetchall()
         return [dict(r) for r in rows]
 
+    def list_top_candidates(self, limit: int = 15) -> list[dict]:
+        """Return new applications sorted by fit_score descending."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM applications WHERE archived = 0 "
+                "AND status = 'new' AND fit_score > 0 "
+                "ORDER BY fit_score DESC, id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
     def list_all(self, include_archived: bool = False) -> list[dict]:
         clause = "" if include_archived else "WHERE archived = 0"
         with self._connect() as conn:
@@ -363,12 +374,17 @@ class JobTrackerTalent(BaseTalent):
         "follow up", "interview", "applications",
         "active applications", "job application",
         "export my job", "import my job",
+        "cover letter", "top jobs", "best matches",
+        "top candidates", "best jobs",
     ]
     examples = [
         "add a job application at Netflix for VP of Engineering",
         "I applied to the Microsoft Azure CISO role",
         "update the Netflix application to interviewing",
         "show my active applications",
+        "show top jobs",
+        "show best matches",
+        "write a cover letter for the Affirm job",
         "what jobs need follow up",
         "how many applications this week",
         "export my job tracker",
@@ -424,6 +440,10 @@ class JobTrackerTalent(BaseTalent):
         # Determine intent from keywords in the command
         if "import" in cmd and ("spreadsheet" in cmd or "xlsx" in cmd or "excel" in cmd):
             return self._handle_import(command, context)
+        if self._is_cover_letter(cmd):
+            return self._handle_cover_letter(command, context)
+        if self._is_top_candidates(cmd):
+            return self._handle_top_candidates()
         if self._is_export(cmd):
             return self._handle_export(context)
         if self._is_follow_up(cmd):
@@ -445,7 +465,7 @@ class JobTrackerTalent(BaseTalent):
         intent = self._extract_arg(
             context["llm"], command, "intent",
             options=["add", "update", "list", "stats", "export",
-                     "follow_up", "search"],
+                     "follow_up", "search", "cover_letter", "top_candidates"],
         )
         handlers = {
             "add": lambda: self._handle_add(command, context),
@@ -455,6 +475,8 @@ class JobTrackerTalent(BaseTalent):
             "export": lambda: self._handle_export(context),
             "follow_up": lambda: self._handle_follow_up_add(command, context),
             "search": lambda: self._handle_search(command, context),
+            "cover_letter": lambda: self._handle_cover_letter(command, context),
+            "top_candidates": lambda: self._handle_top_candidates(),
         }
         if intent and intent in handlers:
             return handlers[intent]()
@@ -508,6 +530,17 @@ class JobTrackerTalent(BaseTalent):
     @staticmethod
     def _is_search(cmd: str) -> bool:
         return bool(re.search(r'\b(find|search|look for|lookup)\b', cmd))
+
+    @staticmethod
+    def _is_top_candidates(cmd: str) -> bool:
+        return bool(re.search(
+            r'\b(top jobs|best match|best jobs|top candidates|top matches|'
+            r'highest fit|best fit|ranked|strongest)\b', cmd
+        ))
+
+    @staticmethod
+    def _is_cover_letter(cmd: str) -> bool:
+        return bool(re.search(r'\bcover\s*letter\b', cmd))
 
     # ── Add ───────────────────────────────────────────────────────────────────
 
@@ -726,6 +759,195 @@ class JobTrackerTalent(BaseTalent):
             "response": "\n".join(lines),
             "actions_taken": [{"action": "job_search", "term": term,
                                "count": len(apps)}],
+            "spoken": False,
+        }
+
+    # ── Top candidates ───────────────────────────────────────────────────────
+
+    def _handle_top_candidates(self) -> dict:
+        """Show new jobs ranked by fit score."""
+        apps = self._db.list_top_candidates(limit=15)
+        if not apps:
+            return {
+                "success": True,
+                "response": (
+                    "No scored candidates yet. Fit scores are added "
+                    "automatically after a job search runs. Try 'search for "
+                    "jobs' first, then check back in a few minutes."
+                ),
+                "actions_taken": [{"action": "top_candidates"}],
+                "spoken": False,
+            }
+
+        lines = [f"**Top candidates** ({len(apps)}):\n"]
+        for app in apps:
+            loc = f" ({app['location']})" if app.get("location") else ""
+            rec = ""
+            notes = app.get("notes", "")
+            if "Recommendation:" in notes:
+                rec_part = notes.split("Recommendation:")[-1].strip()
+                rec = f" [{rec_part}]"
+            lines.append(
+                f"  #{app['id']} [{app['fit_score']}%] "
+                f"**{app['company']}** -- {app['position']}{loc}{rec}"
+            )
+
+        lines.append(
+            "\nSay 'write a cover letter for #ID' or "
+            "'write a cover letter for [company]' to generate one."
+        )
+
+        return {
+            "success": True,
+            "response": "\n".join(lines),
+            "actions_taken": [{"action": "top_candidates", "count": len(apps)}],
+            "spoken": False,
+        }
+
+    # ── Cover letter generation ──────────────────────────────────────────────
+
+    def _handle_cover_letter(self, command: str, context: dict) -> dict:
+        """Generate a cover letter for a specific application via Claude CLI."""
+        import subprocess
+        from pathlib import Path
+
+        # Find the application - try ID first, then company name
+        app = None
+        id_match = re.search(r'#?(\d+)', command)
+        if id_match:
+            app = self._db.get_application(int(id_match.group(1)))
+
+        if not app:
+            # Extract company name via LLM
+            llm = context["llm"]
+            company = self._extract_arg(
+                llm, command, "company name for the cover letter"
+            )
+            if company:
+                matches = self._db.find_by_company(company)
+                if not matches:
+                    matches = self._db.search(company)
+                if matches:
+                    app = matches[0]
+
+        if not app:
+            return self._fail(
+                "Which job? Try: 'write a cover letter for #12' "
+                "or 'write a cover letter for Affirm'"
+            )
+
+        # Build the prompt for Claude CLI
+        resume_path = Path.home() / "OneDrive" / "Documents" / "resume_master.md"
+        job_url = app.get("job_url", "")
+
+        prompt_parts = [
+            f"Read the resume at: {resume_path}",
+            "",
+            f"Write a cover letter for this position:",
+            f"  Company: {app['company']}",
+            f"  Position: {app['position']}",
+        ]
+        if app.get("location"):
+            prompt_parts.append(f"  Location: {app['location']}")
+        if job_url:
+            prompt_parts.append(f"  Job URL: {job_url}")
+            prompt_parts.append(
+                "\nFetch the job URL to read the full description."
+            )
+        if app.get("notes"):
+            fit_notes = app["notes"]
+            if "Recommendation:" in fit_notes:
+                prompt_parts.append(f"\nFit analysis: {fit_notes}")
+
+        prompt_parts.extend([
+            "",
+            "Follow the writing style rules in ~/.claude/CLAUDE.md exactly.",
+            "Follow the cover letter rules in ~/.claude/CLAUDE.md exactly.",
+            "",
+            "The cover letter should:",
+            "- Open with a specific hook tied to the company or role",
+            "- Pull specific metrics and accomplishments from the resume "
+            "that match this role",
+            "- Be 3-4 paragraphs, under one page",
+            "- Close with confidence, not desperation",
+            "",
+            "Output ONLY the cover letter text. No commentary, no headers "
+            "like 'Here is your cover letter', no markdown formatting. "
+            "Just the letter itself, ready to paste.",
+        ])
+
+        prompt = "\n".join(prompt_parts)
+
+        # Run Claude CLI
+        try:
+            result = subprocess.run(
+                ["claude", "-p", "--output-format", "text"],
+                input=prompt,
+                capture_output=True,
+                text=True,
+                timeout=120,
+                cwd=str(Path.home()),
+            )
+
+            if result.returncode != 0:
+                log.error(
+                    f"[JobTracker] claude -p cover letter failed: "
+                    f"{result.stderr[:200]}"
+                )
+                return self._fail(
+                    "Claude CLI failed to generate the cover letter. "
+                    "Check that 'claude' is installed and working."
+                )
+
+            letter = result.stdout.strip()
+            if not letter or len(letter) < 50:
+                return self._fail("Claude returned an empty or too-short response.")
+
+        except subprocess.TimeoutExpired:
+            return self._fail("Cover letter generation timed out (120s).")
+        except FileNotFoundError:
+            return self._fail(
+                "Claude CLI not found. Install with: "
+                "npm i -g @anthropic-ai/claude-code"
+            )
+
+        # Save to file
+        output_dir = Path.home() / "OneDrive" / "Documents" / "Cover Letters"
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        safe_company = re.sub(r'[^\w\s-]', '', app['company']).strip()
+        safe_position = re.sub(r'[^\w\s-]', '', app['position']).strip()[:40]
+        filename = f"{safe_company} - {safe_position}.txt"
+        output_path = output_dir / filename
+
+        # Avoid overwriting - add number if exists
+        counter = 1
+        while output_path.exists():
+            counter += 1
+            output_path = output_dir / f"{safe_company} - {safe_position} ({counter}).txt"
+
+        output_path.write_text(letter, encoding="utf-8")
+
+        # Mark cover_letter flag in DB
+        self._db.update_application(app["id"], cover_letter=1)
+
+        log.info(
+            f"[JobTracker] Cover letter saved: {output_path.name} "
+            f"for #{app['id']} {app['company']}"
+        )
+
+        return {
+            "success": True,
+            "response": (
+                f"Cover letter for **{app['company']}** ({app['position']}) "
+                f"saved to:\n\n`{output_path}`\n\n"
+                f"Ready to copy and paste into your application."
+            ),
+            "actions_taken": [{
+                "action": "cover_letter",
+                "app_id": app["id"],
+                "file": str(output_path),
+            }],
             "spoken": False,
         }
 
