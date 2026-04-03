@@ -911,45 +911,135 @@ class JobTrackerTalent(BaseTalent):
                 "npm i -g @anthropic-ai/claude-code"
             )
 
-        # Save to file
+        # Save to files (docx + pdf + txt)
         output_dir = Path.home() / "OneDrive" / "Documents" / "Cover Letters"
         output_dir.mkdir(parents=True, exist_ok=True)
 
         safe_company = re.sub(r'[^\w\s-]', '', app['company']).strip()
         safe_position = re.sub(r'[^\w\s-]', '', app['position']).strip()[:40]
-        filename = f"{safe_company} - {safe_position}.txt"
-        output_path = output_dir / filename
+        base_name = f"{safe_company} - {safe_position}"
 
-        # Avoid overwriting - add number if exists
-        counter = 1
-        while output_path.exists():
+        # Avoid overwriting
+        counter = 0
+        suffix = ""
+        while (output_dir / f"{base_name}{suffix}.docx").exists():
             counter += 1
-            output_path = output_dir / f"{safe_company} - {safe_position} ({counter}).txt"
+            suffix = f" ({counter})"
 
-        output_path.write_text(letter, encoding="utf-8")
+        docx_path = output_dir / f"{base_name}{suffix}.docx"
+        pdf_path = output_dir / f"{base_name}{suffix}.pdf"
+        txt_path = output_dir / f"{base_name}{suffix}.txt"
+
+        # Always save plain text
+        txt_path.write_text(letter, encoding="utf-8")
+
+        # Generate DOCX
+        saved_files = [str(txt_path)]
+        try:
+            self._write_cover_letter_docx(letter, docx_path, app)
+            saved_files.append(str(docx_path))
+            log.info(f"[JobTracker] DOCX saved: {docx_path.name}")
+
+            # Convert DOCX to PDF
+            try:
+                import docx2pdf
+                docx2pdf.convert(str(docx_path), str(pdf_path))
+                saved_files.append(str(pdf_path))
+                log.info(f"[JobTracker] PDF saved: {pdf_path.name}")
+            except Exception as e:
+                log.warning(f"[JobTracker] PDF conversion failed: {e}")
+        except Exception as e:
+            log.warning(f"[JobTracker] DOCX generation failed: {e}")
 
         # Mark cover_letter flag in DB
         self._db.update_application(app["id"], cover_letter=1)
 
         log.info(
-            f"[JobTracker] Cover letter saved: {output_path.name} "
-            f"for #{app['id']} {app['company']}"
+            f"[JobTracker] Cover letter saved for "
+            f"#{app['id']} {app['company']}"
         )
 
+        # Build response listing saved files
+        file_list = "\n".join(f"  {f}" for f in saved_files)
         return {
             "success": True,
             "response": (
                 f"Cover letter for **{app['company']}** ({app['position']}) "
-                f"saved to:\n\n`{output_path}`\n\n"
-                f"Ready to copy and paste into your application."
+                f"saved to:\n\n{file_list}\n\n"
+                f"DOCX and PDF are ready for upload."
             ),
             "actions_taken": [{
                 "action": "cover_letter",
                 "app_id": app["id"],
-                "file": str(output_path),
+                "files": saved_files,
             }],
             "spoken": False,
         }
+
+    @staticmethod
+    def _write_cover_letter_docx(
+        letter_text: str, output_path: Path, app: dict
+    ) -> None:
+        """Write a professionally formatted cover letter DOCX."""
+        from docx import Document
+        from docx.shared import Pt, Inches
+        from docx.enum.text import WD_ALIGN_PARAGRAPH
+
+        doc = Document()
+
+        # Page margins
+        for section in doc.sections:
+            section.top_margin = Inches(1)
+            section.bottom_margin = Inches(1)
+            section.left_margin = Inches(1)
+            section.right_margin = Inches(1)
+
+        # Default font
+        style = doc.styles["Normal"]
+        font = style.font
+        font.name = "Calibri"
+        font.size = Pt(11)
+
+        # Header: name and contact
+        header = doc.add_paragraph()
+        header.alignment = WD_ALIGN_PARAGRAPH.LEFT
+        run = header.add_run("Talon User")
+        run.bold = True
+        run.font.size = Pt(14)
+        header.paragraph_format.space_after = Pt(2)
+
+        contact = doc.add_paragraph()
+        contact.alignment = WD_ALIGN_PARAGRAPH.LEFT
+        run = contact.add_run(
+            "user@example.com | your phone | Your City, ST"
+        )
+        run.font.size = Pt(10)
+        contact.paragraph_format.space_after = Pt(12)
+
+        # Date
+        date_para = doc.add_paragraph()
+        date_para.add_run(date.today().strftime("%B %d, %Y"))
+        date_para.paragraph_format.space_after = Pt(12)
+
+        # Letter body - split into paragraphs
+        paragraphs = [p.strip() for p in letter_text.split("\n\n") if p.strip()]
+        for para_text in paragraphs:
+            # Skip if it looks like a duplicate header/date/signature
+            # that Claude may have included
+            lower = para_text.lower()
+            if lower.startswith("talon user"):
+                continue
+            if lower.startswith("dear ") or lower.startswith("re:"):
+                p = doc.add_paragraph(para_text)
+                p.paragraph_format.space_after = Pt(6)
+                continue
+
+            # Handle single-line breaks within a paragraph
+            clean_text = para_text.replace("\n", " ")
+            p = doc.add_paragraph(clean_text)
+            p.paragraph_format.space_after = Pt(8)
+
+        doc.save(str(output_path))
 
     # ── Follow-ups ────────────────────────────────────────────────────────────
 
