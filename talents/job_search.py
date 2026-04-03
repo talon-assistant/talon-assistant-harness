@@ -105,6 +105,9 @@ class JobSearchTalent(BaseTalent):
         self._config_file = os.path.join(_data_dir(), "job_search_config.json")
         self._search_config: dict[str, Any] = {"urls": [], "auto_cowork": True}
         self._load_search_config()
+        log.info(f"[JobSearch] Config: {self._config_file} "
+                 f"(exists={os.path.exists(self._config_file)}, "
+                 f"urls={len(self._search_config.get('urls', []))})")
 
     # ── Persistent config ────────────────────────────────────────────────────
 
