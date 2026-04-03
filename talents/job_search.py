@@ -354,13 +354,23 @@ class JobSearchTalent(BaseTalent):
         )
 
     # ═══════════════════════════════════════════════════════════════════════════
-    #  Site-specific scrapers
+    #  Site-specific scrapers — based on live DOM inspection (April 2026)
     # ═══════════════════════════════════════════════════════════════════════════
 
     # ── LinkedIn ─────────────────────────────────────────────────────────────
+    #
+    # Verified structure: div[data-job-id] cards inside
+    # .scaffold-layout__list-container.  Each card contains:
+    #   - a[href*="/jobs/view/"] for title + URL
+    #   - .job-card-container__company-name for company
+    #   - .job-card-container__metadata-item for location
+    #
+    # NOTE: LinkedIn "semantic search" URLs (/jobs/search-results/) render a
+    # single-job detail view, NOT a list.  Standard search (/jobs/search/)
+    # with f_TPR (time), f_WT (remote), etc. gives a proper list.
 
     def _scrape_linkedin(self, url: str) -> list[dict]:
-        """Scrape job listings from a LinkedIn search results page."""
+        """Scrape job listings from a LinkedIn jobs search page."""
         from selenium.webdriver.common.by import By
         from selenium.webdriver.support.ui import WebDriverWait
         from selenium.webdriver.support import expected_conditions as EC
@@ -370,29 +380,59 @@ class JobSearchTalent(BaseTalent):
 
         try:
             driver.get(url)
-            time.sleep(3)
+            time.sleep(5)
 
             if "/login" in driver.current_url or "authwall" in driver.current_url:
                 raise RuntimeError(
                     "LinkedIn requires login \u2014 say 'job search login'"
                 )
 
+            # Wait for job cards or job links
             try:
                 WebDriverWait(driver, 12).until(
                     EC.presence_of_element_located((
                         By.CSS_SELECTOR,
-                        "[data-job-id], .job-search-card, "
-                        ".jobs-search-results-list, "
-                        ".scaffold-layout__list-container",
+                        'div[data-job-id], a[href*="/jobs/view/"]',
                     ))
                 )
             except Exception:
                 pass
 
             time.sleep(2)
-            jobs = self._collect_cards(
-                driver, self._parse_linkedin_card, "LinkedIn"
-            )
+
+            # Strategy 1: card-based (standard search page)
+            cards = driver.find_elements(By.CSS_SELECTOR, "div[data-job-id]")
+            if cards:
+                seen: set[str] = set()
+                for card in cards:
+                    try:
+                        job = self._parse_linkedin_card(card)
+                        if job and job.get("position"):
+                            uid = job.get("job_url", job["position"])
+                            if uid not in seen:
+                                seen.add(uid)
+                                jobs.append(job)
+                    except Exception as e:
+                        log.debug(f"[JobSearch] LinkedIn card parse: {e}")
+
+            # Strategy 2: link-based fallback (semantic search or alt layout)
+            if not jobs:
+                seen_urls: set[str] = set()
+                for link in driver.find_elements(
+                    By.CSS_SELECTOR, 'a[href*="/jobs/view/"]'
+                ):
+                    text = link.text.strip()
+                    href = (link.get_attribute("href") or "").split("?")[0]
+                    if not text or len(text) < 4 or href in seen_urls:
+                        continue
+                    seen_urls.add(href)
+                    jobs.append({
+                        "source": "LinkedIn",
+                        "date_found": date.today().isoformat(),
+                        "position": text,
+                        "job_url": href,
+                    })
+
             log.info(f"[JobSearch] LinkedIn: {len(jobs)} listings")
         finally:
             driver.quit()
@@ -401,6 +441,7 @@ class JobSearchTalent(BaseTalent):
 
     @staticmethod
     def _parse_linkedin_card(card) -> dict | None:
+        """Parse a LinkedIn div[data-job-id] card element."""
         from selenium.webdriver.common.by import By
 
         job: dict[str, str] = {
@@ -412,38 +453,28 @@ class JobSearchTalent(BaseTalent):
         if job_id:
             job["job_url"] = f"https://www.linkedin.com/jobs/view/{job_id}"
 
-        # Title
-        for sel in (".job-card-list__title", ".base-search-card__title",
-                     "a.job-card-container__link",
-                     ".artdeco-entity-lockup__title",
-                     "a[data-control-name='job_card_title']"):
-            for elem in card.find_elements(By.CSS_SELECTOR, sel):
-                text = elem.text.strip()
-                if 3 < len(text) < 200:
-                    job["position"] = text
-                    if not job.get("job_url"):
-                        href = elem.get_attribute("href") or ""
-                        if "linkedin.com" in href:
-                            job["job_url"] = href.split("?")[0]
-                    break
-            if job.get("position"):
+        # Title from the job link
+        for link in card.find_elements(
+            By.CSS_SELECTOR, 'a[href*="/jobs/view/"]'
+        ):
+            text = link.text.strip()
+            # LinkedIn sometimes duplicates text (e.g. "Title\nTitle with verification")
+            # Take first line only
+            if text:
+                text = text.split("\n")[0].strip()
+            if text and 3 < len(text) < 200:
+                job["position"] = text
+                if not job.get("job_url"):
+                    job["job_url"] = (link.get_attribute("href") or "").split("?")[0]
                 break
 
         if not job.get("position"):
-            for a in card.find_elements(By.TAG_NAME, "a"):
-                text = a.text.strip()
-                if 3 < len(text) < 200:
-                    job["position"] = text
-                    href = a.get_attribute("href") or ""
-                    if "linkedin.com" in href and not job.get("job_url"):
-                        job["job_url"] = href.split("?")[0]
-                    break
+            return None
 
         # Company
         for sel in (".job-card-container__company-name",
-                     ".base-search-card__subtitle",
-                     ".artdeco-entity-lockup__subtitle",
-                     ".job-card-container__primary-description"):
+                    ".artdeco-entity-lockup__subtitle",
+                    ".job-card-container__primary-description"):
             for elem in card.find_elements(By.CSS_SELECTOR, sel):
                 text = elem.text.strip()
                 if text and len(text) > 1:
@@ -454,8 +485,7 @@ class JobSearchTalent(BaseTalent):
 
         # Location
         for sel in (".job-card-container__metadata-item",
-                     ".job-search-card__location",
-                     ".artdeco-entity-lockup__caption"):
+                    ".artdeco-entity-lockup__caption"):
             for elem in card.find_elements(By.CSS_SELECTOR, sel):
                 text = elem.text.strip()
                 if text and ("remote" in text.lower() or "," in text
@@ -465,19 +495,18 @@ class JobSearchTalent(BaseTalent):
             if job.get("location"):
                 break
 
-        # Salary
-        for elem in card.find_elements(
-            By.CSS_SELECTOR,
-            ".job-card-container__metadata-item--salary, .salary-text"
-        ):
-            text = elem.text.strip()
-            if "$" in text or "k" in text.lower():
-                job["salary_range"] = text
-                break
-
-        return job if job.get("position") else None
+        return job
 
     # ── Dice ─────────────────────────────────────────────────────────────────
+    #
+    # Verified structure (April 2026): Dice is a JS SPA. Job cards are <div>
+    # elements with Tailwind classes (rounded-lg border bg-surface-primary).
+    # Each card contains a[href*="/job-detail/"] links. The card's full text
+    # splits into lines like:
+    #   [Company, "Easy Apply"/"Apply Now", Title, Location, dot, "Today"]
+    #
+    # The most reliable extraction: find all unique /job-detail/ URLs, then
+    # walk up to the card-level parent and parse its text lines.
 
     def _scrape_dice(self, url: str) -> list[dict]:
         """Scrape job listings from Dice.com search results."""
@@ -490,61 +519,50 @@ class JobSearchTalent(BaseTalent):
 
         try:
             driver.get(url)
-            time.sleep(3)
+            time.sleep(5)
 
-            # Wait for Dice's JS-rendered job cards
+            # Wait for job links to render
             try:
                 WebDriverWait(driver, 15).until(
                     EC.presence_of_element_located((
                         By.CSS_SELECTOR,
-                        "a.card-title-link, "
-                        "[data-cy='card-title-link'], "
-                        "dhi-search-card, "
-                        ".search-card",
+                        'a[href*="/job-detail/"]',
                     ))
                 )
             except Exception:
                 pass
 
-            time.sleep(2)
+            time.sleep(3)
 
-            # Dice renders search results as <dhi-search-card> custom elements
-            # or as cards with a.card-title-link anchors
-            cards = (
-                driver.find_elements(By.CSS_SELECTOR, "dhi-search-card")
-                or driver.find_elements(By.CSS_SELECTOR, ".search-card")
+            # Collect unique job URLs and their card parents
+            seen_urls: set[str] = set()
+            links = driver.find_elements(
+                By.CSS_SELECTOR, 'a[href*="/job-detail/"]'
             )
 
-            if cards:
-                jobs = self._parse_dice_cards(cards)
-            else:
-                # Fallback: extract from title links directly
-                jobs = self._parse_dice_links(driver)
+            for link in links:
+                href = (link.get_attribute("href") or "").split("?")[0]
+                if not href or href in seen_urls:
+                    continue
+                seen_urls.add(href)
 
-            # Scroll for more results
-            if len(jobs) < 20:
-                try:
-                    driver.execute_script(
-                        "window.scrollTo(0, document.body.scrollHeight)"
-                    )
-                    time.sleep(3)
-                    cards2 = (
-                        driver.find_elements(By.CSS_SELECTOR, "dhi-search-card")
-                        or driver.find_elements(By.CSS_SELECTOR, ".search-card")
-                    )
-                    if cards2:
-                        more = self._parse_dice_cards(cards2)
-                    else:
-                        more = self._parse_dice_links(driver)
-                    # Merge only new ones
-                    seen = {j.get("job_url", j["position"]) for j in jobs}
-                    for j in more:
-                        uid = j.get("job_url", j["position"])
-                        if uid not in seen:
-                            seen.add(uid)
-                            jobs.append(j)
-                except Exception:
-                    pass
+                # Walk up to find the card container (div with multiple text lines)
+                card_el = link
+                for _ in range(8):
+                    card_el = card_el.find_element(By.XPATH, "..")
+                    card_text = card_el.text or ""
+                    lines = [ln.strip() for ln in card_text.split("\n")
+                             if ln.strip()]
+                    # A proper card has at least 3 text lines:
+                    # company, apply button, title, location...
+                    if len(lines) >= 3:
+                        break
+                else:
+                    continue
+
+                job = self._parse_dice_card_text(lines, href)
+                if job:
+                    jobs.append(job)
 
             log.info(f"[JobSearch] Dice: {len(jobs)} listings")
         finally:
@@ -553,108 +571,68 @@ class JobSearchTalent(BaseTalent):
         return jobs
 
     @staticmethod
-    def _parse_dice_cards(cards) -> list[dict]:
-        """Parse Dice <dhi-search-card> or .search-card elements."""
-        from selenium.webdriver.common.by import By
-        jobs: list[dict] = []
-        seen: set[str] = set()
+    def _parse_dice_card_text(lines: list[str], job_url: str) -> dict | None:
+        """Parse a Dice job card from its text lines.
 
-        for card in cards:
-            job: dict[str, str] = {
-                "source": "Dice",
-                "date_found": date.today().isoformat(),
-            }
+        Typical line order:
+            [Company, "Easy Apply"/"Apply Now", Title, Location, dot, "Today"/"Yesterday"]
+        But order can vary, so we use heuristics.
+        """
+        _SKIP = {"easy apply", "apply now", "today", "yesterday",
+                 "\u00b7", "posted", "new"}
 
-            # Title + URL — prefer data-cy selectors (stable)
-            for sel in ("a[data-cy='card-title-link']",
-                        "a.card-title-link", "h5 a", "a"):
-                elems = card.find_elements(By.CSS_SELECTOR, sel)
-                for elem in elems:
-                    text = elem.text.strip()
-                    if 3 < len(text) < 200:
-                        job["position"] = text
-                        href = elem.get_attribute("href") or ""
-                        if href and "dice.com" in href:
-                            job["job_url"] = href.split("?")[0]
-                        break
-                if job.get("position"):
-                    break
-
-            if not job.get("position"):
+        # Filter noise lines
+        meaningful = []
+        for ln in lines:
+            if ln.lower() in _SKIP or len(ln) <= 1:
                 continue
-
-            # Company
-            for sel in ("a[data-cy='search-result-company-name']",
-                        "[data-cy='companyNameLink']",
-                        ".card-company a",
-                        ".card-company span",
-                        "h6 a"):
-                elems = card.find_elements(By.CSS_SELECTOR, sel)
-                for elem in elems:
-                    text = elem.text.strip()
-                    if text and len(text) > 1:
-                        job["company"] = text
-                        break
-                if job.get("company"):
-                    break
-
-            # Location
-            for sel in ("[data-cy='search-result-location']",
-                        "span.search-result-location",
-                        ".card-location"):
-                elems = card.find_elements(By.CSS_SELECTOR, sel)
-                for elem in elems:
-                    text = elem.text.strip()
-                    if text:
-                        job["location"] = text
-                        break
-                if job.get("location"):
-                    break
-
-            # Salary — Dice sometimes shows this on cards
-            for sel in ("[data-cy='compensationText']",
-                        ".card-salary"):
-                elems = card.find_elements(By.CSS_SELECTOR, sel)
-                for elem in elems:
-                    text = elem.text.strip()
-                    if "$" in text or "k" in text.lower():
-                        job["salary_range"] = text
-                        break
-                if job.get("salary_range"):
-                    break
-
-            uid = job.get("job_url", job["position"])
-            if uid not in seen:
-                seen.add(uid)
-                jobs.append(job)
-
-        return jobs
-
-    @staticmethod
-    def _parse_dice_links(driver) -> list[dict]:
-        """Fallback: extract jobs from a.card-title-link elements directly."""
-        from selenium.webdriver.common.by import By
-        jobs: list[dict] = []
-        seen: set[str] = set()
-
-        links = driver.find_elements(By.CSS_SELECTOR, "a.card-title-link")
-        for link in links:
-            text = link.text.strip()
-            href = (link.get_attribute("href") or "").split("?")[0]
-            if not text or len(text) < 3 or href in seen:
+            if ln.lower().startswith("posted "):
                 continue
-            seen.add(href)
-            jobs.append({
-                "source": "Dice",
-                "date_found": date.today().isoformat(),
-                "position": text,
-                "company": "",  # Not available from link alone
-                "job_url": href,
-            })
+            meaningful.append(ln)
 
-        return jobs
+        if len(meaningful) < 2:
+            return None
+
+        # Heuristic: company is typically first, title is the longest
+        # meaningful line, location contains comma or "Remote"
+        company = meaningful[0]
+        title = ""
+        location = ""
+
+        for ln in meaningful[1:]:
+            if not title and len(ln) > 5:
+                title = ln
+            elif not location and ("," in ln or "remote" in ln.lower()):
+                location = ln
+
+        # If title looks like a location, swap
+        if title and ("," in title and not location):
+            # Check if next meaningful line is longer (more likely a title)
+            remaining = [ln for ln in meaningful[1:] if ln != title]
+            for r in remaining:
+                if len(r) > len(title):
+                    location = title
+                    title = r
+                    break
+
+        if not title:
+            return None
+
+        return {
+            "source": "Dice",
+            "date_found": date.today().isoformat(),
+            "position": title,
+            "company": company,
+            "location": location,
+            "job_url": job_url,
+        }
 
     # ── Built In ─────────────────────────────────────────────────────────────
+    #
+    # Verified structure (April 2026): Job links use a[href*="/job/"] pattern
+    # with paths like /job/title-slug/12345.  The page is server-rendered so
+    # links are available without waiting for JS.  Simple link extraction is
+    # the most reliable approach.
 
     def _scrape_builtin(self, url: str) -> list[dict]:
         """Scrape job listings from builtin.com search results."""
@@ -667,18 +645,13 @@ class JobSearchTalent(BaseTalent):
 
         try:
             driver.get(url)
-            time.sleep(3)
+            time.sleep(4)
 
-            # Wait for job cards to render
+            # Wait for any job links
             try:
-                WebDriverWait(driver, 12).until(
+                WebDriverWait(driver, 10).until(
                     EC.presence_of_element_located((
-                        By.CSS_SELECTOR,
-                        "[data-id='job-card'], "
-                        ".job-card, "
-                        "[class*='JobCard'], "
-                        "a[href*='/job/'], "
-                        "[class*='job-list'] a",
+                        By.CSS_SELECTOR, 'a[href*="/job/"]',
                     ))
                 )
             except Exception:
@@ -686,230 +659,57 @@ class JobSearchTalent(BaseTalent):
 
             time.sleep(2)
 
-            # Built In renders job cards in various structures
-            # Try specific card containers first, then fall back to link extraction
-            cards = (
-                driver.find_elements(By.CSS_SELECTOR, "[data-id='job-card']")
-                or driver.find_elements(By.CSS_SELECTOR, ".job-card")
-                or driver.find_elements(By.CSS_SELECTOR, "[class*='JobCard']")
-            )
+            # Extract job links
+            seen_urls: set[str] = set()
+            links = driver.find_elements(By.CSS_SELECTOR, 'a[href*="/job/"]')
 
-            if cards:
-                jobs = self._parse_builtin_cards(cards)
-            else:
-                # Fallback: extract from job links on the page
-                jobs = self._parse_builtin_links(driver)
+            for link in links:
+                text = link.text.strip()
+                href = (link.get_attribute("href") or "").split("?")[0]
+                if not text or len(text) < 4 or len(text) > 200:
+                    continue
+                if href in seen_urls:
+                    continue
+                if not href.startswith("http"):
+                    href = "https://builtin.com" + href
+                seen_urls.add(href)
+                jobs.append({
+                    "source": "Built In",
+                    "date_found": date.today().isoformat(),
+                    "position": text,
+                    "job_url": href,
+                })
 
-            # Scroll for more
-            if len(jobs) < 20:
+            # Scroll and check for more / load-more button
+            if jobs:
                 try:
                     driver.execute_script(
                         "window.scrollTo(0, document.body.scrollHeight)"
                     )
                     time.sleep(3)
-                    # Try "Load more" or "Show more" button
-                    for sel in ("button[class*='load-more']",
-                                "button[class*='LoadMore']",
-                                "a[class*='load-more']"):
-                        btns = driver.find_elements(By.CSS_SELECTOR, sel)
-                        if btns:
-                            try:
-                                btns[0].click()
-                                time.sleep(3)
-                            except Exception:
-                                pass
-                            break
-
-                    cards2 = (
-                        driver.find_elements(By.CSS_SELECTOR, "[data-id='job-card']")
-                        or driver.find_elements(By.CSS_SELECTOR, ".job-card")
-                        or driver.find_elements(By.CSS_SELECTOR, "[class*='JobCard']")
+                    more_links = driver.find_elements(
+                        By.CSS_SELECTOR, 'a[href*="/job/"]'
                     )
-                    if cards2:
-                        more = self._parse_builtin_cards(cards2)
-                    else:
-                        more = self._parse_builtin_links(driver)
-
-                    seen = {j.get("job_url", j["position"]) for j in jobs}
-                    for j in more:
-                        uid = j.get("job_url", j["position"])
-                        if uid not in seen:
-                            seen.add(uid)
-                            jobs.append(j)
+                    for link in more_links:
+                        text = link.text.strip()
+                        href = (link.get_attribute("href") or "").split("?")[0]
+                        if (text and 4 <= len(text) <= 200
+                                and href not in seen_urls):
+                            if not href.startswith("http"):
+                                href = "https://builtin.com" + href
+                            seen_urls.add(href)
+                            jobs.append({
+                                "source": "Built In",
+                                "date_found": date.today().isoformat(),
+                                "position": text,
+                                "job_url": href,
+                            })
                 except Exception:
                     pass
 
             log.info(f"[JobSearch] Built In: {len(jobs)} listings")
         finally:
             driver.quit()
-
-        return jobs
-
-    @staticmethod
-    def _parse_builtin_cards(cards) -> list[dict]:
-        """Parse Built In job card elements."""
-        from selenium.webdriver.common.by import By
-        jobs: list[dict] = []
-        seen: set[str] = set()
-
-        for card in cards:
-            job: dict[str, str] = {
-                "source": "Built In",
-                "date_found": date.today().isoformat(),
-            }
-
-            # Title + URL
-            for sel in ("h2 a", "h3 a", "[class*='title'] a",
-                        "[class*='Title'] a", "a[href*='/job/']"):
-                elems = card.find_elements(By.CSS_SELECTOR, sel)
-                for elem in elems:
-                    text = elem.text.strip()
-                    if 3 < len(text) < 200:
-                        job["position"] = text
-                        href = elem.get_attribute("href") or ""
-                        if href:
-                            if not href.startswith("http"):
-                                href = "https://builtin.com" + href
-                            job["job_url"] = href.split("?")[0]
-                        break
-                if job.get("position"):
-                    break
-
-            if not job.get("position"):
-                continue
-
-            # Company
-            for sel in ("[class*='company'] a", "[class*='Company'] a",
-                        "[class*='company-name']", "[class*='CompanyName']",
-                        "span[class*='company']"):
-                elems = card.find_elements(By.CSS_SELECTOR, sel)
-                for elem in elems:
-                    text = elem.text.strip()
-                    if text and len(text) > 1:
-                        job["company"] = text
-                        break
-                if job.get("company"):
-                    break
-
-            # Location
-            for sel in ("[class*='location']", "[class*='Location']"):
-                elems = card.find_elements(By.CSS_SELECTOR, sel)
-                for elem in elems:
-                    text = elem.text.strip()
-                    if text:
-                        job["location"] = text
-                        break
-                if job.get("location"):
-                    break
-
-            # Salary
-            for sel in ("[class*='salary']", "[class*='Salary']",
-                        "[class*='compensation']"):
-                elems = card.find_elements(By.CSS_SELECTOR, sel)
-                for elem in elems:
-                    text = elem.text.strip()
-                    if "$" in text or "k" in text.lower():
-                        job["salary_range"] = text
-                        break
-                if job.get("salary_range"):
-                    break
-
-            uid = job.get("job_url", job["position"])
-            if uid not in seen:
-                seen.add(uid)
-                jobs.append(job)
-
-        return jobs
-
-    @staticmethod
-    def _parse_builtin_links(driver) -> list[dict]:
-        """Fallback: extract jobs from a[href*='/job/'] links."""
-        from selenium.webdriver.common.by import By
-        jobs: list[dict] = []
-        seen: set[str] = set()
-
-        links = driver.find_elements(By.CSS_SELECTOR, "a[href*='/job/']")
-        for link in links:
-            text = link.text.strip()
-            href = (link.get_attribute("href") or "").split("?")[0]
-            if not text or len(text) < 3 or href in seen:
-                continue
-            # Skip nav/footer links
-            if len(text) > 200 or "/" not in href:
-                continue
-            seen.add(href)
-            if not href.startswith("http"):
-                href = "https://builtin.com" + href
-            jobs.append({
-                "source": "Built In",
-                "date_found": date.today().isoformat(),
-                "position": text,
-                "company": "",
-                "job_url": href,
-            })
-
-        return jobs
-
-    # ═══════════════════════════════════════════════════════════════════════════
-    #  Shared helpers
-    # ═══════════════════════════════════════════════════════════════════════════
-
-    def _collect_cards(self, driver, parser, site_name: str) -> list[dict]:
-        """Generic card collector with scroll-to-load-more."""
-        from selenium.webdriver.common.by import By
-
-        all_selectors = {
-            "LinkedIn": (
-                "[data-job-id]",
-                ".job-search-card",
-                ".jobs-search-results__list-item",
-                "li.ember-view.occludable-update",
-            ),
-        }
-        selectors = all_selectors.get(site_name, ())
-
-        cards = []
-        for sel in selectors:
-            cards = driver.find_elements(By.CSS_SELECTOR, sel)
-            if cards:
-                break
-
-        jobs: list[dict] = []
-        seen: set[str] = set()
-        for card in cards:
-            try:
-                job = parser(card)
-                if job and job.get("position"):
-                    uid = job.get("job_url", job["position"])
-                    if uid not in seen:
-                        seen.add(uid)
-                        jobs.append(job)
-            except Exception as e:
-                log.debug(f"[JobSearch] {site_name} card parse failed: {e}")
-
-        # Scroll for more
-        if len(jobs) < 25:
-            try:
-                driver.execute_script(
-                    "window.scrollTo(0, document.body.scrollHeight)"
-                )
-                time.sleep(3)
-                for sel in selectors:
-                    more_cards = driver.find_elements(By.CSS_SELECTOR, sel)
-                    if more_cards:
-                        for card in more_cards:
-                            try:
-                                job = parser(card)
-                                if job and job.get("position"):
-                                    uid = job.get("job_url", job["position"])
-                                    if uid not in seen:
-                                        seen.add(uid)
-                                        jobs.append(job)
-                            except Exception:
-                                pass
-                        break
-            except Exception:
-                pass
 
         return jobs
 
