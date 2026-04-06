@@ -790,9 +790,12 @@ class JobTrackerTalent(BaseTalent):
             if "Recommendation:" in notes:
                 rec_part = notes.split("Recommendation:")[-1].strip()
                 rec = f" [{rec_part}]"
+            url = app.get("job_url", "")
+            url_part = f" | {url}" if url else ""
             lines.append(
                 f"  #{app['id']} [{app['fit_score']}%] "
                 f"**{app['company']}** -- {app['position']}{loc}{rec}"
+                f"{url_part}"
             )
 
         lines.append(
