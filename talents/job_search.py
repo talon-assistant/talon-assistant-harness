@@ -622,12 +622,13 @@ class JobSearchTalent(BaseTalent):
                 rec_part = notes.split("Recommendation:")[-1].strip()
                 rec = f" [{rec_part}]"
             url = app.get("job_url", "")
-            url_part = f"\n    {url}" if url else ""
-            lines.append(
+            line = (
                 f"  #{app['id']} [{app['fit_score']}%] "
                 f"**{app['company']}** -- {app['position']}{loc}{rec}"
-                f"{url_part}"
             )
+            lines.append(line)
+            if url:
+                lines.append(f"    {url}")
 
         lines.append(
             "\nSay 'write a cover letter for #ID' or "
