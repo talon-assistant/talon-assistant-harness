@@ -693,17 +693,20 @@ class TalonAssistant:
                 return None
 
             # ── Keyword/example cross-check ────────────────────────────────
-            # If the LLM's choice has keyword signal, trust it.
-            # If not, look for a higher-priority talent that DOES have signal.
-            # The priority guard prevents low-priority talents with broad
-            # keywords (e.g. web_search "what is") from stealing valid LLM
-            # picks from specialised talents (e.g. desktop_control for vision).
-            if self._keyword_confidence(chosen, command):
-                log.debug(f"[LLM Router] -> {talent_name} (confirmed by keyword signal)")
+            # Check whether the LLM's choice has a DIRECT keyword match vs
+            # only fuzzy example-word overlap.  A direct keyword match on the
+            # chosen talent is trusted immediately.  Fuzzy-only confidence is
+            # weaker — another talent with a direct keyword match can steal.
+            chosen_direct = chosen.keyword_match(command)
+            chosen_fuzzy = (not chosen_direct
+                            and self._keyword_confidence(chosen, command))
+
+            if chosen_direct:
+                log.debug(f"[LLM Router] -> {talent_name} (confirmed by direct keyword)")
                 return chosen
 
-            # LLM pick has no keyword signal — check for a better match.
-            # Prefer direct keyword matches over fuzzy example overlap.
+            # LLM pick has no direct keyword match (may have fuzzy confidence).
+            # Check if another talent has a direct keyword match — that wins.
             direct_match = None
             fuzzy_match = None
             for candidate in self.talents:
@@ -720,12 +723,27 @@ class TalonAssistant:
                         if not fuzzy_match or candidate.priority > fuzzy_match.priority:
                             fuzzy_match = candidate
 
-            override = direct_match or fuzzy_match
-            if override:
+            # Direct keyword match elsewhere always wins over fuzzy/no match
+            if direct_match:
                 log.info(f"[LLM Router] Overriding {talent_name} → "
-                         f"{override.name} ({'keyword' if direct_match else 'example'}"
-                         f" signal)")
-                return override
+                         f"{direct_match.name} (direct keyword match)")
+                return direct_match
+
+            # Chosen has fuzzy confidence and no direct match found elsewhere
+            if chosen_fuzzy:
+                # Only override with a higher-priority fuzzy match
+                if fuzzy_match and fuzzy_match.priority > chosen.priority:
+                    log.info(f"[LLM Router] Overriding {talent_name} → "
+                             f"{fuzzy_match.name} (higher-priority fuzzy match)")
+                    return fuzzy_match
+                log.debug(f"[LLM Router] -> {talent_name} (confirmed by fuzzy signal)")
+                return chosen
+
+            # No confidence on chosen at all — take any fuzzy match
+            if fuzzy_match:
+                log.info(f"[LLM Router] Overriding {talent_name} → "
+                         f"{fuzzy_match.name} (fuzzy signal, chosen had none)")
+                return fuzzy_match
 
             # No better candidate — trust the LLM
             log.debug(f"[LLM Router] -> {talent_name} (no keyword signal, trusting LLM)")
