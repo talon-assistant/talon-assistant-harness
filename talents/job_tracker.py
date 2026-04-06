@@ -457,6 +457,9 @@ class JobTrackerTalent(BaseTalent):
             return self._handle_stats(cmd)
         if self._is_update(cmd):
             return self._handle_update(command, context)
+        # "#ID applied" / "applied for #7" — update, not add
+        if re.search(r'#\d+', cmd) and any(s in cmd for s in VALID_STATUSES):
+            return self._handle_update(command, context)
         if self._is_add(cmd):
             return self._handle_add(command, context)
         if self._is_search(cmd):
@@ -589,11 +592,36 @@ class JobTrackerTalent(BaseTalent):
 
     def _handle_update(self, command: str, context: dict) -> dict:
         """Update the status of an existing application."""
+        cmd_lower = command.lower()
+
+        # Fast path: "#ID applied" / "applied for #ID" / "mark #ID as applied"
+        id_match = re.search(r'#(\d+)', command)
+        if id_match:
+            app_id = int(id_match.group(1))
+            app = self._db.get_application(app_id)
+            if app:
+                # Figure out the target status from the command text
+                new_status = None
+                for s in VALID_STATUSES:
+                    if s in cmd_lower:
+                        new_status = s
+                        break
+                if not new_status:
+                    # Default: if "applied" is anywhere in the command
+                    if "appli" in cmd_lower:
+                        new_status = "applied"
+                if new_status:
+                    return self._apply_status_update(app, new_status)
+                return self._fail(
+                    f"What status? Try: 'mark #{app_id} as applied'"
+                )
+
         llm = context["llm"]
         data = self._extract_json(llm, _EXTRACT_UPDATE_PROMPT.format(command=command))
         if not data or not data.get("company") or not data.get("status"):
             return self._fail("I need a company name and new status. "
-                              "Try: 'update Netflix to interviewing'")
+                              "Try: 'mark #7 as applied' or "
+                              "'update Sony to applied'")
 
         new_status = data["status"].lower().strip()
         if new_status not in VALID_STATUSES:
@@ -613,8 +641,10 @@ class JobTrackerTalent(BaseTalent):
             )
 
         app = matches[0]  # Most recent match
+        return self._apply_status_update(app, new_status)
 
-        # Validate transition
+    def _apply_status_update(self, app: dict, new_status: str) -> dict:
+        """Apply a status change to an application with transition validation."""
         current = app["status"]
         allowed = _STATUS_TRANSITIONS.get(current, set())
         if new_status != current and new_status not in allowed:
@@ -628,7 +658,7 @@ class JobTrackerTalent(BaseTalent):
             "status": new_status,
             "date_updated": _today_iso(),
         }
-        if new_status == "applied" and not app["date_applied"]:
+        if new_status == "applied" and not app.get("date_applied"):
             update_fields["date_applied"] = _today_iso()
 
         self._db.update_application(app["id"], **update_fields)
