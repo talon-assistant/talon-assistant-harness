@@ -702,16 +702,30 @@ class TalonAssistant:
                 log.debug(f"[LLM Router] -> {talent_name} (confirmed by keyword signal)")
                 return chosen
 
-            # LLM pick has no keyword signal — check for a better match
+            # LLM pick has no keyword signal — check for a better match.
+            # Prefer direct keyword matches over fuzzy example overlap.
+            direct_match = None
+            fuzzy_match = None
             for candidate in self.talents:
                 if (candidate is not chosen
                         and candidate.enabled
                         and candidate.routing_available
-                        and candidate.priority > chosen.priority
                         and self._keyword_confidence(candidate, command)):
-                    log.info(f"[LLM Router] Overriding {talent_name} → "
-                             f"{candidate.name} (keyword signal + higher priority)")
-                    return candidate
+                    if candidate.keyword_match(command):
+                        # Direct keyword match — strongest signal
+                        if not direct_match or candidate.priority > direct_match.priority:
+                            direct_match = candidate
+                    elif candidate.priority > chosen.priority:
+                        # Fuzzy example match — only override if higher priority
+                        if not fuzzy_match or candidate.priority > fuzzy_match.priority:
+                            fuzzy_match = candidate
+
+            override = direct_match or fuzzy_match
+            if override:
+                log.info(f"[LLM Router] Overriding {talent_name} → "
+                         f"{override.name} ({'keyword' if direct_match else 'example'}"
+                         f" signal)")
+                return override
 
             # No better candidate — trust the LLM
             log.debug(f"[LLM Router] -> {talent_name} (no keyword signal, trusting LLM)")
