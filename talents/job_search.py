@@ -89,6 +89,8 @@ class JobSearchTalent(BaseTalent):
         "search url", "search urls", "job listings",
         "todays job", "today's job", "do a job",
         "cover letter",
+        "prepare materials", "tailor resume", "tailored resume",
+        "customize resume", "customized resume",
     ]
     examples = [
         "search for jobs",
@@ -104,6 +106,9 @@ class JobSearchTalent(BaseTalent):
         "show my search URLs",
         "remove the first search URL",
         "job search login",
+        "write a cover letter for #3",
+        "prepare materials for #3",
+        "tailor resume for #3",
     ]
     priority = 62
     required_packages = ["selenium"]
@@ -173,6 +178,14 @@ class JobSearchTalent(BaseTalent):
         # "score my jobs" / "run fit analysis" — score unscored existing jobs
         if re.search(r'\b(score|fit analysis|analyze|evaluate)\b', cmd):
             return self._handle_score_existing()
+
+        # Tailored resume / full application materials via Claude CLI
+        if ("prepare materials" in cmd
+                or "tailor resume" in cmd
+                or "tailored resume" in cmd
+                or "customize resume" in cmd
+                or "customized resume" in cmd):
+            return self._handle_prepare_materials(command)
 
         # Cover letter generation via Claude CLI
         if "cover letter" in cmd:
@@ -317,6 +330,134 @@ class JobSearchTalent(BaseTalent):
         return _ok(
             f"Scoring {count} unscored job(s) in the background. "
             f"Check back in a few minutes with 'show top jobs'."
+        )
+
+    # ── Tailored resume (materials prep) via Claude CLI ─────────────────────
+
+    def _handle_prepare_materials(self, command: str) -> dict:
+        """Phase 1: build a tailored resume preview by selecting bullets
+        from the pre-written library. No DOCX yet, markdown only.
+
+        Command form: "prepare materials for #N" or "tailor resume for #N".
+        """
+        from talents.job_tracker import _DB, _data_dir as tracker_data_dir
+        from core.resume_builder import (
+            DEFAULT_LIBRARY_PATH,
+            ResumeLibrary,
+            ResumeSelector,
+            render_preview,
+            render_selection_notes,
+        )
+
+        db_path = os.path.join(tracker_data_dir(), "job_tracker.db")
+        if not os.path.exists(db_path):
+            return _fail("No job tracker database found.")
+        db = _DB(db_path)
+
+        # Find application by id or company name
+        app = None
+        id_match = re.search(r'#?(\d+)', command)
+        if id_match:
+            app = db.get_application(int(id_match.group(1)))
+        if not app:
+            cmd_lower = command.lower()
+            for prefix in ("prepare materials for",
+                           "tailor resume for",
+                           "tailored resume for",
+                           "customize resume for",
+                           "customized resume for"):
+                if prefix in cmd_lower:
+                    company = cmd_lower.split(prefix)[-1].strip()
+                    if company:
+                        matches = db.search(company)
+                        if matches:
+                            app = matches[0]
+                    break
+        if not app:
+            return _fail(
+                "Which job? Try: 'prepare materials for #3' "
+                "or 'prepare materials for OEC'"
+            )
+
+        # Load library fresh
+        lib_path = DEFAULT_LIBRARY_PATH
+        if not lib_path.exists():
+            return _fail(f"Resume library not found at {lib_path}")
+        try:
+            library = ResumeLibrary(lib_path).parse()
+        except Exception as e:
+            return _fail(f"Could not parse resume library: {e}")
+
+        if not library.sections:
+            return _fail("Resume library parsed but contained no sections.")
+
+        # Scrape JD
+        job_url = app.get("job_url", "")
+        job_description = ""
+        if job_url:
+            job_description = self._fetch_job_description(job_url)
+        if not job_description and app.get("notes"):
+            job_description = app["notes"]
+
+        # Run selector
+        selector = ResumeSelector(library)
+        try:
+            selection = selector.pick(
+                job_title=app.get("position", ""),
+                company=app.get("company", ""),
+                job_description=job_description or app.get("position", ""),
+            )
+        except Exception as e:
+            log.error(f"[JobSearch] Resume selector failed: {e}")
+            return _fail(f"Resume selector failed: {e}")
+
+        if not selection.picks:
+            return _fail(
+                "Selector returned no bullet picks. "
+                "Check the job description or the library format."
+            )
+
+        # Build output folder
+        safe_company = re.sub(r'[^\w\s-]', '', app['company']).strip().replace(' ', '_')
+        safe_position = re.sub(r'[^\w\s-]', '', app['position']).strip().replace(' ', '_')[:40]
+        date_tag = date.today().strftime("%Y-%m-%d")
+        out_root = Path.home() / "OneDrive" / "Documents" / "jobappmaterials"
+        out_dir = out_root / f"{safe_company}_{safe_position}_{date_tag}"
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        preview_md = render_preview(
+            library,
+            selection,
+            company=app.get("company", ""),
+            job_title=app.get("position", ""),
+            job_url=job_url,
+        )
+        notes_md = render_selection_notes(
+            library,
+            selection,
+            company=app.get("company", ""),
+            job_title=app.get("position", ""),
+        )
+
+        preview_path = out_dir / "resume_preview.md"
+        notes_path = out_dir / "selection_notes.md"
+        preview_path.write_text(preview_md, encoding="utf-8")
+        notes_path.write_text(notes_md, encoding="utf-8")
+
+        total_bullets = sum(len(v) for v in selection.picks.values())
+        log.info(
+            f"[JobSearch] Resume preview built for #{app['id']} "
+            f"{app['company']} ({total_bullets} bullets)"
+        )
+
+        return _ok(
+            f"Tailored resume preview for **{app['company']}** "
+            f"({app['position']}) saved:\n\n"
+            f"  {preview_path}\n"
+            f"  {notes_path}\n\n"
+            f"Picked {total_bullets} bullets across "
+            f"{len(selection.picks)} sections. "
+            f"Review the preview, then we can move to Phase 2 (DOCX/PDF)."
         )
 
     # ── Cover letter generation via Claude CLI ─────────────────────────────
