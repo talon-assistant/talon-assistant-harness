@@ -43,6 +43,24 @@ from PyQt6.QtWidgets import (
 log = logging.getLogger(__name__)
 
 
+# Workers that were still running when the dialog was closed get moved
+# here so Python doesn't garbage-collect them mid-scrape. They finish on
+# their own and self-drop via _detached_worker_done.
+_DETACHED_WORKERS: list = []
+
+
+def _detached_worker_done(worker) -> None:
+    """Drop a detached worker from the keepalive list when it finishes."""
+    try:
+        _DETACHED_WORKERS.remove(worker)
+    except ValueError:
+        pass
+    try:
+        worker.deleteLater()
+    except Exception:
+        pass
+
+
 _STATUS_CHOICES = [
     "new", "applied", "interview", "offer", "rejected", "withdrawn", "archived",
 ]
@@ -665,11 +683,32 @@ class JobInboxDialog(QDialog):
     # ── Cleanup ──────────────────────────────────────────────────────────
 
     def closeEvent(self, event) -> None:
+        # Workers wrap a blocking Selenium loop, so QThread.quit() can't
+        # interrupt them. Disconnect their signals (so they don't fire on
+        # a dead dialog) and stash them in a module-level list so Python
+        # doesn't GC the QThread object while it's still running.
         for w in list(self._workers):
             try:
                 if w.isRunning():
-                    w.quit()
-                    w.wait(500)
+                    try:
+                        w.done.disconnect()
+                    except Exception:
+                        pass
+                    try:
+                        w.failed.disconnect()
+                    except Exception:
+                        pass
+                    try:
+                        w.finished.disconnect()
+                    except Exception:
+                        pass
+                    w.finished.connect(
+                        lambda worker=w: _detached_worker_done(worker)
+                    )
+                    _DETACHED_WORKERS.append(w)
+                else:
+                    w.deleteLater()
             except Exception:
                 pass
+        self._workers.clear()
         super().closeEvent(event)
