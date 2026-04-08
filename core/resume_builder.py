@@ -433,7 +433,7 @@ def render_preview(
     out.append("")
 
     for slug in _PREVIEW_ORDER:
-        picks = selection.picks.get(slug, [])
+        picks = sorted(selection.picks.get(slug, []))
         section = library.get(slug)
         if not section:
             continue
@@ -491,7 +491,7 @@ def render_selection_notes(
     out.append("")
 
     for slug in _PREVIEW_ORDER:
-        picks = selection.picks.get(slug, [])
+        picks = sorted(selection.picks.get(slug, []))
         section = library.get(slug)
         if not section or not picks:
             continue

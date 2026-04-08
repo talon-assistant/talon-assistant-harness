@@ -354,6 +354,14 @@ class JobSearchTalent(BaseTalent):
             return _fail("No job tracker database found.")
         db = _DB(db_path)
 
+        # One-time idempotent cleanup of HTML entities in older rows
+        try:
+            n_cleaned = db.unescape_html_entities()
+            if n_cleaned:
+                log.info(f"[JobSearch] Unescaped HTML entities in {n_cleaned} rows")
+        except Exception as e:
+            log.warning(f"[JobSearch] Entity backfill failed: {e}")
+
         # Find application by id or company name
         app = None
         id_match = re.search(r'#?(\d+)', command)
@@ -418,8 +426,8 @@ class JobSearchTalent(BaseTalent):
             )
 
         # Build output folder
-        safe_company = re.sub(r'[^\w\s-]', '', app['company']).strip().replace(' ', '_')
-        safe_position = re.sub(r'[^\w\s-]', '', app['position']).strip().replace(' ', '_')[:40]
+        safe_company = _safe_slug(app.get('company', ''), max_len=60)
+        safe_position = _safe_slug(app.get('position', ''), max_len=50)
         date_tag = date.today().strftime("%Y-%m-%d")
         out_root = Path.home() / "OneDrive" / "Documents" / "jobappmaterials"
         out_dir = out_root / f"{safe_company}_{safe_position}_{date_tag}"
@@ -600,8 +608,11 @@ class JobSearchTalent(BaseTalent):
         output_dir = Path.home() / "OneDrive" / "Documents" / "Cover Letters"
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        safe_company = re.sub(r'[^\w\s-]', '', app['company']).strip()
-        safe_position = re.sub(r'[^\w\s-]', '', app['position']).strip()[:40]
+        import html as _html
+        _c = _html.unescape(app.get('company', '') or '')
+        _p = _html.unescape(app.get('position', '') or '')
+        safe_company = re.sub(r'[^\w\s-]', '', _c).strip()
+        safe_position = re.sub(r'[^\w\s-]', '', _p).strip()[:40]
         base_name = f"{safe_company} - {safe_position}"
 
         counter = 0
@@ -1479,6 +1490,32 @@ class JobSearchTalent(BaseTalent):
                 )
 
         log.info(f"[JobSearch] Fit analysis complete: {updated}/{len(scores)} updated")
+
+
+# ── Filename / slug helpers ──────────────────────────────────────────────────
+
+def _safe_slug(text: str, *, max_len: int = 50) -> str:
+    """Turn a company or job title into a filesystem-safe slug.
+
+    - HTML-unescapes (so '&amp;' becomes '&' before stripping)
+    - Drops punctuation except word chars, whitespace, and hyphen
+    - Collapses whitespace to single underscores
+    - Truncates at a word boundary under max_len
+    """
+    import html as _html
+    if not text:
+        return "untitled"
+    s = _html.unescape(str(text))
+    s = re.sub(r'[^\w\s-]', '', s).strip()
+    s = re.sub(r'\s+', '_', s)
+    if len(s) <= max_len:
+        return s or "untitled"
+    cut = s[:max_len]
+    # Truncate at last underscore before the cap
+    last_us = cut.rfind('_')
+    if last_us >= max_len // 2:
+        cut = cut[:last_us]
+    return cut.rstrip('_-') or "untitled"
 
 
 # ── Response helpers ─────────────────────────────────────────────────────────

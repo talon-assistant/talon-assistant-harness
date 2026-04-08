@@ -160,6 +160,10 @@ class _DB:
 
     def add_application(self, **kwargs: Any) -> int:
         """Insert a new application row. Returns the new row id."""
+        import html as _html
+        for _f in ("company", "position", "location"):
+            if kwargs.get(_f):
+                kwargs[_f] = _html.unescape(str(kwargs[_f])).strip()
         cols = [k for k in kwargs if kwargs[k] is not None]
         placeholders = ", ".join("?" for _ in cols)
         col_names = ", ".join(cols)
@@ -169,6 +173,36 @@ class _DB:
                 f"INSERT INTO applications ({col_names}) VALUES ({placeholders})", vals
             )
             return cur.lastrowid  # type: ignore[return-value]
+
+    def unescape_html_entities(self) -> int:
+        """Idempotent backfill: unescape HTML entities in text fields.
+
+        Returns the number of rows modified. Safe to run repeatedly.
+        """
+        import html as _html
+        fields = ("company", "position", "location")
+        changed = 0
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"SELECT id, {', '.join(fields)} FROM applications"
+            ).fetchall()
+            for row in rows:
+                updates: dict[str, str] = {}
+                for f in fields:
+                    val = row[f]
+                    if not val:
+                        continue
+                    clean = _html.unescape(str(val)).strip()
+                    if clean != val:
+                        updates[f] = clean
+                if updates:
+                    sets = ", ".join(f"{k} = ?" for k in updates)
+                    vals = list(updates.values()) + [row["id"]]
+                    conn.execute(
+                        f"UPDATE applications SET {sets} WHERE id = ?", vals
+                    )
+                    changed += 1
+        return changed
 
     def update_application(self, app_id: int, **kwargs: Any) -> bool:
         """Update fields on an existing application. Returns True if a row was modified."""
