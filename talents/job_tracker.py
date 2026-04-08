@@ -155,6 +155,15 @@ class _DB:
         with self._connect() as conn:
             conn.execute(_SCHEMA_APPLICATIONS)
             conn.execute(_SCHEMA_FOLLOW_UPS)
+            # Idempotent migrations for columns added after initial release.
+            cols = {r[1] for r in conn.execute(
+                "PRAGMA table_info(applications)"
+            ).fetchall()}
+            if "job_description" not in cols:
+                conn.execute(
+                    "ALTER TABLE applications "
+                    "ADD COLUMN job_description TEXT DEFAULT ''"
+                )
 
     # -- applications --
 

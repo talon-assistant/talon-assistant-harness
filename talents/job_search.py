@@ -92,7 +92,6 @@ class JobSearchTalent(BaseTalent):
         "prepare materials", "tailor resume", "tailored resume",
         "customize resume", "customized resume",
         "prepare everything", "prep everything", "full application",
-        "everything for",
     ]
     examples = [
         "search for jobs",
@@ -185,8 +184,7 @@ class JobSearchTalent(BaseTalent):
         # Full bundle: tailored resume + cover letter in one shot
         if ("prepare everything" in cmd
                 or "prep everything" in cmd
-                or "full application" in cmd
-                or "everything for" in cmd):
+                or "full application" in cmd):
             return self._handle_prepare_everything(command)
 
         # Tailored resume / full application materials via Claude CLI
@@ -342,6 +340,83 @@ class JobSearchTalent(BaseTalent):
             f"Check back in a few minutes with 'show top jobs'."
         )
 
+    # ── Shared helpers for materials / cover letter / prepare everything ──
+
+    @staticmethod
+    def _find_application(command: str, prefixes: tuple[str, ...]) -> tuple[dict | None, str | None]:
+        """Resolve a tracker application from a command string.
+
+        Returns (app, error_message). On success, error_message is None.
+        Lookup order:
+          1. Strict '#N' token (must be preceded by space/start; digits only)
+          2. Company/position LIKE-search using the text after any known prefix
+        If the LIKE-search returns more than one row, returns an error that
+        lists the matches so the user can pick a specific ID.
+        """
+        from talents.job_tracker import _DB, _data_dir as tracker_data_dir
+
+        db_path = os.path.join(tracker_data_dir(), "job_tracker.db")
+        if not os.path.exists(db_path):
+            return None, "No job tracker database found."
+        db = _DB(db_path)
+
+        # 1. Strict #N — leading '#' required so '3M' and '2026' don't trigger
+        id_match = re.search(r'(?:^|\s)#(\d+)\b', command)
+        if id_match:
+            app = db.get_application(int(id_match.group(1)))
+            if app:
+                return app, None
+            return None, f"No application found for #{id_match.group(1)}."
+
+        # 2. Company-name search using a prefix anchor
+        cmd_lower = command.lower()
+        query = ""
+        for prefix in prefixes:
+            if prefix in cmd_lower:
+                query = cmd_lower.split(prefix, 1)[-1].strip()
+                break
+        if not query:
+            return None, None  # let caller supply the "which job?" message
+
+        matches = db.search(query)
+        if not matches:
+            return None, f"No tracker matches for '{query}'."
+        if len(matches) == 1:
+            return matches[0], None
+        # Multiple matches — force disambiguation
+        lines = [f"Multiple matches for '{query}':"]
+        for m in matches[:8]:
+            lines.append(f"  #{m['id']} {m['company']} — {m['position']}")
+        if len(matches) > 8:
+            lines.append(f"  …and {len(matches) - 8} more")
+        lines.append("Try again with '#<id>'.")
+        return None, "\n".join(lines)
+
+    def _get_or_fetch_jd(self, app: dict) -> str:
+        """Return the JD text for an application.
+
+        Prefers the persisted copy on the row; falls back to a live scrape,
+        then persists it back to the DB so the next call is free.
+        """
+        stored = (app.get("job_description") or "").strip()
+        if stored:
+            return stored
+
+        job_url = app.get("job_url", "")
+        if not job_url:
+            return ""
+
+        jd = self._fetch_job_description(job_url)
+        if jd:
+            try:
+                from talents.job_tracker import _DB, _data_dir as tracker_data_dir
+                db_path = os.path.join(tracker_data_dir(), "job_tracker.db")
+                _DB(db_path).update_application(app["id"], job_description=jd)
+                app["job_description"] = jd
+            except Exception as e:
+                log.warning(f"[JobSearch] Could not persist JD for #{app['id']}: {e}")
+        return jd
+
     # ── Tailored resume (materials prep) via Claude CLI ─────────────────────
 
     def _handle_prepare_everything(self, command: str) -> dict:
@@ -351,6 +426,23 @@ class JobSearchTalent(BaseTalent):
         Command form: "prepare everything for #N" or
         "prepare everything for [company]".
         """
+        # Resolve the app once so we can pre-fetch the JD and avoid two
+        # back-to-back headless Chrome launches.
+        app, err = self._find_application(command, (
+            "prepare everything for", "prep everything for",
+            "full application for",
+        ))
+        if err:
+            return _fail(err)
+        if app is None:
+            return _fail(
+                "Which job? Try: 'prepare everything for #3' "
+                "or 'prepare everything for OEC'."
+            )
+
+        # Warm the JD cache on the row so both downstream handlers read from DB.
+        self._get_or_fetch_jd(app)
+
         resume_res = self._handle_prepare_materials(command)
         letter_res = self._handle_cover_letter(command)
 
@@ -421,29 +513,19 @@ class JobSearchTalent(BaseTalent):
         except Exception as e:
             log.warning(f"[JobSearch] Entity backfill failed: {e}")
 
-        # Find application by id or company name
-        app = None
-        id_match = re.search(r'#?(\d+)', command)
-        if id_match:
-            app = db.get_application(int(id_match.group(1)))
-        if not app:
-            cmd_lower = command.lower()
-            for prefix in ("prepare materials for",
-                           "tailor resume for",
-                           "tailored resume for",
-                           "customize resume for",
-                           "customized resume for"):
-                if prefix in cmd_lower:
-                    company = cmd_lower.split(prefix)[-1].strip()
-                    if company:
-                        matches = db.search(company)
-                        if matches:
-                            app = matches[0]
-                    break
-        if not app:
+        # Find application via shared helper
+        app, err = self._find_application(command, (
+            "prepare materials for", "tailor resume for",
+            "tailored resume for", "customize resume for",
+            "customized resume for", "prepare everything for",
+            "prep everything for", "full application for",
+        ))
+        if err:
+            return _fail(err)
+        if app is None:
             return _fail(
                 "Which job? Try: 'prepare materials for #3' "
-                "or 'prepare materials for OEC'"
+                "or 'prepare materials for OEC'."
             )
 
         # Load library fresh
@@ -458,11 +540,9 @@ class JobSearchTalent(BaseTalent):
         if not library.sections:
             return _fail("Resume library parsed but contained no sections.")
 
-        # Scrape JD
+        # Pull JD (cached on the row if already fetched; scrape and persist otherwise)
         job_url = app.get("job_url", "")
-        job_description = ""
-        if job_url:
-            job_description = self._fetch_job_description(job_url)
+        job_description = self._get_or_fetch_jd(app)
         if not job_description and app.get("notes"):
             job_description = app["notes"]
 
@@ -521,18 +601,31 @@ class JobSearchTalent(BaseTalent):
         saved_files = [str(preview_path), str(notes_path)]
         docx_path = out_dir / f"{safe_company}_{safe_position}_resume.docx"
         pdf_path: Path | None = None
+        warnings: list[str] = []
         try:
             if not DEFAULT_TEMPLATE_PATH.exists():
+                warnings.append(
+                    f"Resume template missing: {DEFAULT_TEMPLATE_PATH} "
+                    "(markdown files only)."
+                )
                 log.warning(
                     f"[JobSearch] Resume template missing: {DEFAULT_TEMPLATE_PATH}"
                 )
             else:
                 TemplateRenderer().render(library, selection, docx_path)
                 saved_files.append(str(docx_path))
-                pdf_path = convert_to_pdf(docx_path)
-                if pdf_path:
-                    saved_files.append(str(pdf_path))
+                try:
+                    pdf_path = convert_to_pdf(docx_path)
+                except Exception as pdf_err:
+                    warnings.append(f"PDF conversion failed: {pdf_err}")
+                    log.error(f"[JobSearch] PDF conversion failed: {pdf_err}")
+                else:
+                    if pdf_path:
+                        saved_files.append(str(pdf_path))
+                    else:
+                        warnings.append("PDF conversion returned no file.")
         except Exception as e:
+            warnings.append(f"DOCX render failed: {e}")
             log.error(f"[JobSearch] DOCX render failed: {e}")
 
         total_bullets = sum(len(v) for v in selection.picks.values())
@@ -551,12 +644,17 @@ class JobSearchTalent(BaseTalent):
             f" ({' + '.join(formats)} ready for upload)" if formats else ""
         )
 
+        warn_line = ""
+        if warnings:
+            warn_line = "\n\n\u26a0 " + " \u26a0 ".join(warnings)
+
         return _ok(
             f"Tailored materials for **{app['company']}** "
             f"({app['position']}) saved:\n\n"
             f"{file_list}\n\n"
             f"Picked {total_bullets} bullets across "
             f"{len(selection.picks)} sections{formats_line}."
+            f"{warn_line}"
         )
 
     # ── Cover letter generation via Claude CLI ─────────────────────────────
@@ -571,32 +669,18 @@ class JobSearchTalent(BaseTalent):
 
         db = _DB(db_path)
 
-        # Find the application — try ID first, then company name search
-        app = None
-        id_match = re.search(r'#?(\d+)', command)
-        if id_match:
-            app = db.get_application(int(id_match.group(1)))
-
-        if not app:
-            # Try to extract company name from command
-            cmd_lower = command.lower()
-            for prefix in ("write a cover letter for",
-                           "cover letter for",
-                           "write cover letter for",
-                           "generate a cover letter for",
-                           "create a cover letter for"):
-                if prefix in cmd_lower:
-                    company = cmd_lower.split(prefix)[-1].strip()
-                    if company:
-                        matches = db.search(company)
-                        if matches:
-                            app = matches[0]
-                    break
-
-        if not app:
+        app, err = self._find_application(command, (
+            "write a cover letter for", "cover letter for",
+            "write cover letter for", "generate a cover letter for",
+            "create a cover letter for", "prepare everything for",
+            "prep everything for", "full application for",
+        ))
+        if err:
+            return _fail(err)
+        if app is None:
             return _fail(
                 "Which job? Try: 'write a cover letter for #3' "
-                "or 'write a cover letter for OEC'"
+                "or 'write a cover letter for OEC'."
             )
 
         # Read resume
@@ -614,11 +698,9 @@ class JobSearchTalent(BaseTalent):
         except Exception:
             pass
 
-        # Scrape job description
+        # Pull JD (cached on row if already fetched)
         job_url = app.get("job_url", "")
-        job_description = ""
-        if job_url:
-            job_description = self._fetch_job_description(job_url)
+        job_description = self._get_or_fetch_jd(app)
 
         # Build prompt
         prompt_parts = [
@@ -673,7 +755,7 @@ class JobSearchTalent(BaseTalent):
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
-                timeout=120,
+                timeout=300,
                 cwd=str(Path.home()),
             )
 
@@ -718,6 +800,7 @@ class JobSearchTalent(BaseTalent):
 
         txt_path.write_text(letter, encoding="utf-8")
         saved = [str(txt_path)]
+        warnings: list[str] = []
 
         try:
             self._write_cover_letter_docx(letter, docx_path, app)
@@ -728,8 +811,10 @@ class JobSearchTalent(BaseTalent):
                 docx2pdf.convert(str(docx_path), str(pdf_path))
                 saved.append(str(pdf_path))
             except Exception as e:
+                warnings.append(f"PDF conversion failed: {e}")
                 log.warning(f"[JobSearch] PDF conversion failed: {e}")
         except Exception as e:
+            warnings.append(f"DOCX generation failed: {e} (txt only)")
             log.warning(f"[JobSearch] DOCX generation failed: {e}")
 
         # Update tracker DB
@@ -737,10 +822,14 @@ class JobSearchTalent(BaseTalent):
         log.info(f"[JobSearch] Cover letter saved for #{app['id']} {app['company']}")
 
         file_list = "\n".join(f"  {f}" for f in saved)
+        formats_line = "DOCX and PDF ready for upload."
+        if warnings:
+            formats_line = "\u26a0 " + " \u26a0 ".join(warnings)
+
         return _ok(
             f"Cover letter for **{app['company']}** ({app['position']}) "
             f"saved to:\n\n{file_list}\n\n"
-            f"DOCX and PDF ready for upload."
+            f"{formats_line}"
         )
 
     @staticmethod
@@ -771,11 +860,17 @@ class JobSearchTalent(BaseTalent):
 
             driver = webdriver.Chrome(service=service, options=options)
             try:
-                driver.get(job_url)
+                driver.set_page_load_timeout(25)
+                try:
+                    driver.get(job_url)
+                except Exception as e:
+                    log.warning(f"[JobSearch] JD page load timed out: {e}")
                 time.sleep(4)
                 body = driver.find_element(By.TAG_NAME, "body").text
-                if len(body) > 5000:
-                    body = body[:5000] + "\n[truncated]"
+                # Keep both ends of the JD: requirements often live mid/late,
+                # qualifications at the top.
+                if len(body) > 10000:
+                    body = body[:6000] + "\n[...truncated...]\n" + body[-4000:]
                 log.info(f"[JobSearch] Fetched JD: {len(body)} chars")
                 return body
             finally:
@@ -833,8 +928,6 @@ class JobSearchTalent(BaseTalent):
             p.paragraph_format.space_after = Pt(8)
 
         doc.save(str(output_path))
-
-    # ── Search orchestrator ──────────────────────────────────────────────────
 
     # ── Top candidates (queries tracker DB directly) ───────────────────────
 
@@ -1040,21 +1133,75 @@ class JobSearchTalent(BaseTalent):
                     except Exception as e:
                         log.debug(f"[JobSearch] LinkedIn card parse: {e}")
 
-            # Strategy 2: link-based fallback (semantic search or alt layout)
+            # Strategy 2: link-based fallback (semantic search or alt layout).
+            # Only accept rows where we can resolve a company from a nearby
+            # ancestor element — otherwise we'd stuff the tracker with
+            # half-empty "Unknown" rows that break dedup and scoring.
             if not jobs:
                 seen_urls: set[str] = set()
                 for link in driver.find_elements(
                     By.CSS_SELECTOR, 'a[href*="/jobs/view/"]'
                 ):
                     text = link.text.strip()
+                    if text:
+                        text = text.split("\n")[0].strip()
                     href = (link.get_attribute("href") or "").split("?")[0]
                     if not text or len(text) < 4 or href in seen_urls:
                         continue
+
+                    # Walk ancestors looking for a sibling that exposes
+                    # the company name.
+                    company = ""
+                    location = ""
+                    anc = link
+                    for _ in range(6):
+                        try:
+                            anc = anc.find_element(By.XPATH, "..")
+                        except Exception:
+                            break
+                        for sel in (
+                            ".job-card-container__company-name",
+                            ".artdeco-entity-lockup__subtitle",
+                            ".job-card-container__primary-description",
+                        ):
+                            try:
+                                el = anc.find_element(By.CSS_SELECTOR, sel)
+                                txt = el.text.strip()
+                                if txt and len(txt) > 1:
+                                    company = txt
+                                    break
+                            except Exception:
+                                pass
+                        if company:
+                            # Try to grab a location sibling too
+                            for sel in (
+                                ".job-card-container__metadata-item",
+                                ".artdeco-entity-lockup__caption",
+                            ):
+                                try:
+                                    el = anc.find_element(By.CSS_SELECTOR, sel)
+                                    txt = el.text.strip()
+                                    if txt:
+                                        location = txt
+                                        break
+                                except Exception:
+                                    pass
+                            break
+
+                    if not company:
+                        log.debug(
+                            f"[JobSearch] LinkedIn Strategy 2 skipped "
+                            f"(no company): {text[:60]}"
+                        )
+                        continue
+
                     seen_urls.add(href)
                     jobs.append({
                         "source": "LinkedIn",
                         "date_found": date.today().isoformat(),
                         "position": text,
+                        "company": company,
+                        "location": location,
                         "job_url": href,
                     })
 
@@ -1451,7 +1598,12 @@ class JobSearchTalent(BaseTalent):
                 log.error(f"[JobSearch] Batch {i // batch_size + 1} failed: {e}")
 
     def _score_batch(self, jobs: list[dict]) -> None:
-        """Score a single batch of jobs via claude -p."""
+        """Score a single batch of jobs via claude -p.
+
+        For each job, scrapes the JD (if not already on the row) and
+        persists it back to the DB so downstream steps (prepare materials,
+        cover letter) can reuse it without another Chrome launch.
+        """
         resume_path = Path.home() / "OneDrive" / "Documents" / "resume_master.md"
 
         # Read resume content directly so Claude doesn't need file access
@@ -1461,26 +1613,64 @@ class JobSearchTalent(BaseTalent):
             log.error(f"[JobSearch] Cannot read resume: {e}")
             return
 
-        job_lines = []
+        # Load the full rows so we have access to any already-stored JD
+        # (jobs passed in from a fresh scrape won't have the DB row yet)
+        from talents.job_tracker import _DB, _data_dir as tracker_data_dir
+        db_path = os.path.join(tracker_data_dir(), "job_tracker.db")
+        db = _DB(db_path)
+
+        enriched: list[dict] = []
         for j in jobs:
-            parts = [f"tracker_id={j.get('id')}"]
-            parts.append(f"company={j.get('company', 'Unknown')}")
-            parts.append(f"position={j.get('position', '')}")
+            row = db.get_application(j.get("id")) if j.get("id") else None
+            if row is None:
+                row = dict(j)
+            else:
+                # Make sure job_url survives even if the row doesn't have it yet
+                if not row.get("job_url") and j.get("job_url"):
+                    row["job_url"] = j["job_url"]
+            # Pull JD (cached if present, scraped and persisted otherwise)
+            try:
+                self._get_or_fetch_jd(row)
+            except Exception as e:
+                log.warning(
+                    f"[JobSearch] JD fetch failed for #{row.get('id')}: {e}"
+                )
+            enriched.append(row)
+
+        # Build prompt blocks — include JD excerpts for each job so Claude
+        # can actually reason about requirements, not just title keywords.
+        blocks: list[str] = []
+        for j in enriched:
+            lines = [
+                f"--- tracker_id={j.get('id')} ---",
+                f"company: {j.get('company', 'Unknown')}",
+                f"position: {j.get('position', '')}",
+            ]
             if j.get("location"):
-                parts.append(f"location={j['location']}")
-            job_lines.append(" | ".join(parts))
+                lines.append(f"location: {j['location']}")
+            jd = (j.get("job_description") or "").strip()
+            if jd:
+                # Trim hard for multi-job batches; prefer start + end of JD
+                if len(jd) > 3500:
+                    jd = jd[:2500] + "\n[...]\n" + jd[-800:]
+                lines.append(f"job_description:\n{jd}")
+            else:
+                lines.append("job_description: (not available)")
+            blocks.append("\n".join(lines))
 
         prompt = (
             "TASK: Score each job listing for fit against this resume.\n\n"
             f"RESUME:\n{resume_text}\n\n"
-            "JOB LISTINGS:\n"
-            + "\n".join(job_lines) + "\n\n"
-            "For each job, score fit 0-100 based on title, company, and "
-            "location match to the resume. 80+ = strong match on seniority "
-            "and domain. 50-79 = partial match. Below 50 = poor fit.\n\n"
+            "JOB LISTINGS:\n\n"
+            + "\n\n".join(blocks) + "\n\n"
+            "Score fit 0-100 using the job_description text when available. "
+            "Weight: seniority match (CISO / VP / Director level), "
+            "security domain depth, regulated-industry experience, and "
+            "stated required certifications (CISSP, CISM, etc.). "
+            "80+ = strong match. 50-79 = partial. Below 50 = poor fit.\n\n"
             "Return ONLY a JSON array, nothing else. Each element:\n"
             '{"tracker_id": <int>, "fit_score": <int>, '
-            '"analysis": "<2-3 sentences>", '
+            '"analysis": "<2-3 sentences grounded in the JD>", '
             '"recommendation": "<apply|skip|maybe>"}'
         )
 
@@ -1496,7 +1686,7 @@ class JobSearchTalent(BaseTalent):
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
-                timeout=120,
+                timeout=300,
                 cwd=str(Path.home()),
             )
 
@@ -1537,7 +1727,7 @@ class JobSearchTalent(BaseTalent):
             self._store_fit_results(scores)
 
         except subprocess.TimeoutExpired:
-            log.error("[JobSearch] claude -p timed out (300s)")
+            log.error("[JobSearch] claude -p timed out after 300s")
         except json.JSONDecodeError as e:
             log.error(
                 f"[JobSearch] Fit analysis JSON parse error: {e}. "
