@@ -56,7 +56,7 @@ _COLUMNS = [
     ("Source", 90),
     ("Found", 90),
     ("Status", 120),
-    ("Actions", 260),
+    ("Actions", 360),
 ]
 
 
@@ -400,9 +400,12 @@ class JobInboxDialog(QDialog):
 
             for b in (btn_all, btn_res, btn_cl, btn_open, btn_del):
                 b.setFixedHeight(24)
+                b.setMinimumWidth(62)
                 ab.addWidget(b)
 
             self._table.setCellWidget(r, 8, actions)
+            # Make sure the row is tall enough for the action buttons
+            self._table.setRowHeight(r, 30)
 
         self._table.setSortingEnabled(True)
 
