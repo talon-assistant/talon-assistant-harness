@@ -70,6 +70,7 @@ class _PipelineWorker(QThread):
         "cover_letter"        -> cover letter txt/DOCX/PDF
         "prepare_everything"  -> both
         "add_from_url"        -> scrape a raw URL and add to tracker
+        "run_search"          -> scrape every configured search URL + score
     """
 
     done = pyqtSignal(str, dict)   # (action, result_dict)
@@ -88,6 +89,11 @@ class _PipelineWorker(QThread):
             if self._action == "add_from_url":
                 result = self._job_search.scrape_and_add_from_url(self._url or "")
                 self.done.emit(self._action, result)
+                return
+
+            if self._action == "run_search":
+                result = self._job_search._handle_search(context={})
+                self.done.emit(self._action, result or {})
                 return
 
             # All talent-level commands expect a text command string
@@ -147,9 +153,17 @@ class JobInboxDialog(QDialog):
         self._add_url_btn = QPushButton("Add + Score")
         self._add_url_btn.clicked.connect(self._on_add_url)
 
+        self._run_search_btn = QPushButton("Run Search + Score")
+        self._run_search_btn.setToolTip(
+            "Scrape every configured job search URL, add new listings, "
+            "and run fit scoring in the background."
+        )
+        self._run_search_btn.clicked.connect(self._on_run_search)
+
         drop_box.addWidget(drop_label)
         drop_box.addWidget(self._url_input, stretch=1)
         drop_box.addWidget(self._add_url_btn)
+        drop_box.addWidget(self._run_search_btn)
         layout.addLayout(drop_box)
 
         # ── Filter / search bar ──────────────────────────────────────
@@ -591,6 +605,62 @@ class JobInboxDialog(QDialog):
         self._add_url_btn.setEnabled(True)
         self._set_busy(False)
         QMessageBox.critical(self, "Add from URL", error)
+
+    # ── Run full search ──────────────────────────────────────────────────
+
+    def _on_run_search(self) -> None:
+        """Kick off the configured job search across every saved URL."""
+        job_search = self._job_search_talent()
+        if job_search is None:
+            QMessageBox.warning(
+                self, "Run Search",
+                "Job search talent is not loaded."
+            )
+            return
+
+        urls = (job_search._search_config or {}).get("urls", [])
+        if not urls:
+            QMessageBox.information(
+                self, "Run Search",
+                "No search URLs configured. In the main chat, say "
+                "'add a search URL <link>' to add one."
+            )
+            return
+
+        self._run_search_btn.setEnabled(False)
+        self._add_url_btn.setEnabled(False)
+        self._url_input.setEnabled(False)
+        self._set_busy(
+            True,
+            f"Searching {len(urls)} URL(s) — this can take a minute..."
+        )
+
+        worker = _PipelineWorker("run_search", job_search)
+        worker.done.connect(self._on_search_done)
+        worker.failed.connect(self._on_search_failed)
+        worker.finished.connect(lambda w=worker: self._drop_worker(w))
+        self._workers.append(worker)
+        worker.start()
+
+    def _on_search_done(self, _action: str, result: dict) -> None:
+        self._run_search_btn.setEnabled(True)
+        self._add_url_btn.setEnabled(True)
+        self._url_input.setEnabled(True)
+        self._set_busy(False)
+
+        response = result.get("response") or "Search complete."
+        if result.get("success"):
+            QMessageBox.information(self, "Run Search", response)
+        else:
+            QMessageBox.warning(self, "Run Search", response)
+        self.refresh()
+
+    def _on_search_failed(self, _action: str, error: str) -> None:
+        self._run_search_btn.setEnabled(True)
+        self._add_url_btn.setEnabled(True)
+        self._url_input.setEnabled(True)
+        self._set_busy(False)
+        QMessageBox.critical(self, "Run Search", error)
 
     # ── Cleanup ──────────────────────────────────────────────────────────
 
