@@ -1357,6 +1357,11 @@ class JobSearchTalent(BaseTalent):
         jobs: list[dict] = []
 
         try:
+            # Hook fetch + XHR before navigation so we can capture the
+            # SDUI API responses that contain job IDs (the rail's cards
+            # are pure SDUI buttons with no URLs in the DOM).
+            self._inject_linkedin_network_capture(driver)
+
             driver.get(url)
             time.sleep(5)
 
@@ -1521,6 +1526,14 @@ class JobSearchTalent(BaseTalent):
                         "location": location,
                         "job_url": href,
                     })
+
+            # Strategy 4 (diagnostic phase): read captured XHR/fetch
+            # responses and dump them. The parser comes next iteration
+            # once we see what the SDUI API actually returns.
+            try:
+                self._dump_linkedin_xhr_captures(driver)
+            except Exception as e:
+                log.warning(f"[JobSearch] XHR capture dump failed: {e}")
 
             # Strategy 3: CDP shadow-DOM piercing (SDUI / semantic search).
             # The /jobs/search-results/ endpoint mounts cards into closed
@@ -2035,6 +2048,141 @@ class JobSearchTalent(BaseTalent):
         with open(path, "w", encoding="utf-8") as f:
             f.write("\n".join(lines))
         log.warning(f"[JobSearch] CDP tree summary dumped to {path}")
+
+    # ── Network capture (SDUI XHR/fetch sniffing) ───────────────────────
+
+    _LINKEDIN_NETWORK_HOOK = r"""
+(function() {
+  if (window.__talonCaptured) return;
+  window.__talonCaptured = [];
+  function isInteresting(url) {
+    if (!url) return false;
+    var s = String(url).toLowerCase();
+    return s.indexOf('voyager') !== -1
+        || s.indexOf('graphql') !== -1
+        || s.indexOf('sdui') !== -1
+        || s.indexOf('jobpostingcard') !== -1
+        || (s.indexOf('jobs') !== -1 && s.indexOf('search') !== -1);
+  }
+  function record(url, body) {
+    try {
+      if (body && body.length > 0 && body.length < 4000000) {
+        window.__talonCaptured.push({u: url, b: body});
+      }
+    } catch (e) {}
+  }
+  var origFetch = window.fetch;
+  if (origFetch) {
+    window.fetch = function() {
+      var args = arguments;
+      var req = args[0];
+      var url = (typeof req === 'string') ? req : (req && req.url);
+      var promise = origFetch.apply(this, args);
+      if (isInteresting(url)) {
+        promise.then(function(resp) {
+          try {
+            resp.clone().text().then(
+              function(body) { record(url, body); },
+              function() {}
+            );
+          } catch (e) {}
+        }, function() {});
+      }
+      return promise;
+    };
+  }
+  var origOpen = XMLHttpRequest.prototype.open;
+  var origSend = XMLHttpRequest.prototype.send;
+  XMLHttpRequest.prototype.open = function(method, url) {
+    this.__talonUrl = url;
+    return origOpen.apply(this, arguments);
+  };
+  XMLHttpRequest.prototype.send = function() {
+    var xhr = this;
+    xhr.addEventListener('load', function() {
+      try {
+        if (isInteresting(xhr.__talonUrl)) {
+          record(xhr.__talonUrl, xhr.responseText);
+        }
+      } catch (e) {}
+    });
+    return origSend.apply(this, arguments);
+  };
+})();
+"""
+
+    def _inject_linkedin_network_capture(self, driver) -> None:
+        """Inject fetch+XHR hooks before navigation so we capture the
+        SDUI API responses that hold the rail's job IDs."""
+        try:
+            driver.execute_cdp_cmd(
+                "Page.addScriptToEvaluateOnNewDocument",
+                {"source": self._LINKEDIN_NETWORK_HOOK},
+            )
+        except Exception as e:
+            log.warning(f"[JobSearch] Network hook inject failed: {e}")
+
+    def _dump_linkedin_xhr_captures(self, driver) -> None:
+        """Read window.__talonCaptured and write a JSON dump to data/debug.
+
+        Phase-1 diagnostic: writes URL list + body previews so we can
+        figure out which endpoint carries the rail data and what its
+        JSON structure looks like, then write the real parser.
+        """
+        try:
+            captured = driver.execute_script(
+                "return window.__talonCaptured || [];"
+            )
+        except Exception as e:
+            log.warning(f"[JobSearch] Read capture failed: {e}")
+            return
+
+        log.info(
+            f"[JobSearch] Captured {len(captured)} interesting "
+            f"XHR/fetch responses"
+        )
+        if not captured:
+            return
+
+        debug_dir = os.path.join(_data_dir(), "debug")
+        os.makedirs(debug_dir, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+        # Index file: URL list with body sizes
+        index_path = os.path.join(debug_dir, f"linkedin_xhr_index_{stamp}.txt")
+        with open(index_path, "w", encoding="utf-8") as f:
+            f.write(f"=== {len(captured)} captured responses @ {stamp} ===\n\n")
+            for i, item in enumerate(captured):
+                url = item.get("u") or ""
+                body = item.get("b") or ""
+                f.write(f"[{i:03d}] {len(body):>8d} bytes  {url[:200]}\n")
+
+        # Preview file: first 10 KB of each body, with a quick scan for
+        # job-id patterns so we can spot which one holds the rail data.
+        preview_path = os.path.join(
+            debug_dir, f"linkedin_xhr_previews_{stamp}.txt"
+        )
+        id_pat = re.compile(r"jobPosting[^0-9]{0,30}(\d{8,12})")
+        with open(preview_path, "w", encoding="utf-8") as f:
+            for i, item in enumerate(captured):
+                url = item.get("u") or ""
+                body = item.get("b") or ""
+                ids = sorted(set(id_pat.findall(body)))
+                f.write(f"=== [{i:03d}] {url[:200]} ===\n")
+                f.write(f"size: {len(body)} bytes\n")
+                f.write(
+                    f"jobPosting id matches: {len(ids)} unique"
+                    + (f" -> {ids[:10]}" if ids else "")
+                    + "\n"
+                )
+                f.write("--- preview (first 8000 bytes) ---\n")
+                f.write(body[:8000])
+                f.write("\n\n")
+
+        log.warning(
+            f"[JobSearch] XHR captures dumped: index={index_path} "
+            f"previews={preview_path}"
+        )
 
     # ── Dice ─────────────────────────────────────────────────────────────────
     #
