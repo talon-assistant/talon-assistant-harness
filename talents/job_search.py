@@ -1327,9 +1327,25 @@ class JobSearchTalent(BaseTalent):
     #   - .job-card-container__company-name for company
     #   - .job-card-container__metadata-item for location
     #
-    # NOTE: LinkedIn "semantic search" URLs (/jobs/search-results/) render a
-    # single-job detail view, NOT a list.  Standard search (/jobs/search/)
-    # with f_TPR (time), f_WT (remote), etc. gives a proper list.
+    # Both /jobs/search/ (classic) and /jobs/search-results/ (AI/semantic
+    # search) render a card list in a left rail. The semantic-search page
+    # wraps cards in <li data-occludable-job-id> instead of
+    # <div data-job-id>, and scrolls a sub-panel instead of the page body,
+    # so we accept multiple card selectors and walk the scroll container.
+
+    _LINKEDIN_CARD_SELECTORS = (
+        "div[data-job-id]",
+        "li[data-occludable-job-id]",
+        "div.job-card-job-posting-card-wrapper",
+        "li.scaffold-layout__list-item",
+    )
+    _LINKEDIN_CARD_UNION = ", ".join(_LINKEDIN_CARD_SELECTORS)
+
+    _LINKEDIN_SCROLL_CONTAINERS = (
+        ".scaffold-layout__list",
+        ".jobs-search-results-list",
+        "div[data-results-list-top-scroll-sentinel] ~ ul",
+    )
 
     def _scrape_linkedin(self, url: str) -> list[dict]:
         """Scrape job listings from a LinkedIn jobs search page."""
@@ -1354,7 +1370,7 @@ class JobSearchTalent(BaseTalent):
                 WebDriverWait(driver, 12).until(
                     EC.presence_of_element_located((
                         By.CSS_SELECTOR,
-                        'div[data-job-id], a[href*="/jobs/view/"]',
+                        f'{self._LINKEDIN_CARD_UNION}, a[href*="/jobs/view/"]',
                     ))
                 )
             except Exception:
@@ -1362,18 +1378,38 @@ class JobSearchTalent(BaseTalent):
 
             time.sleep(2)
 
-            # ── Lazy-load loop: scroll the last visible job card into view
-            # repeatedly until card count plateaus. LinkedIn renders ~25
-            # cards per intersection-observer fire, and the page won't load
-            # the next batch unless something near the bottom is scrolled
-            # into view. Cap iterations so a stuck scroll can't hang us.
+            # ── Lazy-load loop: LinkedIn renders ~25 cards per
+            # intersection-observer fire and only loads the next batch when
+            # something near the bottom comes into view. The page body is
+            # NOT the scroll container — the result list is a sub-panel
+            # with its own overflow. So we (a) scrollTop the sub-panel,
+            # (b) scrollIntoView the last card as a backup, and (c) cap
+            # iterations so a stuck scroll can't hang us.
+            scroll_js = (
+                "const sels = arguments[0];"
+                "for (const s of sels) {"
+                "  const el = document.querySelector(s);"
+                "  if (el && el.scrollHeight > el.clientHeight) {"
+                "    el.scrollTop = el.scrollHeight;"
+                "    return true;"
+                "  }"
+                "}"
+                "return false;"
+            )
             last_count = 0
             stable_passes = 0
             for attempt in range(20):
                 cards = driver.find_elements(
-                    By.CSS_SELECTOR, "div[data-job-id]"
+                    By.CSS_SELECTOR, self._LINKEDIN_CARD_UNION
                 )
-                if cards:
+                scrolled = False
+                try:
+                    scrolled = bool(driver.execute_script(
+                        scroll_js, list(self._LINKEDIN_SCROLL_CONTAINERS)
+                    ))
+                except Exception:
+                    pass
+                if not scrolled and cards:
                     try:
                         driver.execute_script(
                             "arguments[0].scrollIntoView({block: 'end'});",
@@ -1383,7 +1419,7 @@ class JobSearchTalent(BaseTalent):
                         pass
                 time.sleep(1.5)
                 new_count = len(driver.find_elements(
-                    By.CSS_SELECTOR, "div[data-job-id]"
+                    By.CSS_SELECTOR, self._LINKEDIN_CARD_UNION
                 ))
                 if new_count == last_count:
                     stable_passes += 1
@@ -1398,7 +1434,9 @@ class JobSearchTalent(BaseTalent):
             )
 
             # Strategy 1: card-based (standard search page)
-            cards = driver.find_elements(By.CSS_SELECTOR, "div[data-job-id]")
+            cards = driver.find_elements(
+                By.CSS_SELECTOR, self._LINKEDIN_CARD_UNION
+            )
             if cards:
                 seen: set[str] = set()
                 for card in cards:
@@ -1500,7 +1538,10 @@ class JobSearchTalent(BaseTalent):
             "date_found": date.today().isoformat(),
         }
 
-        job_id = card.get_attribute("data-job-id")
+        job_id = (
+            card.get_attribute("data-job-id")
+            or card.get_attribute("data-occludable-job-id")
+        )
         if job_id:
             job["job_url"] = f"https://www.linkedin.com/jobs/view/{job_id}"
 
