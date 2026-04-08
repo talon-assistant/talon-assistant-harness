@@ -1970,6 +1970,68 @@ class JobSearchTalent(BaseTalent):
         for t in sorted(text_with_job)[:60]:
             lines.append(f"  {t}")
 
+        # Targeted: for the first 3 "(Verified job)" text nodes, walk
+        # their ancestor chain and dump tag + attributes for each level
+        # so we can see exactly where the card container is and which
+        # attribute holds the job ID.
+        verified_nodes: list[dict] = []
+
+        def find_verified(node: dict) -> None:
+            if node.get("nodeType") == 3:
+                v = (node.get("nodeValue") or "").strip()
+                if v.endswith("(Verified job)") and len(verified_nodes) < 3:
+                    verified_nodes.append(node)
+
+        cls._cdp_walk(root, find_verified)
+        parents = cls._cdp_build_parent_map(root)
+
+        if verified_nodes:
+            lines.append("")
+            lines.append("=== ancestor chains for first 3 job text nodes ===")
+            for vn in verified_nodes:
+                title_preview = (vn.get("nodeValue") or "")[:60]
+                lines.append("")
+                lines.append(f"--- text: {title_preview} ---")
+                ancestor = parents.get(id(vn))
+                level = 0
+                while ancestor is not None and level < 12:
+                    name = (ancestor.get("nodeName") or "?").lower()
+                    attrs = cls._cdp_attrs(ancestor)
+                    attr_strs = []
+                    for k, v in attrs.items():
+                        vs = str(v)
+                        if len(vs) > 80:
+                            vs = vs[:77] + "..."
+                        attr_strs.append(f'{k}="{vs}"')
+                    attr_blob = " ".join(attr_strs) if attr_strs else "(no attrs)"
+                    lines.append(f"  L{level:2d} <{name}> {attr_blob}")
+                    ancestor = parents.get(id(ancestor))
+                    level += 1
+
+        # Also: search for any 10+ digit numbers in any attribute value
+        # anywhere in the tree (job IDs are typically 10 digits).
+        import re as _re
+        id_pat = _re.compile(r"\b\d{10}\b")
+        found_ids: dict[str, set[str]] = {}
+
+        def find_ids(node: dict) -> None:
+            attrs = cls._cdp_attrs(node)
+            for k, v in attrs.items():
+                vs = str(v)
+                for m in id_pat.findall(vs):
+                    found_ids.setdefault(k, set()).add(m)
+
+        cls._cdp_walk(root, find_ids)
+
+        lines.append("")
+        lines.append("=== 10-digit numbers in attributes (likely job IDs) ===")
+        for k in sorted(found_ids.keys()):
+            sample = sorted(found_ids[k])[:8]
+            lines.append(
+                f"  attr={k}  ({len(found_ids[k])} unique)  "
+                f"sample={sample}"
+            )
+
         with open(path, "w", encoding="utf-8") as f:
             f.write("\n".join(lines))
         log.warning(f"[JobSearch] CDP tree summary dumped to {path}")
