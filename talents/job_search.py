@@ -1522,6 +1522,23 @@ class JobSearchTalent(BaseTalent):
                         "job_url": href,
                     })
 
+            # Strategy 3: CDP shadow-DOM piercing (SDUI / semantic search).
+            # The /jobs/search-results/ endpoint mounts cards into closed
+            # shadow roots, which Selenium's find_elements + page_source
+            # can't see. CDP DOM.getDocument with pierce=True walks the
+            # full composed tree including closed shadow roots.
+            if not jobs:
+                try:
+                    cdp_jobs = self._scrape_linkedin_via_cdp(driver)
+                    if cdp_jobs:
+                        log.info(
+                            f"[JobSearch] LinkedIn CDP fallback: "
+                            f"{len(cdp_jobs)} listings"
+                        )
+                        jobs.extend(cdp_jobs)
+                except Exception as e:
+                    log.warning(f"[JobSearch] CDP fallback failed: {e}")
+
             log.info(f"[JobSearch] LinkedIn: {len(jobs)} listings")
 
             # If we got nothing, dump what headless Chrome actually saw so
@@ -1613,6 +1630,240 @@ class JobSearchTalent(BaseTalent):
                 break
 
         return job
+
+    # ── CDP shadow-DOM piercing for SDUI / semantic-search pages ─────────
+    #
+    # LinkedIn's /jobs/search-results/ AI-search endpoint mounts each card
+    # into a closed shadow root via their Server-Driven UI framework.
+    # Selenium's find_elements + page_source can't see closed shadow DOM,
+    # but Chrome DevTools Protocol can: DOM.getDocument(pierce=True)
+    # returns the full composed tree including every shadow root.
+    #
+    # The strategy:
+    #   1. Get the pierced DOM tree as JSON.
+    #   2. Build a parent map keyed by id() of each node dict.
+    #   3. Find every <a href*="/jobs/view/"> anchor.
+    #   4. For each anchor, walk up to ~10 ancestors collecting text
+    #      until we have enough lines to parse out company + location.
+    #   5. Skip "similar jobs" sub-sections by deduping bare URLs.
+
+    @staticmethod
+    def _cdp_attrs(node: dict) -> dict:
+        """Convert CDP's flat attribute list ['k','v','k','v'] to a dict."""
+        flat = node.get("attributes") or []
+        return dict(zip(flat[::2], flat[1::2]))
+
+    @classmethod
+    def _cdp_walk(cls, node: dict, fn) -> None:
+        """Depth-first walk over a CDP DOM tree, calling fn(node) per node.
+
+        Pierces children, shadowRoots, contentDocument (iframes), and
+        templateContent so closed shadow roots are visited too.
+        """
+        fn(node)
+        for child in node.get("children") or ():
+            cls._cdp_walk(child, fn)
+        for shadow in node.get("shadowRoots") or ():
+            cls._cdp_walk(shadow, fn)
+        if node.get("contentDocument"):
+            cls._cdp_walk(node["contentDocument"], fn)
+        if node.get("templateContent"):
+            cls._cdp_walk(node["templateContent"], fn)
+
+    @classmethod
+    def _cdp_collect_text(cls, node: dict, max_depth: int = 8) -> str:
+        """Concatenate visible text under a node, separated by newlines.
+
+        Splits at element boundaries so the output approximates the
+        visual line layout of the card.
+        """
+        parts: list[str] = []
+
+        def collect(n: dict, depth: int) -> None:
+            if depth > max_depth:
+                return
+            node_type = n.get("nodeType")
+            # nodeType 3 = TEXT_NODE
+            if node_type == 3:
+                v = (n.get("nodeValue") or "").strip()
+                if v:
+                    parts.append(v)
+                return
+            # Skip script/style/svg subtrees — pure noise
+            name = (n.get("nodeName") or "").lower()
+            if name in ("script", "style", "svg", "noscript"):
+                return
+            for c in n.get("children") or ():
+                collect(c, depth + 1)
+            for s in n.get("shadowRoots") or ():
+                collect(s, depth + 1)
+
+        collect(node, 0)
+        return "\n".join(parts)
+
+    @classmethod
+    def _cdp_build_parent_map(cls, root: dict) -> dict:
+        """Build {id(node_dict): parent_node_dict} for upward walking."""
+        parents: dict = {}
+
+        def visit(n: dict, parent: dict | None) -> None:
+            parents[id(n)] = parent
+            for c in n.get("children") or ():
+                visit(c, n)
+            for s in n.get("shadowRoots") or ():
+                visit(s, n)
+            if n.get("contentDocument"):
+                visit(n["contentDocument"], n)
+
+        visit(root, None)
+        return parents
+
+    # Lines that show up on every card and aren't useful for company/location
+    _LI_NOISE_LINES = {
+        "easy apply", "promoted", "saved", "be an early applicant",
+        "viewed", "applied", "verified", "with verification",
+        "promoted by hirer", "·", "•", "new", "actively reviewing",
+        "responses managed off linkedin", "promoted job",
+    }
+
+    @classmethod
+    def _clean_card_lines(cls, raw_text: str) -> list[str]:
+        """Split a card's text dump into meaningful lines."""
+        out: list[str] = []
+        for ln in raw_text.split("\n"):
+            ln = ln.strip()
+            if not ln:
+                continue
+            low = ln.lower()
+            if low in cls._LI_NOISE_LINES:
+                continue
+            if low.startswith("be an early") or low.startswith("posted "):
+                continue
+            if low.endswith(" ago") and len(ln) < 25:
+                continue
+            # Dedupe consecutive duplicates (LinkedIn often double-emits
+            # the title for accessibility)
+            if out and out[-1] == ln:
+                continue
+            out.append(ln)
+        return out
+
+    def _scrape_linkedin_via_cdp(self, driver) -> list[dict]:
+        """Fallback scraper that walks the pierced DOM via CDP.
+
+        Works on the SDUI /jobs/search-results/ page where cards live
+        in closed shadow roots invisible to Selenium's normal API.
+        """
+        try:
+            doc = driver.execute_cdp_cmd(
+                "DOM.getDocument", {"depth": -1, "pierce": True}
+            )
+        except Exception as e:
+            log.warning(f"[JobSearch] CDP getDocument failed: {e}")
+            return []
+
+        root = doc.get("root") or {}
+        if not root:
+            return []
+
+        parents = self._cdp_build_parent_map(root)
+
+        # Collect every anchor whose href looks like a job posting
+        anchors: list[dict] = []
+        seen_hrefs: set[str] = set()
+
+        def visit(node: dict) -> None:
+            if (node.get("nodeName") or "").lower() != "a":
+                return
+            attrs = self._cdp_attrs(node)
+            href = attrs.get("href", "")
+            if "/jobs/view/" not in href:
+                return
+            bare = href.split("?")[0]
+            if bare in seen_hrefs:
+                return
+            seen_hrefs.add(bare)
+            if not bare.startswith("http"):
+                bare = "https://www.linkedin.com" + bare
+            anchor_text = self._cdp_collect_text(node, max_depth=4)
+            anchors.append({
+                "node": node,
+                "href": bare,
+                "anchor_text": anchor_text,
+            })
+
+        self._cdp_walk(root, visit)
+
+        log.info(
+            f"[JobSearch] CDP found {len(anchors)} unique job anchors "
+            f"in pierced DOM"
+        )
+
+        jobs: list[dict] = []
+        for entry in anchors:
+            node = entry["node"]
+            anchor_text = entry["anchor_text"]
+            href = entry["href"]
+
+            # Title: first non-empty line of the anchor's own text
+            title_lines = self._clean_card_lines(anchor_text)
+            title = title_lines[0] if title_lines else ""
+            if not title or len(title) < 4 or len(title) > 200:
+                continue
+
+            # Walk up ancestors collecting card-level text until we get
+            # enough lines to look like a real card row.
+            company = ""
+            location = ""
+            ancestor = parents.get(id(node))
+            for _ in range(10):
+                if ancestor is None:
+                    break
+                lines = self._clean_card_lines(
+                    self._cdp_collect_text(ancestor, max_depth=10)
+                )
+                if len(lines) >= 3:
+                    # Find where the title sits in the line list
+                    title_idx = -1
+                    for i, ln in enumerate(lines):
+                        if ln == title or title.lower() in ln.lower():
+                            title_idx = i
+                            break
+
+                    # Company is usually the line right after the title
+                    if 0 <= title_idx < len(lines) - 1:
+                        candidate = lines[title_idx + 1]
+                        if 1 < len(candidate) < 100:
+                            company = candidate
+
+                    # Location: first remaining line that mentions
+                    # "remote" or contains a comma (City, ST format)
+                    search_from = max(title_idx + 1, 0)
+                    for ln in lines[search_from:]:
+                        if ln == company:
+                            continue
+                        low = ln.lower()
+                        if ("remote" in low or "," in ln) and len(ln) < 100:
+                            location = ln
+                            break
+
+                    if company:
+                        break
+                ancestor = parents.get(id(ancestor))
+
+            if not company:
+                continue
+
+            jobs.append({
+                "source": "LinkedIn",
+                "date_found": date.today().isoformat(),
+                "position": title,
+                "company": company,
+                "location": location,
+                "job_url": href,
+            })
+
+        return jobs
 
     # ── Dice ─────────────────────────────────────────────────────────────────
     #
