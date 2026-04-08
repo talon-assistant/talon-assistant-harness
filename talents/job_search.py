@@ -1799,6 +1799,15 @@ class JobSearchTalent(BaseTalent):
             f"in pierced DOM"
         )
 
+        # Diagnostic: when we find suspiciously few job anchors, dump a
+        # summary of what IS in the pierced tree so we can see whether
+        # the cards use a different element type / URL pattern entirely.
+        if len(anchors) < 3:
+            try:
+                self._dump_cdp_tree_summary(root)
+            except Exception as e:
+                log.warning(f"[JobSearch] CDP tree dump failed: {e}")
+
         jobs: list[dict] = []
         for entry in anchors:
             node = entry["node"]
@@ -1864,6 +1873,106 @@ class JobSearchTalent(BaseTalent):
             })
 
         return jobs
+
+    @classmethod
+    def _dump_cdp_tree_summary(cls, root: dict) -> None:
+        """Write a CDP tree summary to data/debug for diagnostic use.
+
+        Records:
+          - tag frequency table (so we can spot non-anchor card elements)
+          - all unique href values (so we can spot alternate URL patterns)
+          - all unique role / data-testid / componentkey attribute values
+          - frame / iframe contentDocument presence
+        """
+        from collections import Counter
+
+        tags: Counter = Counter()
+        hrefs: set[str] = set()
+        roles: Counter = Counter()
+        testids: Counter = Counter()
+        component_keys: set[str] = set()
+        sdui_components: set[str] = set()
+        iframe_count = 0
+        shadow_count = 0
+        text_with_job: set[str] = set()
+
+        def visit(node: dict) -> None:
+            nonlocal iframe_count, shadow_count
+            name = (node.get("nodeName") or "").lower()
+            if name and not name.startswith("#"):
+                tags[name] += 1
+            attrs = cls._cdp_attrs(node)
+            href = attrs.get("href")
+            if href:
+                hrefs.add(href[:200])
+            role = attrs.get("role")
+            if role:
+                roles[role] += 1
+            tid = attrs.get("data-testid")
+            if tid:
+                testids[tid] += 1
+            ck = attrs.get("componentkey")
+            if ck:
+                component_keys.add(ck)
+            sd = attrs.get("data-sdui-component")
+            if sd:
+                sdui_components.add(sd)
+            if name == "iframe":
+                iframe_count += 1
+            if node.get("shadowRoots"):
+                shadow_count += len(node["shadowRoots"])
+            # Capture short text nodes that mention "job" (to find
+            # rail markers without anchors)
+            if node.get("nodeType") == 3:
+                v = (node.get("nodeValue") or "").strip()
+                if v and "job" in v.lower() and len(v) < 80:
+                    text_with_job.add(v)
+
+        cls._cdp_walk(root, visit)
+
+        debug_dir = os.path.join(_data_dir(), "debug")
+        os.makedirs(debug_dir, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        path = os.path.join(debug_dir, f"linkedin_cdp_summary_{stamp}.txt")
+
+        lines = []
+        lines.append(f"=== CDP pierced DOM summary @ {stamp} ===")
+        lines.append(f"iframe nodes : {iframe_count}")
+        lines.append(f"shadow roots : {shadow_count}")
+        lines.append("")
+        lines.append("--- top 30 tag names ---")
+        for tag, count in tags.most_common(30):
+            lines.append(f"  {count:5d}  {tag}")
+        lines.append("")
+        lines.append(f"--- {len(hrefs)} unique href values ---")
+        for h in sorted(hrefs)[:80]:
+            lines.append(f"  {h}")
+        if len(hrefs) > 80:
+            lines.append(f"  ... and {len(hrefs) - 80} more")
+        lines.append("")
+        lines.append(f"--- {len(roles)} unique role values ---")
+        for role, count in roles.most_common(20):
+            lines.append(f"  {count:5d}  role={role}")
+        lines.append("")
+        lines.append(f"--- {len(testids)} unique data-testid values ---")
+        for tid, count in testids.most_common(40):
+            lines.append(f"  {count:5d}  {tid}")
+        lines.append("")
+        lines.append(f"--- {len(component_keys)} componentkey values ---")
+        for ck in sorted(component_keys)[:50]:
+            lines.append(f"  {ck}")
+        lines.append("")
+        lines.append(f"--- {len(sdui_components)} sdui-component values ---")
+        for sd in sorted(sdui_components)[:50]:
+            lines.append(f"  {sd}")
+        lines.append("")
+        lines.append(f"--- text nodes mentioning 'job' ({len(text_with_job)}) ---")
+        for t in sorted(text_with_job)[:60]:
+            lines.append(f"  {t}")
+
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines))
+        log.warning(f"[JobSearch] CDP tree summary dumped to {path}")
 
     # ── Dice ─────────────────────────────────────────────────────────────────
     #
