@@ -1523,6 +1523,31 @@ class JobSearchTalent(BaseTalent):
                     })
 
             log.info(f"[JobSearch] LinkedIn: {len(jobs)} listings")
+
+            # If we got nothing, dump what headless Chrome actually saw so
+            # we can debug selector / authwall / A/B-variant issues without
+            # having to guess from a blind log line.
+            if not jobs:
+                try:
+                    debug_dir = os.path.join(_data_dir(), "debug")
+                    os.makedirs(debug_dir, exist_ok=True)
+                    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    png_path = os.path.join(
+                        debug_dir, f"linkedin_empty_{stamp}.png"
+                    )
+                    html_path = os.path.join(
+                        debug_dir, f"linkedin_empty_{stamp}.html"
+                    )
+                    driver.save_screenshot(png_path)
+                    with open(html_path, "w", encoding="utf-8") as f:
+                        f.write(driver.page_source or "")
+                    log.warning(
+                        f"[JobSearch] LinkedIn returned 0 listings; "
+                        f"dumped {png_path} and {html_path} "
+                        f"(current_url={driver.current_url})"
+                    )
+                except Exception as e:
+                    log.warning(f"[JobSearch] Debug dump failed: {e}")
         finally:
             driver.quit()
 
