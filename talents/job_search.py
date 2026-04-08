@@ -452,20 +452,52 @@ class JobSearchTalent(BaseTalent):
         preview_path.write_text(preview_md, encoding="utf-8")
         notes_path.write_text(notes_md, encoding="utf-8")
 
+        # Phase 2: render DOCX from the template, then convert to PDF
+        from core.resume_docx import (
+            DEFAULT_TEMPLATE_PATH,
+            TemplateRenderer,
+            convert_to_pdf,
+        )
+
+        saved_files = [str(preview_path), str(notes_path)]
+        docx_path = out_dir / f"{safe_company}_{safe_position}_resume.docx"
+        pdf_path: Path | None = None
+        try:
+            if not DEFAULT_TEMPLATE_PATH.exists():
+                log.warning(
+                    f"[JobSearch] Resume template missing: {DEFAULT_TEMPLATE_PATH}"
+                )
+            else:
+                TemplateRenderer().render(library, selection, docx_path)
+                saved_files.append(str(docx_path))
+                pdf_path = convert_to_pdf(docx_path)
+                if pdf_path:
+                    saved_files.append(str(pdf_path))
+        except Exception as e:
+            log.error(f"[JobSearch] DOCX render failed: {e}")
+
         total_bullets = sum(len(v) for v in selection.picks.values())
         log.info(
-            f"[JobSearch] Resume preview built for #{app['id']} "
+            f"[JobSearch] Resume materials built for #{app['id']} "
             f"{app['company']} ({total_bullets} bullets)"
         )
 
+        file_list = "\n".join(f"  {f}" for f in saved_files)
+        formats = []
+        if docx_path.exists():
+            formats.append("DOCX")
+        if pdf_path and pdf_path.exists():
+            formats.append("PDF")
+        formats_line = (
+            f" ({' + '.join(formats)} ready for upload)" if formats else ""
+        )
+
         return _ok(
-            f"Tailored resume preview for **{app['company']}** "
+            f"Tailored materials for **{app['company']}** "
             f"({app['position']}) saved:\n\n"
-            f"  {preview_path}\n"
-            f"  {notes_path}\n\n"
+            f"{file_list}\n\n"
             f"Picked {total_bullets} bullets across "
-            f"{len(selection.picks)} sections. "
-            f"Review the preview, then we can move to Phase 2 (DOCX/PDF)."
+            f"{len(selection.picks)} sections{formats_line}."
         )
 
     # ── Cover letter generation via Claude CLI ─────────────────────────────
