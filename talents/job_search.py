@@ -879,6 +879,211 @@ class JobSearchTalent(BaseTalent):
             log.warning(f"[JobSearch] Could not fetch JD: {e}")
             return ""
 
+    def scrape_and_add_from_url(self, job_url: str) -> dict:
+        """Drop-in entry point for the Job Inbox dialog.
+
+        Takes a raw URL the user pasted, scrapes the page for company +
+        title + location + JD text, writes the row to the tracker DB, and
+        kicks off background fit scoring. Returns a dict shaped like:
+            {
+                "success": bool,
+                "error": str,          # present on failure
+                "id": int,             # tracker row id (on success)
+                "company": str,
+                "position": str,
+                "location": str,
+                "job_url": str,
+                "source": str,         # "LinkedIn" / "Dice" / "Built In" / "Manual"
+                "duplicate": bool,     # True if the URL was already in the tracker
+            }
+        """
+        from talents.job_tracker import _DB, _data_dir as tracker_data_dir
+
+        url = (job_url or "").strip()
+        if not url or not url.startswith("http"):
+            return {"success": False, "error": "Not a valid URL."}
+
+        site = _detect_site(url)
+        source_label = {
+            "linkedin": "LinkedIn",
+            "dice": "Dice",
+            "builtin": "Built In",
+        }.get(site, "Manual")
+
+        # Dedup by bare URL before spinning up Chrome
+        db_path = os.path.join(tracker_data_dir(), "job_tracker.db")
+        db = _DB(db_path)
+        bare_url = url.split("?")[0]
+        for existing in db.list_all(include_archived=True):
+            if (existing.get("job_url") or "").split("?")[0] == bare_url:
+                return {
+                    "success": True,
+                    "duplicate": True,
+                    "id": existing["id"],
+                    "company": existing.get("company", ""),
+                    "position": existing.get("position", ""),
+                    "location": existing.get("location", ""),
+                    "job_url": existing.get("job_url", url),
+                    "source": existing.get("source", source_label),
+                }
+
+        # Scrape the page
+        parsed = self._scrape_posting_page(url)
+        if not parsed or not parsed.get("position"):
+            return {
+                "success": False,
+                "error": (
+                    "Could not extract a job title from that URL. "
+                    "Check the link or try opening it in Chrome first."
+                ),
+            }
+
+        # Insert the row
+        try:
+            app_id = db.add_application(
+                company=parsed.get("company") or "Unknown",
+                position=parsed["position"],
+                location=parsed.get("location", ""),
+                source=source_label,
+                status="new",
+                date_found=date.today().isoformat(),
+                job_url=url,
+                job_description=parsed.get("job_description", ""),
+            )
+        except Exception as e:
+            log.error(f"[JobSearch] Drop-in add failed: {e}")
+            return {"success": False, "error": f"DB insert failed: {e}"}
+
+        log.info(
+            f"[JobSearch] Drop-in job added #{app_id}: "
+            f"{parsed.get('company')} - {parsed['position']}"
+        )
+
+        # Kick off scoring in the background so the UI doesn't block
+        self._run_fit_analysis([{
+            "id": app_id,
+            "company": parsed.get("company") or "Unknown",
+            "position": parsed["position"],
+            "location": parsed.get("location", ""),
+            "job_url": url,
+            "source": source_label,
+        }])
+
+        return {
+            "success": True,
+            "duplicate": False,
+            "id": app_id,
+            "company": parsed.get("company") or "Unknown",
+            "position": parsed["position"],
+            "location": parsed.get("location", ""),
+            "job_url": url,
+            "source": source_label,
+        }
+
+    def _scrape_posting_page(self, url: str) -> dict:
+        """Scrape a single job posting URL for metadata + JD.
+
+        Best-effort: pulls og:title / og:site_name from meta tags, falls
+        back to <h1> and document.title, and grabs the visible body text
+        for the JD. Works on most ATS pages and job boards without
+        site-specific parsers.
+        """
+        from selenium.webdriver.common.by import By
+
+        driver = self._create_driver(headless=True)
+        result: dict = {}
+        try:
+            driver.set_page_load_timeout(30)
+            try:
+                driver.get(url)
+            except Exception as e:
+                log.warning(f"[JobSearch] Drop-in page load warn: {e}")
+            time.sleep(4)
+
+            def _meta(name: str) -> str:
+                try:
+                    el = driver.find_element(
+                        By.CSS_SELECTOR, f'meta[property="{name}"]'
+                    )
+                    return (el.get_attribute("content") or "").strip()
+                except Exception:
+                    return ""
+
+            og_title = _meta("og:title")
+            og_site = _meta("og:site_name")
+            page_title = (driver.title or "").strip()
+
+            # Position heuristic: prefer og:title, else first <h1>, else page title
+            position = og_title
+            if not position:
+                try:
+                    h1 = driver.find_element(By.TAG_NAME, "h1")
+                    position = (h1.text or "").strip().split("\n")[0]
+                except Exception:
+                    pass
+            if not position:
+                position = page_title
+
+            # Strip obvious boilerplate suffixes from the title
+            for sep in (" | ", " - ", " – ", " — ", " at "):
+                if sep in position and len(position) > 30:
+                    # Usually "Title | Company" or "Title at Company"
+                    left, right = position.split(sep, 1)
+                    if not result.get("company") and 2 < len(right) < 80:
+                        result["company"] = right.strip()
+                    position = left.strip()
+                    break
+
+            result["position"] = position
+
+            # Company heuristic: og:site_name, or common ATS company selectors
+            if not result.get("company"):
+                result["company"] = og_site
+            if not result.get("company"):
+                for sel in (
+                    '[data-testid="inlineHeader-companyName"]',  # Greenhouse
+                    '.company-name',
+                    '[class*="company"]',
+                    'a[href*="/company/"]',
+                ):
+                    try:
+                        el = driver.find_element(By.CSS_SELECTOR, sel)
+                        txt = (el.text or "").strip().split("\n")[0]
+                        if txt and 1 < len(txt) < 80:
+                            result["company"] = txt
+                            break
+                    except Exception:
+                        pass
+
+            # Location heuristic
+            for sel in (
+                '[data-testid*="location"]',
+                '[class*="location"]',
+                '.posting-categories .location',
+            ):
+                try:
+                    el = driver.find_element(By.CSS_SELECTOR, sel)
+                    txt = (el.text or "").strip().split("\n")[0]
+                    if txt and len(txt) < 100:
+                        result["location"] = txt
+                        break
+                except Exception:
+                    pass
+
+            # JD body
+            try:
+                body = driver.find_element(By.TAG_NAME, "body").text or ""
+                if len(body) > 10000:
+                    body = body[:6000] + "\n[...truncated...]\n" + body[-4000:]
+                result["job_description"] = body
+            except Exception:
+                result["job_description"] = ""
+
+        finally:
+            driver.quit()
+
+        return result
+
     @staticmethod
     def _write_cover_letter_docx(letter_text: str, output_path: Path,
                                   app: dict) -> None:

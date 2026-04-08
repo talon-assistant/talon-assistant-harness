@@ -318,6 +318,17 @@ class _DB:
             )
             return cur.rowcount > 0
 
+    def hard_delete(self, app_id: int) -> bool:
+        """Permanently delete an application row and its follow-ups."""
+        with self._connect() as conn:
+            conn.execute(
+                "DELETE FROM follow_ups WHERE application_id = ?", (app_id,)
+            )
+            cur = conn.execute(
+                "DELETE FROM applications WHERE id = ?", (app_id,)
+            )
+            return cur.rowcount > 0
+
     # -- follow-ups --
 
     def add_follow_up(self, application_id: int, due_date: str,

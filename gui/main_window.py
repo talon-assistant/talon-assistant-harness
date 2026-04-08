@@ -187,6 +187,15 @@ class MainWindow(QMainWindow):
         talent_mgr_action.triggered.connect(self._open_talent_manager)
         tools_menu.addAction(talent_mgr_action)
 
+        job_inbox_action = QAction("Job Inbox...", self)
+        job_inbox_action.setShortcut("Ctrl+Alt+I")
+        job_inbox_action.setToolTip(
+            "Browse tracked jobs, manage status, build resumes and cover letters, "
+            "drop in a URL to add a new job manually"
+        )
+        job_inbox_action.triggered.connect(self._open_job_inbox)
+        tools_menu.addAction(job_inbox_action)
+
         # ── Help menu ─────────────────────────────────────────
         help_menu = menubar.addMenu("Help")
 
@@ -649,6 +658,17 @@ class MainWindow(QMainWindow):
             return
         from gui.dialogs.talent_manager_dialog import TalentManagerDialog
         dlg = TalentManagerDialog(
+            assistant=self.bridge.assistant,
+            bridge=self.bridge,
+            parent=self,
+        )
+        dlg.show()
+
+    def _open_job_inbox(self):
+        if self.bridge.assistant is None:
+            return
+        from gui.dialogs.job_inbox_dialog import JobInboxDialog
+        dlg = JobInboxDialog(
             assistant=self.bridge.assistant,
             bridge=self.bridge,
             parent=self,
