@@ -66,24 +66,100 @@ def _is_bullet(p) -> bool:
     return pPr.find(qn('w:numPr')) is not None
 
 
-def _set_paragraph_text(p_elem, text: str, *, strip_bold: bool = True) -> None:
-    """Replace the paragraph's runs with a single run containing `text`,
-    preserving the first run's rPr so font/style stick.
+_XML_SPACE = '{http://www.w3.org/XML/1998/namespace}space'
 
-    By default, removes <w:b/> and <w:bCs/> so the new run isn't fully bold
-    even if it was cloned from a paragraph with a bold lead-in.
+
+def _split_bold_lead(text: str) -> tuple[str, str]:
+    """Split a bullet into (bold_lead, rest) for the bold lead-in style.
+
+    Tries strong punctuation, then strong prepositions, then weak prepositions,
+    then commas, then a short last-resort split, then a 5-word fallback.
+    Returns (text, '') if no reasonable split exists (very short bullets).
+    """
+    def best(breaks: tuple[str, ...], min_w: int, max_w: int):
+        best_idx = None
+        for brk in breaks:
+            idx = text.find(brk)
+            if idx <= 0:
+                continue
+            wc = len(text[:idx].split())
+            if min_w <= wc <= max_w and (best_idx is None or idx < best_idx):
+                best_idx = idx
+        if best_idx is None:
+            return None
+        return text[:best_idx], text[best_idx:]
+
+    # Tier 1: strong punctuation
+    r = best((': ', '. '), 2, 13)
+    if r:
+        return r
+    # Tier 2: strong prepositions
+    r = best((
+        ' by ', ' through ', ' across ', ' spanning ', ' using ',
+        ' covering ', ' serving ', ' enabling ', ' satisfying ',
+        ' protecting ', ' supporting ', ' against ', ' under ',
+    ), 3, 10)
+    if r:
+        return r
+    # Tier 3: weak prepositions
+    r = best((' for ', ' with ', ' from ', ' into ', ' including '), 3, 10)
+    if r:
+        return r
+    # Tier 4: comma
+    r = best((', ',), 3, 12)
+    if r:
+        return r
+    # Tier 5: short last resort
+    r = best((' of ', ' to ', ' in ', ' on ', ' at '), 1, 4)
+    if r:
+        return r
+    # Final fallback: first 5 words
+    words = text.split()
+    if len(words) >= 5:
+        bold = ' '.join(words[:5])
+        return bold, text[len(bold):]
+    return text, ''
+
+
+def _make_t(parent_run, text: str):
+    t = etree.SubElement(parent_run, qn('w:t'))
+    t.text = text
+    t.set(_XML_SPACE, 'preserve')
+    return t
+
+
+def _strip_bold_from_rpr(rPr) -> None:
+    if rPr is None:
+        return
+    for tag in ('w:b', 'w:bCs'):
+        for el in rPr.findall(qn(tag)):
+            rPr.remove(el)
+
+
+def _ensure_bold_in_rpr(rPr) -> None:
+    if rPr is None:
+        return
+    if rPr.find(qn('w:b')) is None:
+        b = etree.SubElement(rPr, qn('w:b'))  # noqa: F841
+
+
+def _set_paragraph_text(p_elem, text: str, *, allow_bold_lead: bool = True) -> None:
+    """Replace the paragraph's runs with new content for `text`.
+
+    If `allow_bold_lead` is True (default), splits the text into a bold
+    lead-in run + a normal trailing run, preserving the first run's rPr
+    formatting (font, color, size) on both runs. If no reasonable split
+    is found, falls back to a single non-bold run.
     """
     runs = p_elem.findall(qn('w:r'))
     if not runs:
         r = etree.SubElement(p_elem, qn('w:r'))
-        t = etree.SubElement(r, qn('w:t'))
-        t.text = text
-        t.set('{http://www.w3.org/XML/1998/namespace}space', 'preserve')
+        _make_t(r, text)
         return
 
     first = runs[0]
-    # Preserve rPr; drop everything else inside the run except the first <w:t>
     rPr = first.find(qn('w:rPr'))
+    # Drop everything inside the first run except its rPr
     for child in list(first):
         if child.tag != qn('w:rPr'):
             first.remove(child)
@@ -91,19 +167,32 @@ def _set_paragraph_text(p_elem, text: str, *, strip_bold: bool = True) -> None:
     for r in runs[1:]:
         p_elem.remove(r)
 
-    if rPr is not None and strip_bold:
-        for tag in ('w:b', 'w:bCs'):
-            for el in rPr.findall(qn(tag)):
-                rPr.remove(el)
+    bold_lead, rest = ('', text)
+    if allow_bold_lead:
+        bold_lead, rest = _split_bold_lead(text)
 
-    # Add a fresh <w:t>
-    t = etree.SubElement(first, qn('w:t'))
-    t.text = text
-    t.set('{http://www.w3.org/XML/1998/namespace}space', 'preserve')
-    if rPr is not None:
+    if bold_lead and rest:
+        # Two-run path: first bold, second normal
+        if rPr is None:
+            rPr = etree.SubElement(first, qn('w:rPr'))
+        _ensure_bold_in_rpr(rPr)
         # Make sure rPr stays first
         first.remove(rPr)
         first.insert(0, rPr)
+        _make_t(first, bold_lead)
+
+        second = etree.SubElement(p_elem, qn('w:r'))
+        rPr2 = deepcopy(rPr)
+        _strip_bold_from_rpr(rPr2)
+        second.insert(0, rPr2)
+        _make_t(second, rest)
+    else:
+        # Single-run path: strip bold so flat text doesn't render bolded
+        _strip_bold_from_rpr(rPr)
+        if rPr is not None:
+            first.remove(rPr)
+            first.insert(0, rPr)
+        _make_t(first, text)
 
 
 def _replace_block(template_para, count_old: int, new_texts: list[str]) -> None:
@@ -236,8 +325,8 @@ def _replace_italic_run_text(p_elem, text: str) -> bool:
 
 
 def _replace_full_paragraph_text(p_elem, text: str) -> None:
-    """Like _set_paragraph_text but used for the closing italic line."""
-    _set_paragraph_text(p_elem, text)
+    """Used for the Talon italic closing line — keep it italic, no bold lead."""
+    _set_paragraph_text(p_elem, text, allow_bold_lead=False)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -267,7 +356,9 @@ class TemplateRenderer:
             doc = Document(staged)
 
             self._replace_career_highlights(doc, library, selection)
-            self._insert_core_competencies(doc, library, selection)
+            # Core Competencies is skipped: the template uses a table for this
+            # section that we shouldn't duplicate. leadership_scope library
+            # picks remain available for cover letter use.
             self._replace_role_bullets(doc, library, selection)
             self._replace_talon_section(doc, library, selection)
 
