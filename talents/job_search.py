@@ -28,6 +28,7 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 import time
 import threading
 from datetime import date, datetime
@@ -254,7 +255,7 @@ class JobSearchTalent(BaseTalent):
     def _handle_login(self) -> dict:
         """Open Chrome with the dedicated profile so user can log into LinkedIn."""
         try:
-            driver = self._create_driver(headless=False)
+            driver = self._create_driver_persistent(headless=False)
             driver.get("https://www.linkedin.com/login")
             return _ok(
                 "Chrome opened to LinkedIn login. Sign in, then close the "
@@ -267,13 +268,13 @@ class JobSearchTalent(BaseTalent):
 
     # ── Selenium driver ──────────────────────────────────────────────────────
 
-    def _create_driver(self, headless: bool = True):
+    def _build_driver(self, profile_dir: str, headless: bool, bypass_cache: bool):
         from selenium import webdriver
         from selenium.webdriver.chrome.options import Options
         from selenium.webdriver.chrome.service import Service
 
         options = Options()
-        options.add_argument(f"--user-data-dir={self._profile_dir}")
+        options.add_argument(f"--user-data-dir={profile_dir}")
         options.add_argument("--disable-blink-features=AutomationControlled")
         options.add_argument("--window-size=1920,1080")
         options.add_argument("--no-sandbox")
@@ -284,7 +285,6 @@ class JobSearchTalent(BaseTalent):
         if headless:
             options.add_argument("--headless=new")
 
-        # Prefer webdriver-manager if installed; fall back to system chromedriver
         try:
             from webdriver_manager.chrome import ChromeDriverManager
             service = Service(ChromeDriverManager().install())
@@ -292,13 +292,43 @@ class JobSearchTalent(BaseTalent):
             service = Service()
 
         driver = webdriver.Chrome(service=service, options=options)
-        # Mask webdriver fingerprint
         driver.execute_cdp_cmd(
             "Page.addScriptToEvaluateOnNewDocument",
             {"source": "Object.defineProperty(navigator, 'webdriver', "
                        "{get: () => undefined})"},
         )
+        if bypass_cache:
+            # Kill the HTTP cache + service workers without nuking cookies.
+            # Keeps the LinkedIn login intact while preventing stale search
+            # results from a baked-in disk cache or stuck SW.
+            try:
+                driver.execute_cdp_cmd(
+                    "Network.setCacheDisabled", {"cacheDisabled": True}
+                )
+                driver.execute_cdp_cmd(
+                    "Network.setBypassServiceWorker", {"bypass": True}
+                )
+            except Exception as e:
+                log.warning(f"[JobSearch] CDP cache-bypass failed: {e}")
         return driver
+
+    def _create_driver_persistent(self, headless: bool = True):
+        """Driver bound to the saved LinkedIn profile (keeps li_at cookie)."""
+        return self._build_driver(self._profile_dir, headless, bypass_cache=True)
+
+    def _create_driver_clean(self, headless: bool = True) -> tuple:
+        """Driver with a throwaway profile. Returns (driver, temp_dir).
+
+        Caller is responsible for ``shutil.rmtree(temp_dir, ignore_errors=True)``
+        in a finally block. No login state, no cache pollution between runs.
+        """
+        temp_dir = tempfile.mkdtemp(prefix="talon_jobsearch_")
+        try:
+            driver = self._build_driver(temp_dir, headless, bypass_cache=False)
+        except Exception:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            raise
+        return driver, temp_dir
 
     # ── Score existing unscored jobs ────────────────────────────────────────
 
@@ -832,52 +862,58 @@ class JobSearchTalent(BaseTalent):
             f"{formats_line}"
         )
 
-    @staticmethod
-    def _fetch_job_description(job_url: str) -> str:
-        """Scrape job description text from a URL using selenium."""
+    def _fetch_job_description(self, job_url: str) -> str:
+        """Scrape job description text from a URL using selenium.
+
+        LinkedIn URLs use the persistent profile (auth required); everything
+        else gets a throwaway profile so we don't pollute the login profile
+        with cached ATS pages or contend for its lock.
+        """
         try:
-            from selenium import webdriver
-            from selenium.webdriver.chrome.options import Options
-            from selenium.webdriver.chrome.service import Service
             from selenium.webdriver.common.by import By
+        except Exception as e:
+            log.warning(f"[JobSearch] Selenium unavailable: {e}")
+            return ""
 
-            data_dir = os.path.join(
-                os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                "data", "job_search_chrome_profile",
-            )
-            options = Options()
-            options.add_argument(f"--user-data-dir={data_dir}")
-            options.add_argument("--headless=new")
-            options.add_argument("--disable-blink-features=AutomationControlled")
-            options.add_argument("--no-sandbox")
-            options.add_argument("--disable-dev-shm-usage")
+        is_linkedin = "linkedin.com" in (job_url or "").lower()
+        temp_dir: str | None = None
+        try:
+            if is_linkedin:
+                driver = self._create_driver_persistent(headless=True)
+            else:
+                driver, temp_dir = self._create_driver_clean(headless=True)
+        except Exception as e:
+            log.warning(f"[JobSearch] Could not start driver for JD: {e}")
+            return ""
 
+        try:
+            driver.set_page_load_timeout(25)
             try:
-                from webdriver_manager.chrome import ChromeDriverManager
-                service = Service(ChromeDriverManager().install())
-            except ImportError:
-                service = Service()
-
-            driver = webdriver.Chrome(service=service, options=options)
+                driver.get(job_url)
+            except Exception as e:
+                log.warning(f"[JobSearch] JD page load timed out: {e}")
+            time.sleep(4)
             try:
-                driver.set_page_load_timeout(25)
-                try:
-                    driver.get(job_url)
-                except Exception as e:
-                    log.warning(f"[JobSearch] JD page load timed out: {e}")
-                time.sleep(4)
                 body = driver.find_element(By.TAG_NAME, "body").text
-                # Keep both ends of the JD: requirements often live mid/late,
-                # qualifications at the top.
-                if len(body) > 10000:
-                    body = body[:6000] + "\n[...truncated...]\n" + body[-4000:]
-                log.info(f"[JobSearch] Fetched JD: {len(body)} chars")
-                return body
-            finally:
-                driver.quit()
+            except Exception as e:
+                log.warning(f"[JobSearch] JD body read failed: {e}")
+                return ""
+            # Keep both ends of the JD: requirements often live mid/late,
+            # qualifications at the top.
+            if len(body) > 10000:
+                body = body[:6000] + "\n[...truncated...]\n" + body[-4000:]
+            log.info(f"[JobSearch] Fetched JD: {len(body)} chars")
+            return body
         except Exception as e:
             log.warning(f"[JobSearch] Could not fetch JD: {e}")
             return ""
+        finally:
+            try:
+                driver.quit()
+            except Exception:
+                pass
+            if temp_dir:
+                shutil.rmtree(temp_dir, ignore_errors=True)
 
     def scrape_and_add_from_url(self, job_url: str) -> dict:
         """Drop-in entry point for the Job Inbox dialog.
@@ -990,7 +1026,7 @@ class JobSearchTalent(BaseTalent):
         """
         from selenium.webdriver.common.by import By
 
-        driver = self._create_driver(headless=True)
+        driver, temp_dir = self._create_driver_clean(headless=True)
         result: dict = {}
         try:
             driver.set_page_load_timeout(30)
@@ -1080,7 +1116,10 @@ class JobSearchTalent(BaseTalent):
                 result["job_description"] = ""
 
         finally:
-            driver.quit()
+            try:
+                driver.quit()
+            finally:
+                shutil.rmtree(temp_dir, ignore_errors=True)
 
         return result
 
@@ -1298,7 +1337,7 @@ class JobSearchTalent(BaseTalent):
         from selenium.webdriver.support.ui import WebDriverWait
         from selenium.webdriver.support import expected_conditions as EC
 
-        driver = self._create_driver(headless=True)
+        driver = self._create_driver_persistent(headless=True)
         jobs: list[dict] = []
 
         try:
@@ -1530,7 +1569,7 @@ class JobSearchTalent(BaseTalent):
         from selenium.webdriver.support.ui import WebDriverWait
         from selenium.webdriver.support import expected_conditions as EC
 
-        driver = self._create_driver(headless=True)
+        driver, temp_dir = self._create_driver_clean(headless=True)
         jobs: list[dict] = []
         seen_urls: set[str] = set()
         max_pages = 5
@@ -1588,7 +1627,10 @@ class JobSearchTalent(BaseTalent):
 
             log.info(f"[JobSearch] Dice: {len(jobs)} listings")
         finally:
-            driver.quit()
+            try:
+                driver.quit()
+            finally:
+                shutil.rmtree(temp_dir, ignore_errors=True)
 
         return jobs
 
@@ -1676,7 +1718,7 @@ class JobSearchTalent(BaseTalent):
         from selenium.webdriver.support.ui import WebDriverWait
         from selenium.webdriver.support import expected_conditions as EC
 
-        driver = self._create_driver(headless=True)
+        driver, temp_dir = self._create_driver_clean(headless=True)
         jobs: list[dict] = []
         seen_urls: set[str] = set()
 
@@ -1741,7 +1783,10 @@ class JobSearchTalent(BaseTalent):
                 f"after {attempt + 1} passes"
             )
         finally:
-            driver.quit()
+            try:
+                driver.quit()
+            finally:
+                shutil.rmtree(temp_dir, ignore_errors=True)
 
         return jobs
 

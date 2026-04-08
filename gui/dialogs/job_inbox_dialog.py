@@ -399,13 +399,13 @@ class JobInboxDialog(QDialog):
             )
 
             for b in (btn_all, btn_res, btn_cl, btn_open, btn_del):
-                b.setFixedHeight(24)
+                b.setFixedHeight(28)
                 b.setMinimumWidth(62)
                 ab.addWidget(b)
 
             self._table.setCellWidget(r, 8, actions)
             # Make sure the row is tall enough for the action buttons
-            self._table.setRowHeight(r, 30)
+            self._table.setRowHeight(r, 36)
 
         self._table.setSortingEnabled(True)
 
