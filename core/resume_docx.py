@@ -101,8 +101,13 @@ def _split_bold_lead(text: str) -> tuple[str, str]:
     ), 3, 10)
     if r:
         return r
-    # Tier 3: weak prepositions
-    r = best((' for ', ' with ', ' from ', ' into ', ' including '), 3, 10)
+    # Tier 3: weak prepositions, clause boundaries, participial modifiers
+    r = best((
+        ' for ', ' with ', ' from ', ' into ', ' including ',
+        ' that ', ' which ',
+        ' aligned ', ' based ', ' grounded ', ' focused ', ' built ',
+        ' designed ', ' powered ',
+    ), 3, 11)
     if r:
         return r
     # Tier 4: comma
