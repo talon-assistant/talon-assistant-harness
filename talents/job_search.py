@@ -91,6 +91,8 @@ class JobSearchTalent(BaseTalent):
         "cover letter",
         "prepare materials", "tailor resume", "tailored resume",
         "customize resume", "customized resume",
+        "prepare everything", "prep everything", "full application",
+        "everything for",
     ]
     examples = [
         "search for jobs",
@@ -109,6 +111,7 @@ class JobSearchTalent(BaseTalent):
         "write a cover letter for #3",
         "prepare materials for #3",
         "tailor resume for #3",
+        "prepare everything for #3",
     ]
     priority = 62
     required_packages = ["selenium"]
@@ -178,6 +181,13 @@ class JobSearchTalent(BaseTalent):
         # "score my jobs" / "run fit analysis" — score unscored existing jobs
         if re.search(r'\b(score|fit analysis|analyze|evaluate)\b', cmd):
             return self._handle_score_existing()
+
+        # Full bundle: tailored resume + cover letter in one shot
+        if ("prepare everything" in cmd
+                or "prep everything" in cmd
+                or "full application" in cmd
+                or "everything for" in cmd):
+            return self._handle_prepare_everything(command)
 
         # Tailored resume / full application materials via Claude CLI
         if ("prepare materials" in cmd
@@ -333,6 +343,55 @@ class JobSearchTalent(BaseTalent):
         )
 
     # ── Tailored resume (materials prep) via Claude CLI ─────────────────────
+
+    def _handle_prepare_everything(self, command: str) -> dict:
+        """Run both the tailored resume build and the cover letter in one
+        shot. Returns a merged response listing every file produced.
+
+        Command form: "prepare everything for #N" or
+        "prepare everything for [company]".
+        """
+        resume_res = self._handle_prepare_materials(command)
+        letter_res = self._handle_cover_letter(command)
+
+        resume_ok = bool(resume_res.get("success"))
+        letter_ok = bool(letter_res.get("success"))
+        resume_msg = resume_res.get("response", "") or ""
+        letter_msg = letter_res.get("response", "") or ""
+
+        # Total failure: bubble both errors up
+        if not resume_ok and not letter_ok:
+            return _fail(
+                "Prepare everything failed on both steps.\n\n"
+                f"Resume: {resume_msg}\n\nCover letter: {letter_msg}"
+            )
+
+        # Partial success: still return ok so files that were written aren't hidden
+        if resume_ok and not letter_ok:
+            return _ok(
+                f"{resume_msg}\n\n"
+                f"Cover letter step failed: {letter_msg}"
+            )
+        if letter_ok and not resume_ok:
+            return _ok(
+                f"Resume step failed: {resume_msg}\n\n"
+                f"{letter_msg}"
+            )
+
+        # Full success: merge both payloads
+        actions = []
+        actions.extend(resume_res.get("actions_taken") or [])
+        actions.extend(letter_res.get("actions_taken") or [])
+        return {
+            "success": True,
+            "response": (
+                "Full application package ready.\n\n"
+                f"{resume_msg}\n\n"
+                f"{letter_msg}"
+            ),
+            "actions_taken": actions,
+            "spoken": "Full application package ready.",
+        }
 
     def _handle_prepare_materials(self, command: str) -> dict:
         """Phase 1: build a tailored resume preview by selecting bullets
