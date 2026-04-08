@@ -1323,6 +1323,41 @@ class JobSearchTalent(BaseTalent):
 
             time.sleep(2)
 
+            # ── Lazy-load loop: scroll the last visible job card into view
+            # repeatedly until card count plateaus. LinkedIn renders ~25
+            # cards per intersection-observer fire, and the page won't load
+            # the next batch unless something near the bottom is scrolled
+            # into view. Cap iterations so a stuck scroll can't hang us.
+            last_count = 0
+            stable_passes = 0
+            for attempt in range(20):
+                cards = driver.find_elements(
+                    By.CSS_SELECTOR, "div[data-job-id]"
+                )
+                if cards:
+                    try:
+                        driver.execute_script(
+                            "arguments[0].scrollIntoView({block: 'end'});",
+                            cards[-1],
+                        )
+                    except Exception:
+                        pass
+                time.sleep(1.5)
+                new_count = len(driver.find_elements(
+                    By.CSS_SELECTOR, "div[data-job-id]"
+                ))
+                if new_count == last_count:
+                    stable_passes += 1
+                    if stable_passes >= 2:
+                        break
+                else:
+                    stable_passes = 0
+                last_count = new_count
+            log.info(
+                f"[JobSearch] LinkedIn scroll loop: {last_count} cards "
+                f"after {attempt + 1} passes"
+            )
+
             # Strategy 1: card-based (standard search page)
             cards = driver.find_elements(By.CSS_SELECTOR, "div[data-job-id]")
             if cards:
@@ -1486,66 +1521,85 @@ class JobSearchTalent(BaseTalent):
     # walk up to the card-level parent and parse its text lines.
 
     def _scrape_dice(self, url: str) -> list[dict]:
-        """Scrape job listings from Dice.com search results."""
+        """Scrape job listings from Dice.com search results.
+
+        Walks pages 1..N by setting ?page=K on the URL. Stops when a page
+        adds zero new jobs or after the hard cap, whichever comes first.
+        """
         from selenium.webdriver.common.by import By
         from selenium.webdriver.support.ui import WebDriverWait
         from selenium.webdriver.support import expected_conditions as EC
 
         driver = self._create_driver(headless=True)
         jobs: list[dict] = []
+        seen_urls: set[str] = set()
+        max_pages = 5
 
         try:
-            driver.get(url)
-            time.sleep(5)
+            for page_num in range(1, max_pages + 1):
+                page_url = self._dice_url_with_page(url, page_num)
+                driver.get(page_url)
+                time.sleep(5)
 
-            # Wait for job links to render
-            try:
-                WebDriverWait(driver, 15).until(
-                    EC.presence_of_element_located((
-                        By.CSS_SELECTOR,
-                        'a[href*="/job-detail/"]',
-                    ))
+                try:
+                    WebDriverWait(driver, 15).until(
+                        EC.presence_of_element_located((
+                            By.CSS_SELECTOR,
+                            'a[href*="/job-detail/"]',
+                        ))
+                    )
+                except Exception:
+                    pass
+                time.sleep(3)
+
+                links = driver.find_elements(
+                    By.CSS_SELECTOR, 'a[href*="/job-detail/"]'
                 )
-            except Exception:
-                pass
+                page_added = 0
+                for link in links:
+                    href = (link.get_attribute("href") or "").split("?")[0]
+                    if not href or href in seen_urls:
+                        continue
 
-            time.sleep(3)
+                    # Walk up to find the card container
+                    card_el = link
+                    for _ in range(8):
+                        card_el = card_el.find_element(By.XPATH, "..")
+                        card_text = card_el.text or ""
+                        lines = [ln.strip() for ln in card_text.split("\n")
+                                 if ln.strip()]
+                        if len(lines) >= 3:
+                            break
+                    else:
+                        continue
 
-            # Collect unique job URLs and their card parents
-            seen_urls: set[str] = set()
-            links = driver.find_elements(
-                By.CSS_SELECTOR, 'a[href*="/job-detail/"]'
-            )
+                    job = self._parse_dice_card_text(lines, href)
+                    if job:
+                        seen_urls.add(href)
+                        jobs.append(job)
+                        page_added += 1
 
-            for link in links:
-                href = (link.get_attribute("href") or "").split("?")[0]
-                if not href or href in seen_urls:
-                    continue
-                seen_urls.add(href)
-
-                # Walk up to find the card container (div with multiple text lines)
-                card_el = link
-                for _ in range(8):
-                    card_el = card_el.find_element(By.XPATH, "..")
-                    card_text = card_el.text or ""
-                    lines = [ln.strip() for ln in card_text.split("\n")
-                             if ln.strip()]
-                    # A proper card has at least 3 text lines:
-                    # company, apply button, title, location...
-                    if len(lines) >= 3:
-                        break
-                else:
-                    continue
-
-                job = self._parse_dice_card_text(lines, href)
-                if job:
-                    jobs.append(job)
+                log.info(
+                    f"[JobSearch] Dice page {page_num}: +{page_added} "
+                    f"({len(jobs)} total)"
+                )
+                if page_added == 0:
+                    break
 
             log.info(f"[JobSearch] Dice: {len(jobs)} listings")
         finally:
             driver.quit()
 
         return jobs
+
+    @staticmethod
+    def _dice_url_with_page(url: str, page_num: int) -> str:
+        """Return the Dice search URL with ?page=N set (replacing any prior)."""
+        parsed = urlparse(url)
+        params = parse_qs(parsed.query, keep_blank_values=True)
+        params["page"] = [str(page_num)]
+        flat = {k: v[0] if len(v) == 1 else v for k, v in params.items()}
+        return urlunparse(parsed._replace(query=urlencode(flat, doseq=True)))
 
     @staticmethod
     def _parse_dice_card_text(lines: list[str], job_url: str) -> dict | None:
@@ -1612,35 +1666,25 @@ class JobSearchTalent(BaseTalent):
     # the most reliable approach.
 
     def _scrape_builtin(self, url: str) -> list[dict]:
-        """Scrape job listings from builtin.com search results."""
+        """Scrape job listings from builtin.com search results.
+
+        Scrolls in a plateau loop until link count stops growing or the
+        hard cap is hit. Built In server-renders the first batch and
+        lazy-loads additional cards on scroll.
+        """
         from selenium.webdriver.common.by import By
         from selenium.webdriver.support.ui import WebDriverWait
         from selenium.webdriver.support import expected_conditions as EC
 
         driver = self._create_driver(headless=True)
         jobs: list[dict] = []
+        seen_urls: set[str] = set()
 
-        try:
-            driver.get(url)
-            time.sleep(4)
-
-            # Wait for any job links
-            try:
-                WebDriverWait(driver, 10).until(
-                    EC.presence_of_element_located((
-                        By.CSS_SELECTOR, 'a[href*="/job/"]',
-                    ))
-                )
-            except Exception:
-                pass
-
-            time.sleep(2)
-
-            # Extract job links
-            seen_urls: set[str] = set()
-            links = driver.find_elements(By.CSS_SELECTOR, 'a[href*="/job/"]')
-
-            for link in links:
+        def _collect_links() -> int:
+            added = 0
+            for link in driver.find_elements(
+                By.CSS_SELECTOR, 'a[href*="/job/"]'
+            ):
                 text = link.text.strip()
                 href = (link.get_attribute("href") or "").split("?")[0]
                 if not text or len(text) < 4 or len(text) > 200:
@@ -1656,35 +1700,46 @@ class JobSearchTalent(BaseTalent):
                     "position": text,
                     "job_url": href,
                 })
+                added += 1
+            return added
 
-            # Scroll and check for more / load-more button
-            if jobs:
+        try:
+            driver.get(url)
+            time.sleep(4)
+
+            try:
+                WebDriverWait(driver, 10).until(
+                    EC.presence_of_element_located((
+                        By.CSS_SELECTOR, 'a[href*="/job/"]',
+                    ))
+                )
+            except Exception:
+                pass
+            time.sleep(2)
+
+            _collect_links()
+
+            # Plateau scroll loop
+            stable_passes = 0
+            for attempt in range(6):
                 try:
                     driver.execute_script(
                         "window.scrollTo(0, document.body.scrollHeight)"
                     )
-                    time.sleep(3)
-                    more_links = driver.find_elements(
-                        By.CSS_SELECTOR, 'a[href*="/job/"]'
-                    )
-                    for link in more_links:
-                        text = link.text.strip()
-                        href = (link.get_attribute("href") or "").split("?")[0]
-                        if (text and 4 <= len(text) <= 200
-                                and href not in seen_urls):
-                            if not href.startswith("http"):
-                                href = "https://builtin.com" + href
-                            seen_urls.add(href)
-                            jobs.append({
-                                "source": "Built In",
-                                "date_found": date.today().isoformat(),
-                                "position": text,
-                                "job_url": href,
-                            })
                 except Exception:
                     pass
-
-            log.info(f"[JobSearch] Built In: {len(jobs)} listings")
+                time.sleep(2.5)
+                added = _collect_links()
+                if added == 0:
+                    stable_passes += 1
+                    if stable_passes >= 2:
+                        break
+                else:
+                    stable_passes = 0
+            log.info(
+                f"[JobSearch] Built In scroll loop: {len(jobs)} listings "
+                f"after {attempt + 1} passes"
+            )
         finally:
             driver.quit()
 
