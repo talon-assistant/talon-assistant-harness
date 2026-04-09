@@ -246,27 +246,29 @@ class DocumentRetriever:
 
             if use_explicit:
                 lines = [
-                    "AUTHORITATIVE DOCUMENT EXCERPTS — these are from the user's own "
-                    "reference library and are the ONLY source of truth for this answer.\n"
-                    "Instructions: Report ALL details found in these excerpts. "
-                    "Include every stat, power, weakness, requirement, cost, and rule "
-                    "mentioned. Quote or closely paraphrase the source text. "
-                    "Cite filename and page number for each fact. "
-                    "If a detail is present in the excerpts, you MUST include it. "
-                    "If a detail is NOT present, say it was not found. "
-                    "Do NOT contradict or reinterpret the excerpt text. "
-                    "Do NOT pad with filler or speculation."
+                    "DOCUMENT EXCERPTS (source of truth — report ALL details found):"
                 ]
             else:
                 lines = [
                     "The following document excerpts may be relevant — "
                     "use them if helpful, ignore if not:"
                 ]
-            # Explicit mode: allow longer excerpts so stat blocks / rule
-            # tables aren't truncated mid-content. Ambient keeps 800 to
-            # avoid bloating casual conversation prompts.
-            max_chars = 1500 if use_explicit else 800
             for filename, text, dist, page_num in all_chunks:
+                # Vision-ingested chunks have format:
+                #   [VISION: <hallucinated description>]\n\nRAW TEXT:\n<actual content>
+                # The VISION section is often degenerated/hallucinated by the
+                # vision model.  Strip it and use only RAW TEXT for injection —
+                # it's the actual PDF-extracted content.
+                raw_marker = "\nRAW TEXT:\n"
+                if raw_marker in text:
+                    raw_part = text.split(raw_marker, 1)[1]
+                    # Fall back to full text if RAW TEXT is too short (blank page)
+                    text = raw_part if len(raw_part.strip()) > 50 else text
+
+                # Explicit mode: allow up to 2000 chars per chunk so stat blocks
+                # and rule tables aren't truncated mid-content.
+                # Ambient keeps 800 to avoid bloating casual prompts.
+                max_chars = 2000 if use_explicit else 800
                 truncated = text[:max_chars] + "..." if len(text) > max_chars else text
                 source = (f"{filename} (page {page_num + 1})"
                           if page_num is not None else filename)
