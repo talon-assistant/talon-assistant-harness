@@ -1780,6 +1780,17 @@ class JobSearchTalent(BaseTalent):
             ln = ln.strip()
             if not ln:
                 continue
+            # Strip the "(Verified job)" badge BEFORE dedup so the two
+            # copies LinkedIn emits (one with badge, one without) collapse
+            # into a single line — otherwise the bare duplicate ends up as
+            # the "company" in the next parsing step.
+            ln = (
+                ln.replace("(Verified job)", "")
+                .replace("(verified job)", "")
+                .strip()
+            )
+            if not ln:
+                continue
             low = ln.lower()
             if low in cls._LI_NOISE_LINES:
                 continue
@@ -2247,21 +2258,14 @@ class JobSearchTalent(BaseTalent):
             if not node_id:
                 continue
 
-            # Parse title from card text
+            # Parse title from card text.
+            # _clean_card_lines already strips "(Verified job)" and
+            # dedupes the double-emitted title, so the first line is
+            # the job title and the second is the company.
             lines = self._clean_card_lines(text)
             if not lines:
                 continue
-            title = ""
-            for ln in lines:
-                if "(Verified job)" in ln or "(verified job)" in ln:
-                    title = (
-                        ln.replace("(Verified job)", "")
-                        .replace("(verified job)", "")
-                        .strip()
-                    )
-                    break
-            if not title:
-                title = lines[0]
+            title = lines[0]
             if not title or len(title) < 4 or len(title) > 200:
                 continue
 
@@ -2309,22 +2313,13 @@ class JobSearchTalent(BaseTalent):
             seen_ids.add(new_id)
             last_id = new_id
 
-            # Company / location from card text lines
+            # Company / location from card text lines.
+            # After _clean_card_lines: [title, company, location, ...]
             company = ""
             location = ""
-            try:
-                ti = next(
-                    i for i, ln in enumerate(lines) if title in ln
-                )
-            except StopIteration:
-                ti = -1
-            if 0 <= ti < len(lines) - 1:
-                cand = lines[ti + 1]
-                if 1 < len(cand) < 100:
-                    company = cand
-            for ln in lines[max(ti + 1, 0):]:
-                if ln == company:
-                    continue
+            if len(lines) > 1 and 1 < len(lines[1]) < 100:
+                company = lines[1]
+            for ln in lines[2:]:
                 low = ln.lower()
                 if ("remote" in low or "," in ln) and len(ln) < 100:
                     location = ln
