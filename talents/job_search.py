@@ -2904,6 +2904,7 @@ class JobSearchTalent(BaseTalent):
         db = _DB(db_path)
 
         updated = 0
+        archived = 0
         for entry in scores:
             app_id = entry.get("tracker_id")
             if not app_id:
@@ -2924,12 +2925,26 @@ class JobSearchTalent(BaseTalent):
                 if fields:
                     db.update_application(app_id, **fields)
                     updated += 1
+
+                    # Auto-archive poor fits so they don't clutter the
+                    # inbox. Threshold: score <= 20.
+                    score = fields.get("fit_score", 100)
+                    if score <= 20:
+                        db.update_application(app_id, status="archived")
+                        log.info(
+                            f"[JobSearch] Auto-archived #{app_id} "
+                            f"(fit_score={score})"
+                        )
+                        archived += 1
             except Exception as e:
                 log.error(
                     f"[JobSearch] Failed to store fit for #{app_id}: {e}"
                 )
 
-        log.info(f"[JobSearch] Fit analysis complete: {updated}/{len(scores)} updated")
+        msg = f"[JobSearch] Fit analysis complete: {updated}/{len(scores)} updated"
+        if archived:
+            msg += f", {archived} auto-archived (score <= 20)"
+        log.info(msg)
 
 
 # ── Filename / slug helpers ──────────────────────────────────────────────────
