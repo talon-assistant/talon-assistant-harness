@@ -205,35 +205,73 @@ class DocumentRetriever:
                     log.warning("[RAG] All chunks below reranker threshold — skipping injection")
                     return ""
 
-            # ── Phase 3: multi-hop ────────────────────────────────────────
-            if multi_hop and explicit and all_chunks:
-                seen_keys: set[str] = {c[1][:100] for c in all_chunks}
-                hop_entities: list[str] = []
-                for _fn, text, _d, _pg in all_chunks[:3]:
-                    hop_entities.extend(
-                        self._parse_entity_names_from_chunk(
-                            text, meta_cache.get(text[:100], {}))
-                    )
-                unique_entities = list(dict.fromkeys(hop_entities))
-                if unique_entities:
-                    hop_chunks = self._second_hop_query(unique_entities[:6], query, seen_keys)
-                    if hop_chunks:
-                        # Prefer hop chunks from the same source as top-ranked primary chunk
-                        # to reduce noise from unrelated documents.
-                        top_source = all_chunks[0][0] if all_chunks else ""
-                        hop_same = [c for c in hop_chunks if c[0] == top_source]
-                        hop_other = [c for c in hop_chunks if c[0] != top_source]
-                        hop_ordered = hop_same + hop_other
+            # ── Phase 3: source concentration + page vicinity ────────────
+            # When results cluster around one document, filter out noise
+            # from other books and fetch neighboring pages to ensure
+            # content spanning page boundaries is fully captured.
+            if use_explicit and all_chunks:
+                from collections import Counter
+                source_counts = Counter(fn for fn, _, _, _ in all_chunks)
+                top_source, top_count = source_counts.most_common(1)[0]
 
-                        # Discount hop chunks: inflate distance → weaker RRF contribution
-                        discounted = [(fn, txt, dist / 0.7, pg)
-                                      for fn, txt, dist, pg in hop_ordered]
-                        all_chunks = self._rrf_fuse(all_chunks, discounted)
-                        all_chunks = self._jaccard_dedup(all_chunks)
-                        # Hard cap at FINAL_CAP — don't inflate with hop noise
-                        all_chunks = all_chunks[:FINAL_CAP]
-                        log.info(f"[RAG] Multi-hop added {len(hop_chunks)} chunk(s) "
-                              f"from entities: {unique_entities[:3]}")
+                # If the primary source has ≥2 chunks, focus on it
+                if top_count >= 2:
+                    primary_chunks = [c for c in all_chunks if c[0] == top_source]
+                    other_chunks = [c for c in all_chunks if c[0] != top_source]
+
+                    # Page-vicinity: find pages adjacent to retrieved pages
+                    # from the same document. Stat blocks often span 2-3 pages.
+                    retrieved_pages = {pg for _, _, _, pg in primary_chunks
+                                       if pg is not None}
+                    vicinity_pages = set()
+                    for pg in retrieved_pages:
+                        vicinity_pages.update(range(max(0, pg - 1), pg + 3))
+                    missing_pages = vicinity_pages - retrieved_pages
+                    seen_keys: set[str] = {t[:100] for _, t, _, _ in all_chunks}
+
+                    if missing_pages:
+                        for pg in sorted(missing_pages):
+                            try:
+                                hits = self._docs.get(
+                                    where={"$and": [
+                                        {"filename": top_source},
+                                        {"page_number": pg},
+                                    ]},
+                                    limit=1,
+                                    include=["documents", "metadatas"],
+                                )
+                                for doc, meta in zip(
+                                    hits.get("documents", []),
+                                    hits.get("metadatas", []),
+                                ):
+                                    key = doc[:100]
+                                    if key not in seen_keys:
+                                        seen_keys.add(key)
+                                        primary_chunks.append(
+                                            (top_source, doc, 0.9, pg)
+                                        )
+                            except Exception:
+                                pass
+
+                        if len(primary_chunks) > len([c for c in all_chunks if c[0] == top_source]):
+                            added = len(primary_chunks) - top_count
+                            log.info(f"[RAG] Page-vicinity added {added} "
+                                  f"adjacent page(s) from {top_source}")
+
+                    # Sort primary chunks by page number so the model reads
+                    # them in document order (easier to follow for stat blocks
+                    # that span multiple pages).
+                    primary_chunks.sort(
+                        key=lambda c: c[3] if c[3] is not None else 999)
+
+                    # Keep primary source chunks + up to 2 from other sources
+                    all_chunks = primary_chunks[:FINAL_CAP]
+                    remaining = FINAL_CAP - len(all_chunks)
+                    if remaining > 0 and other_chunks:
+                        all_chunks.extend(other_chunks[:min(2, remaining)])
+
+                    log.info(f"[RAG] Source concentration: {top_count} from "
+                          f"'{top_source}', {len(all_chunks)} total after vicinity")
 
             # ── Phase 4: format ───────────────────────────────────────────
             log.debug(f"[RAG] Injecting {len(all_chunks)} unique chunk(s) "
