@@ -78,23 +78,13 @@ class ConversationEngine:
     )
 
     _FACTUAL_RAG_SYSTEM_PROMPT = (
-        "You are Talon, a personal AI assistant answering a factual question from "
-        "the user's own documents. "
-        "Document excerpts are provided below — they are the ONLY authoritative source.\n\n"
-        "Rules:\n"
-        "1. Answer THOROUGHLY. List every relevant detail found in the excerpts: "
-        "stats, powers, rules, requirements, weaknesses, costs, page references.\n"
-        "2. Use ONLY information explicitly present in the excerpts. "
-        "Do NOT add, infer, or contradict anything from the excerpts.\n"
-        "3. If the excerpts contain the answer, give a complete structured response "
-        "with headers, bullet points, or numbered lists as appropriate.\n"
-        "4. Cite the source filename and page number for each fact.\n"
-        "5. If something is NOT in the excerpts, say it was not found. "
-        "Do NOT substitute general knowledge or speculation.\n"
-        "6. Do NOT pad the response with filler text. Every sentence must convey "
-        "specific information from the excerpts. Stop when you have reported all "
-        "relevant facts."
-        + INJECTION_DEFENSE_CLAUSE
+        "You are Talon, answering factual questions from the user's documents. "
+        "Document excerpts follow the question. They are your ONLY source.\n\n"
+        "Extract and list EVERY relevant detail from the excerpts: stats, powers, "
+        "rules, requirements, weaknesses, costs. Use bullet points and headers. "
+        "Cite filename and page. Do not add anything not in the excerpts. "
+        "Do not say information is missing if it appears in the excerpts. "
+        "Stop when all facts are reported."
     )
 
     # Sentence terminators: period, comma, exclamation, question, dash, semicolon,
@@ -397,19 +387,47 @@ class ConversationEngine:
             self._a.memory.log_command(command, success=True, response=response)
             return response
 
+        # ── Factual RAG: stripped-down prompt ─────────────────────────────
+        # For factual document lookups, skip conversation buffer, memory,
+        # corrections, and session context — they're noise that confuses
+        # small models.  Put the question FIRST, then document excerpts
+        # AFTER so the chunks sit closest to the generation point (higher
+        # attention weight in transformers).
+        _is_factual_rag = bool(doc_context and use_explicit_rag)
+
+        if _is_factual_rag:
+            # Clean, focused prompt: question → docs
+            prompt = f"{prompt}\n\n{doc_context}"
+
+            # Still inject attached documents if present
+            if doc_blocks:
+                for fname, text in doc_blocks:
+                    prompt = f"{prompt}\n\n{_wrap_external(text, f'attached document: {fname}')}"
+
+            all_images = ([screenshot_b64] if screenshot_b64 else []) + file_images_b64
+
+            response = self._a.llm.generate(
+                prompt,
+                system_prompt=self._FACTUAL_RAG_SYSTEM_PROMPT,
+                use_vision=bool(all_images),
+                images_b64=all_images or None,
+            )
+
+            self._a.memory.log_command(command, success=True, response=response)
+            self._a._detect_preference(command, response)
+            return response
+
+        # ── Standard conversational prompt assembly ──────────────────────
+
         # Inject preferences/patterns with accurate label
         memory_context = context.get("memory_context", "")
         if memory_context:
             prompt = f"{_wrap_external(memory_context, 'user preferences and past patterns')}\n\n{prompt}"
 
-        # Inject document chunks if any passed the threshold
+        # Inject document chunks if any passed the threshold (ambient mode only —
+        # factual/explicit was handled above)
         if doc_context:
-            source_label = (
-                "document excerpts — source material, prioritize this"
-                if use_explicit_rag
-                else "document excerpts — may or may not be relevant"
-            )
-            prompt = f"{_wrap_external(doc_context, source_label)}\n\n{prompt}"
+            prompt = f"{_wrap_external(doc_context, 'document excerpts — may or may not be relevant')}\n\n{prompt}"
 
         # Inject text extracted from user-attached documents (GUI attachment).
         # Injected after RAG so the directly-attached file sits closest to the question.
@@ -472,16 +490,9 @@ class ConversationEngine:
 
         all_images = ([screenshot_b64] if screenshot_b64 else []) + file_images_b64
 
-        # Use factual system prompt when document context was injected in
-        # explicit/factual mode — tells the LLM to give thorough, structured
-        # answers instead of 1-3 sentence conversational replies.
-        sys_prompt = self._CONVERSATION_SYSTEM_PROMPT
-        if doc_context and use_explicit_rag:
-            sys_prompt = self._FACTUAL_RAG_SYSTEM_PROMPT
-
         response = self._a.llm.generate(
             prompt,
-            system_prompt=sys_prompt,
+            system_prompt=self._CONVERSATION_SYSTEM_PROMPT,
             use_vision=bool(all_images),
             images_b64=all_images or None,
         )

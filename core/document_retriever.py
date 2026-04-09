@@ -218,12 +218,20 @@ class DocumentRetriever:
                 if unique_entities:
                     hop_chunks = self._second_hop_query(unique_entities[:6], query, seen_keys)
                     if hop_chunks:
+                        # Prefer hop chunks from the same source as top-ranked primary chunk
+                        # to reduce noise from unrelated documents.
+                        top_source = all_chunks[0][0] if all_chunks else ""
+                        hop_same = [c for c in hop_chunks if c[0] == top_source]
+                        hop_other = [c for c in hop_chunks if c[0] != top_source]
+                        hop_ordered = hop_same + hop_other
+
                         # Discount hop chunks: inflate distance → weaker RRF contribution
                         discounted = [(fn, txt, dist / 0.7, pg)
-                                      for fn, txt, dist, pg in hop_chunks]
+                                      for fn, txt, dist, pg in hop_ordered]
                         all_chunks = self._rrf_fuse(all_chunks, discounted)
                         all_chunks = self._jaccard_dedup(all_chunks)
-                        all_chunks = all_chunks[:FINAL_CAP + 4]
+                        # Hard cap at FINAL_CAP — don't inflate with hop noise
+                        all_chunks = all_chunks[:FINAL_CAP]
                         log.info(f"[RAG] Multi-hop added {len(hop_chunks)} chunk(s) "
                               f"from entities: {unique_entities[:3]}")
 
