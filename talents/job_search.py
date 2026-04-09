@@ -759,7 +759,12 @@ class JobSearchTalent(BaseTalent):
             "weaknesses, gaps, or missing qualifications.",
             "- No em dashes. Use commas, periods, or semicolons.",
             "- No tricolon / parallel triplets.",
-            "- Plain language, direct executive tone.",
+            "- Plain language, direct executive tone. Confident but "
+            "not aggressive. The reader should think 'this person "
+            "is competent and easy to work with', not 'this person "
+            "is trying to prove something'. No chest-thumping lines "
+            "like 'I've already done it' or 'I know how to do X'. "
+            "Let the accomplishments speak for themselves.",
             "- Open with a specific hook tied to the company or role.",
             "- Pull specific metrics and accomplishments from the resume "
             "that match this role.",
