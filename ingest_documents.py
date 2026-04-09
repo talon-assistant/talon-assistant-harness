@@ -52,6 +52,57 @@ def _strip_thinking(text: str) -> str:
     return _re.sub(r'<thinking>.*?</thinking>', '', text, flags=_re.DOTALL).strip()
 
 
+def _clean_ocr_text(text: str) -> str:
+    """Clean common OCR artifacts from PDF-extracted text.
+
+    Fixes ligature characters, rejoins hyphenated line breaks, and
+    normalizes whitespace.  Applied to RAW TEXT before embedding so
+    the embedding vector matches natural language queries.
+    """
+    # Fix common PDF ligatures
+    text = text.replace("\ufb01", "fi").replace("\ufb02", "fl")
+    text = text.replace("\ufb00", "ff").replace("\ufb03", "ffi").replace("\ufb04", "ffl")
+
+    # Rejoin words broken across lines: "feath-\neries" → "featheries"
+    text = _re.sub(r'(\w)-\s*\n\s*(\w)', r'\1\2', text)
+
+    # Collapse internal whitespace (preserve paragraph breaks)
+    text = _re.sub(r'[ \t]+', ' ', text)
+    text = _re.sub(r'\n{3,}', '\n\n', text)
+
+    return text.strip()
+
+
+def _detect_vision_degeneration(text: str) -> bool:
+    """Check if vision model output shows signs of degeneration.
+
+    Returns True if the text is likely hallucinated/degenerated.
+    """
+    if not text or len(text) < 100:
+        return False
+
+    words = text.split()
+    if len(words) < 30:
+        return False
+
+    # Check 1: any sentence segment > 60 words without punctuation
+    segments = _re.split(r'(?<=[.!?\n])\s+', text)
+    for seg in segments:
+        if len(seg.split()) > 60:
+            return True
+
+    # Check 2: 5-gram repetition (3+ times)
+    if len(words) >= 15:
+        seen: dict[tuple, int] = {}
+        for i in range(len(words) - 4):
+            gram = tuple(w.lower() for w in words[i:i + 5])
+            seen[gram] = seen.get(gram, 0) + 1
+            if seen[gram] >= 3:
+                return True
+
+    return False
+
+
 VISION_EXTRACT_PROMPT = (
     "You are indexing a page from a reference document. Extract all content precisely.\n\n"
     "Rules:\n"
@@ -533,7 +584,14 @@ class DocumentIngester:
                 return ""
             if desc.strip().upper() == "SKIP":
                 return ""
-            return desc.strip()
+            desc = desc.strip()
+            # Detect and discard degenerated vision output — hallucinated
+            # descriptions produce garbage embeddings.
+            if _detect_vision_degeneration(desc):
+                log.warning(f"   ⚠ Vision degeneration detected p{page_num} "
+                          f"— discarding vision description")
+                return ""
+            return desc
         except Exception as exc:
             log.warning(f"   ⚠ Vision exception p{page_num}: {exc}")
             return ""
@@ -633,12 +691,20 @@ class DocumentIngester:
             if vision_desc:
                 log.info(f"   ↳ {vision_desc[:100].replace(chr(10), ' ')}")
 
-            # --- Build enriched chunk text ---
+            # --- Clean OCR artifacts from raw text ---
+            clean_raw = _clean_ocr_text(raw_text) if raw_text else ""
+
+            # --- Build chunk text ---
+            # The stored document text includes both VISION and RAW TEXT
+            # (VISION for supplementary context, RAW TEXT as ground truth).
+            # But the EMBEDDING is computed from cleaned RAW TEXT only —
+            # vision descriptions are unreliable and pollute the embedding
+            # space with hallucinated tokens.
             parts = []
             if vision_desc:
                 parts.append(f"[VISION: {vision_desc}]")
-            if raw_text:
-                parts.append(f"RAW TEXT:\n{raw_text}")
+            if clean_raw:
+                parts.append(f"RAW TEXT:\n{clean_raw}")
             chunk_text = "\n\n".join(parts)
 
             # --- Structured entity metadata extraction (--mdextraction) ---
@@ -667,21 +733,23 @@ class DocumentIngester:
                     )
 
             # --- Sub-split only if the combined page is very long ---
+            # Embedding text: cleaned RAW TEXT only (no VISION hallucinations).
+            # Stored text: full chunk_text (VISION + RAW TEXT) for retrieval display.
+            embed_text = clean_raw or chunk_text
 
-            if len(chunk_text.split()) > 800 and raw_text:
-                # Repeat the vision header on every sub-chunk so each one
-                # retains full semantic context in its embedding.
-                vision_header = (f"[VISION: {vision_desc}]\n\n"
-                                 if vision_desc else "")
-                sub_chunks = self.chunk_text(raw_text,
+            if len(chunk_text.split()) > 800 and clean_raw:
+                # Sub-split the raw text; embed each sub-chunk independently.
+                sub_chunks = self.chunk_text(clean_raw,
                                              chunk_size=chunk_size,
                                              overlap=overlap)
+                vision_header = (f"[VISION: {vision_desc}]\n\n"
+                                 if vision_desc else "")
                 for sub_i, raw_sub in enumerate(sub_chunks):
                     sub_text = f"{vision_header}RAW TEXT:\n{raw_sub}"
                     doc_id = f"{doc_id_base}_p{page_idx}_s{sub_i}"
                     meta = {**base_meta, "sub_chunk": sub_i}
                     self.collection.add(
-                        embeddings=_emb.embed_documents([sub_text], self._embed_model),
+                        embeddings=_emb.embed_documents([raw_sub], self._embed_model),
                         documents=[sub_text],
                         metadatas=[meta],
                         ids=[doc_id],
@@ -691,7 +759,7 @@ class DocumentIngester:
                 doc_id = f"{doc_id_base}_p{page_idx}"
                 meta = {**base_meta, "sub_chunk": 0}
                 self.collection.add(
-                    embeddings=_emb.embed_documents([chunk_text], self._embed_model),
+                    embeddings=_emb.embed_documents([embed_text], self._embed_model),
                     documents=[chunk_text],
                     metadatas=[meta],
                     ids=[doc_id],
