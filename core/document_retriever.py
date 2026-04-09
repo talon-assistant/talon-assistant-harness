@@ -232,25 +232,33 @@ class DocumentRetriever:
                     if missing_pages:
                         for pg in sorted(missing_pages):
                             try:
-                                # Fetch up to 3 chunks per page to handle
-                                # duplicates — pick the longest one.
+                                # Fetch up to 5 chunks per page to handle
+                                # duplicates — pick the one with the most
+                                # keyword hits (not longest, which may lack
+                                # the relevant section).
                                 hits = self._docs.get(
                                     where={"$and": [
                                         {"filename": top_source},
                                         {"page_number": pg},
                                     ]},
-                                    limit=3,
+                                    limit=5,
                                     include=["documents", "metadatas"],
                                 )
                                 best_doc = None
+                                best_score = -1
                                 for doc, meta in zip(
                                     hits.get("documents", []),
                                     hits.get("metadatas", []),
                                 ):
                                     key = doc[:100]
                                     if key not in seen_keys:
-                                        if best_doc is None or len(doc) > len(best_doc):
+                                        score = _keyword_score(doc)
+                                        if score > best_score or (
+                                            score == best_score and
+                                            (best_doc is None or len(doc) > len(best_doc))
+                                        ):
                                             best_doc = doc
+                                            best_score = score
                                 if best_doc:
                                     seen_keys.add(best_doc[:100])
                                     primary_chunks.append(
