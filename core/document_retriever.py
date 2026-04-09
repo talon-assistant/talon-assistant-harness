@@ -145,6 +145,9 @@ class DocumentRetriever:
                 return sum(1 for kw in keywords if kw in lower)
 
             if use_explicit:
+                log.info(f"[RAG] Pre-fusion: {len(all_chunks)} candidates")
+                for _fn, _txt, _d, _pg in all_chunks[:30]:
+                    log.info(f"[RAG]   {_d:.3f} {_fn} p{_pg}  kw={_keyword_score(_txt)}")
                 # RRF fusion: split by real distance vs. artificial $contains distance
                 semantic_pool = sorted(
                     [c for c in all_chunks if c[2] < 1.0], key=lambda x: x[2])
