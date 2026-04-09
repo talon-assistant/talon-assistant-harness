@@ -1549,7 +1549,11 @@ class JobSearchTalent(BaseTalent):
             # interceptable fetch — the only way to recover the URL
             # is to actually select the card and read currentJobId off
             # the History API URL update.
-            if not jobs:
+            #
+            # Run when we have < 3 jobs — on SDUI pages, Strategies 1-3
+            # typically find only the 1 focused job (the only anchor in
+            # the DOM) while 20+ cards sit in opaque SDUI buttons.
+            if len(jobs) < 3:
                 try:
                     click_jobs = self._scrape_linkedin_via_click(driver)
                     if click_jobs:
@@ -1557,7 +1561,12 @@ class JobSearchTalent(BaseTalent):
                             f"[JobSearch] LinkedIn click fallback: "
                             f"{len(click_jobs)} listings"
                         )
-                        jobs.extend(click_jobs)
+                        # Merge without duplicating the focused job that
+                        # CDP may have already found.
+                        existing_urls = {j.get("job_url") for j in jobs}
+                        for cj in click_jobs:
+                            if cj.get("job_url") not in existing_urls:
+                                jobs.append(cj)
                 except Exception as e:
                     log.warning(f"[JobSearch] Click fallback failed: {e}")
 
