@@ -25,6 +25,40 @@ class LLMError(Exception):
         self.status_code = status_code
 
 
+def _truncate_degeneration(text: str, *, ngram_size: int = 5,
+                           repeat_threshold: int = 3) -> str:
+    """Detect and truncate LLM degeneration loops.
+
+    Scans the output for repeated N-grams.  When any N-gram appears
+    ``repeat_threshold`` times, the text is truncated at the start of
+    the second occurrence — keeping the first (useful) copy and
+    discarding the spiral.
+
+    Returns the (possibly shortened) text.
+    """
+    words = text.split()
+    if len(words) < ngram_size * repeat_threshold:
+        return text
+
+    seen: dict[tuple, list[int]] = {}  # ngram -> list of word-positions
+    for i in range(len(words) - ngram_size + 1):
+        gram = tuple(w.lower() for w in words[i:i + ngram_size])
+        positions = seen.setdefault(gram, [])
+        positions.append(i)
+        if len(positions) >= repeat_threshold:
+            # Truncate at the start of the second occurrence
+            cut = positions[1]
+            truncated = " ".join(words[:cut]).rstrip(" ,;:-")
+            if len(truncated) > 40:
+                log.warning(
+                    f"[LLM] Degeneration detected (ngram repeated "
+                    f"{len(positions)}x at word {cut}/{len(words)}), "
+                    f"truncating"
+                )
+                return truncated
+    return text
+
+
 class LLMClient:
     """Multi-format LLM API wrapper for inference."""
 
@@ -155,17 +189,19 @@ class LLMClient:
         effective_images = effective_images or None
 
         if self.api_format == "llamacpp":
-            return self._generate_llamacpp(
+            raw = self._generate_llamacpp(
                 prompt, use_vision, effective_images,
                 max_length, system_prompt, temperature, rep_pen)
         elif self.api_format == "openai":
-            return self._generate_openai(
+            raw = self._generate_openai(
                 prompt, use_vision, effective_images,
                 max_length, system_prompt, temperature)
         else:
-            return self._generate_koboldcpp(
+            raw = self._generate_koboldcpp(
                 prompt, use_vision, effective_images,
                 max_length, system_prompt, temperature, rep_pen)
+
+        return _truncate_degeneration(raw)
 
     # ── KoboldCpp Backend ─────────────────────────────────────
 
