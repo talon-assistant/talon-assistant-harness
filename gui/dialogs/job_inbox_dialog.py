@@ -148,6 +148,7 @@ class JobInboxDialog(QDialog):
         self.setObjectName("job_inbox_dialog")
         self.setMinimumSize(1200, 680)
         self.setModal(False)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
 
         self._setup_ui()
         self.refresh()
@@ -683,6 +684,10 @@ class JobInboxDialog(QDialog):
     # ── Cleanup ──────────────────────────────────────────────────────────
 
     def closeEvent(self, event) -> None:
+        # Hide immediately so the window never ghosts on screen while
+        # background workers are still finishing.
+        self.hide()
+
         # Workers wrap a blocking Selenium loop, so QThread.quit() can't
         # interrupt them. Disconnect their signals (so they don't fire on
         # a dead dialog) and stash them in a module-level list so Python
