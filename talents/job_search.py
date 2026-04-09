@@ -1361,9 +1361,6 @@ class JobSearchTalent(BaseTalent):
             # SDUI API responses that contain job IDs (the rail's cards
             # are pure SDUI buttons with no URLs in the DOM).
             self._inject_linkedin_network_capture(driver)
-            # Force shadow roots to open mode so the click-scrape
-            # fallback can pierce LinkedIn's SDUI cards from JS.
-            self._inject_linkedin_shadow_opener(driver)
 
             driver.get(url)
             time.sleep(5)
@@ -2073,102 +2070,6 @@ class JobSearchTalent(BaseTalent):
 
     # ── Network capture (SDUI XHR/fetch sniffing) ───────────────────────
 
-    # Force every shadow root that LinkedIn creates into "open" mode so a
-    # plain JS walker (and Selenium's execute_script) can recurse into
-    # them. Has to run before page scripts attach any roots, hence
-    # Page.addScriptToEvaluateOnNewDocument.
-    _LINKEDIN_SHADOW_OPEN_HOOK = r"""
-(function() {
-  if (window.__talonShadowOpened) return;
-  window.__talonShadowOpened = true;
-  var orig = Element.prototype.attachShadow;
-  Element.prototype.attachShadow = function(init) {
-    var opts = init || {};
-    try { opts.mode = 'open'; } catch (e) {}
-    return orig.call(this, opts);
-  };
-})();
-"""
-
-    # JS that walks document + every (now-open) shadow root and returns
-    # one entry per LinkedIn semantic-search result card.
-    #
-    # The rail's cards are <div role="button" componentkey="<UUID>"> with
-    # the text "(Verified job)" embedded somewhere underneath. Job IDs
-    # are NOT in the DOM at all on this URL — they only show up in
-    # window.location after a card is selected — so this function just
-    # tags each card with data-talon-card="<index>" so we can re-find it
-    # by index after each click (the SDUI tree mutates between clicks).
-    _LINKEDIN_FIND_CARDS_JS = r"""
-(function() {
-  function walk(root, out) {
-    if (!root) return;
-    var els = root.querySelectorAll
-      ? root.querySelectorAll('[componentkey][role="button"], [componentkey][tabindex]')
-      : [];
-    for (var i = 0; i < els.length; i++) out.push(els[i]);
-    var all = root.querySelectorAll ? root.querySelectorAll('*') : [];
-    for (var j = 0; j < all.length; j++) {
-      if (all[j].shadowRoot) walk(all[j].shadowRoot, out);
-    }
-  }
-  var raw = [];
-  walk(document, raw);
-  // Filter to cards that look like rail entries: must contain
-  // "(Verified job)" or look like a job title row.
-  var cards = [];
-  var seenKeys = {};
-  for (var i = 0; i < raw.length; i++) {
-    var el = raw[i];
-    var key = el.getAttribute('componentkey');
-    if (!key || seenKeys[key]) continue;
-    var txt = (el.innerText || el.textContent || '').trim();
-    if (!txt) continue;
-    if (txt.indexOf('(Verified job)') === -1
-        && txt.indexOf('(verified job)') === -1) continue;
-    // Skip giant containers — real cards are < ~600 chars of text
-    if (txt.length > 800) continue;
-    seenKeys[key] = 1;
-    cards.push({el: el, key: key, text: txt});
-  }
-  // Tag for re-lookup by index
-  for (var k = 0; k < cards.length; k++) {
-    cards[k].el.setAttribute('data-talon-card', String(k));
-  }
-  return cards.map(function(c) { return {key: c.key, text: c.text}; });
-})();
-"""
-
-    # Click the card tagged with the given index, scrolling it into view
-    # first. We dispatch a real click via .click() which triggers the
-    # SDUI button's onClick handler.
-    _LINKEDIN_CLICK_CARD_JS = r"""
-(function(idx) {
-  function find(root) {
-    if (!root || !root.querySelectorAll) return null;
-    var hit = root.querySelector('[data-talon-card="' + idx + '"]');
-    if (hit) return hit;
-    var all = root.querySelectorAll('*');
-    for (var i = 0; i < all.length; i++) {
-      if (all[i].shadowRoot) {
-        var r = find(all[i].shadowRoot);
-        if (r) return r;
-      }
-    }
-    return null;
-  }
-  var el = find(document);
-  if (!el) return false;
-  try {
-    el.scrollIntoView({block: 'center', behavior: 'instant'});
-  } catch (e) {
-    el.scrollIntoView();
-  }
-  el.click();
-  return true;
-})(arguments[0]);
-"""
-
     _LINKEDIN_NETWORK_HOOK = r"""
 (function() {
   if (window.__talonCaptured) return;
@@ -2240,67 +2141,102 @@ class JobSearchTalent(BaseTalent):
         except Exception as e:
             log.warning(f"[JobSearch] Network hook inject failed: {e}")
 
-    def _inject_linkedin_shadow_opener(self, driver) -> None:
-        """Force every shadow root LinkedIn creates into open mode so
-        regular JS (and Selenium execute_script) can pierce the SDUI
-        rail. Must be injected before navigation."""
-        try:
-            driver.execute_cdp_cmd(
-                "Page.addScriptToEvaluateOnNewDocument",
-                {"source": self._LINKEDIN_SHADOW_OPEN_HOOK},
-            )
-        except Exception as e:
-            log.warning(f"[JobSearch] Shadow opener inject failed: {e}")
-
     def _scrape_linkedin_via_click(self, driver) -> list[dict]:
-        """Drive the SDUI rail like a user: click each card and read
-        the resulting currentJobId out of the URL.
+        """Drive the SDUI rail like a user: click each card via CDP and
+        read the resulting currentJobId out of the URL.
 
         On /jobs/search-results/ semantic-search pages, LinkedIn renders
-        cards as opaque SDUI buttons with no job IDs anywhere in the
-        DOM and no fetch response we can intercept. The only reliable
-        way to recover IDs is to select each card and pull
-        ?currentJobId=<id> off the History API URL update.
+        cards as opaque SDUI buttons inside closed shadow roots with no
+        job IDs anywhere in the DOM. The only reliable way to recover
+        IDs is to select the card and pull ?currentJobId=<id> off the
+        History API URL update.
 
-        Requires the shadow-opener hook to have been injected before
-        navigation so JS can recurse into the cards' shadow roots.
+        Uses CDP DOM.getDocument(pierce=True) to find cards, then
+        DOM.resolveNode + Runtime.callFunctionOn to click them — this
+        bypasses closed shadow roots entirely.
         """
         from urllib.parse import urlparse, parse_qs
 
+        # ── Step 1: get the pierced DOM and find card buttons ──
         try:
-            cards = driver.execute_script(self._LINKEDIN_FIND_CARDS_JS)
+            doc = driver.execute_cdp_cmd(
+                "DOM.getDocument", {"depth": -1, "pierce": True}
+            )
         except Exception as e:
-            log.warning(f"[JobSearch] LinkedIn click-scrape find failed: {e}")
+            log.warning(f"[JobSearch] Click-scrape getDocument failed: {e}")
             return []
+
+        root = doc.get("root") or {}
+        if not root:
+            return []
+
+        # Collect role=button nodes whose subtree contains "(Verified job)"
+        cards: list[dict] = []
+
+        def find_cards(node: dict) -> None:
+            attrs = self._cdp_attrs(node)
+            role = attrs.get("role", "")
+            ck = attrs.get("componentkey", "")
+            if role == "button" and ck:
+                text = self._cdp_collect_text(node, max_depth=10)
+                if "(Verified job)" in text or "(verified job)" in text:
+                    # Avoid giant containers — real cards < ~800 chars
+                    if len(text) < 800:
+                        cards.append({
+                            "nodeId": node.get("nodeId"),
+                            "text": text,
+                            "componentkey": ck,
+                        })
+                        return  # don't recurse into card internals
+
+            for child in node.get("children") or ():
+                find_cards(child)
+            for shadow in node.get("shadowRoots") or ():
+                find_cards(shadow)
+            if node.get("contentDocument"):
+                find_cards(node["contentDocument"])
+
+        find_cards(root)
 
         if not cards:
-            log.info("[JobSearch] LinkedIn click-scrape: 0 candidate cards")
+            log.info("[JobSearch] Click-scrape: 0 card buttons found in CDP")
             return []
 
+        # Dedupe by componentkey (CDP can return same node from shadow +
+        # light tree traversal)
+        seen_keys: set[str] = set()
+        unique_cards: list[dict] = []
+        for c in cards:
+            if c["componentkey"] not in seen_keys:
+                seen_keys.add(c["componentkey"])
+                unique_cards.append(c)
+        cards = unique_cards
+
         log.info(
-            f"[JobSearch] LinkedIn click-scrape: {len(cards)} candidate "
-            f"cards tagged"
+            f"[JobSearch] Click-scrape: {len(cards)} card buttons found"
         )
 
+        # ── Step 2: click each card via CDP and harvest currentJobId ──
         jobs: list[dict] = []
         seen_ids: set[str] = set()
         last_id = ""
 
-        # Pull currentJobId off the URL if it's already set so we can
-        # detect a real change after the first click.
         try:
             q = parse_qs(urlparse(driver.current_url).query)
             last_id = (q.get("currentJobId") or [""])[0]
         except Exception:
             pass
 
-        for idx, card in enumerate(cards):
-            text = (card or {}).get("text") or ""
+        for card in cards:
+            node_id = card.get("nodeId")
+            text = card.get("text") or ""
+            if not node_id:
+                continue
+
+            # Parse title from card text
             lines = self._clean_card_lines(text)
             if not lines:
                 continue
-            # Title is usually the line containing "(Verified job)" with
-            # the suffix stripped.
             title = ""
             for ln in lines:
                 if "(Verified job)" in ln or "(verified job)" in ln:
@@ -2315,19 +2251,33 @@ class JobSearchTalent(BaseTalent):
             if not title or len(title) < 4 or len(title) > 200:
                 continue
 
-            # Click the card and wait for the URL to update.
+            # Resolve the CDP node to a JS object and click it
             try:
-                clicked = bool(driver.execute_script(
-                    self._LINKEDIN_CLICK_CARD_JS, idx
-                ))
+                remote = driver.execute_cdp_cmd(
+                    "DOM.resolveNode", {"nodeId": node_id}
+                )
+                object_id = remote["object"]["objectId"]
+                # Scroll into view via CDP
+                driver.execute_cdp_cmd(
+                    "DOM.scrollIntoViewIfNeeded", {"nodeId": node_id}
+                )
+                # Dispatch click via Runtime
+                driver.execute_cdp_cmd(
+                    "Runtime.callFunctionOn",
+                    {
+                        "objectId": object_id,
+                        "functionDeclaration": "function() { this.click(); }",
+                        "returnByValue": True,
+                    },
+                )
             except Exception as e:
-                log.debug(f"[JobSearch] Click card {idx} failed: {e}")
-                continue
-            if not clicked:
-                log.debug(f"[JobSearch] Card {idx} not found by tag")
+                log.debug(
+                    f"[JobSearch] Click-scrape CDP click failed "
+                    f"(ck={card['componentkey'][:8]}): {e}"
+                )
                 continue
 
-            # Wait up to 3s for currentJobId to flip
+            # Wait up to 3s for currentJobId to change
             new_id = last_id
             for _ in range(15):
                 time.sleep(0.2)
@@ -2339,19 +2289,20 @@ class JobSearchTalent(BaseTalent):
                 if cur and cur != last_id:
                     new_id = cur
                     break
+
             if not new_id or new_id == last_id or new_id in seen_ids:
                 continue
             seen_ids.add(new_id)
             last_id = new_id
 
-            # Company / location: walk the cleaned lines around the title
+            # Company / location from card text lines
             company = ""
             location = ""
             try:
-                ti = lines.index(next(
-                    ln for ln in lines if title in ln
-                ))
-            except (StopIteration, ValueError):
+                ti = next(
+                    i for i, ln in enumerate(lines) if title in ln
+                )
+            except StopIteration:
                 ti = -1
             if 0 <= ti < len(lines) - 1:
                 cand = lines[ti + 1]
@@ -2375,8 +2326,8 @@ class JobSearchTalent(BaseTalent):
             })
 
         log.info(
-            f"[JobSearch] LinkedIn click-scrape: extracted {len(jobs)} "
-            f"jobs from {len(cards)} cards"
+            f"[JobSearch] Click-scrape: extracted {len(jobs)} jobs "
+            f"from {len(cards)} cards"
         )
         return jobs
 
