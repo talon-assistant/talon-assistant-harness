@@ -145,15 +145,29 @@ class DocumentRetriever:
                 return sum(1 for kw in keywords if kw in lower)
 
             if use_explicit:
-                log.info(f"[RAG] Pre-fusion: {len(all_chunks)} candidates")
-                for _fn, _txt, _d, _pg in all_chunks[:30]:
-                    log.info(f"[RAG]   {_d:.3f} {_fn} p{_pg}  kw={_keyword_score(_txt)}")
-                # RRF fusion: split by real distance vs. artificial $contains distance
+                # RRF fusion: combine semantic distance ranking with
+                # keyword overlap ranking. Chunks from $contains get
+                # distance = 1.0 and go into the keyword pool only.
+                # Semantic chunks (distance < 1.0) go into the semantic
+                # pool, BUT chunks with strong keyword overlap also
+                # appear in the keyword pool so they get a double RRF
+                # boost — prevents high-kw chunks at mediocre semantic
+                # distance from being buried.
                 semantic_pool = sorted(
                     [c for c in all_chunks if c[2] < 1.0], key=lambda x: x[2])
                 keyword_pool  = sorted(
                     [c for c in all_chunks if c[2] >= 1.0],
                     key=lambda x: -_keyword_score(x[1]))
+
+                # Promote semantic chunks with strong keyword overlap
+                # into the keyword pool for a double RRF boost.
+                if keywords:
+                    kw_threshold = max(2, len(keywords) // 2)
+                    for chunk in semantic_pool:
+                        if _keyword_score(chunk[1]) >= kw_threshold:
+                            keyword_pool.append(chunk)
+                    keyword_pool.sort(key=lambda x: -_keyword_score(x[1]))
+
                 all_chunks = self._rrf_fuse(semantic_pool, keyword_pool)
                 all_chunks = self._jaccard_dedup(all_chunks)
             else:
