@@ -464,8 +464,7 @@ class DocumentIngester:
                 continue
 
             img_index += 1
-            log.info(f" [img {img_index}/{len(candidate_images)}] Describing...",
-                  end=" ", flush=True)
+            log.info(f" [img {img_index}/{len(candidate_images)}] Describing...")
 
             t_img = time.time()
             vision_desc = self._describe_page(llm_client, img_b64,
@@ -663,8 +662,7 @@ class DocumentIngester:
                 eta_str = f"  ETA ~{int(remaining // 60)}m{int(remaining % 60):02d}s"
             else:
                 eta_str = ""
-            log.info(f" [{page_num:>4}/{page_count}] Describing...{eta_str}",
-                  end=" ", flush=True)
+            log.info(f" [{page_num:>4}/{page_count}] Describing...{eta_str}")
 
             # Skip vision for image-heavy / art pages — fewer than 15 words of
             # extractable text means it's almost certainly a full-page artwork,
