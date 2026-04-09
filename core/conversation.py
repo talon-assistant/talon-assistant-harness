@@ -53,6 +53,8 @@ class ConversationEngine:
         "rulebook", "document", "book", "manual", "guide", "handbook",
         "reference", "sourcebook", "notes", "file", "page", "chapter",
         "entry", "stat", "stats", "stat block", "profile",
+        # Game systems / known ingested document domains — trigger factual RAG
+        "shadowrun", "pathfinder", "d&d", "dnd", "starfinder",
     ]
 
     _CAPABILITY_PHRASES = [
@@ -72,6 +74,26 @@ class ConversationEngine:
         "play, etc.), state it directly as 'I'll do X' — the system will execute it. "
         "Never ask 'Would you like me to...' or 'Shall I...' — either do it or say "
         "you cannot. Do not promise actions you are uncertain about."
+        + INJECTION_DEFENSE_CLAUSE
+    )
+
+    _FACTUAL_RAG_SYSTEM_PROMPT = (
+        "You are Talon, a personal AI assistant answering a factual question from "
+        "the user's own documents. "
+        "Document excerpts are provided below — they are the ONLY authoritative source.\n\n"
+        "Rules:\n"
+        "1. Answer THOROUGHLY. List every relevant detail found in the excerpts: "
+        "stats, powers, rules, requirements, weaknesses, costs, page references.\n"
+        "2. Use ONLY information explicitly present in the excerpts. "
+        "Do NOT add, infer, or contradict anything from the excerpts.\n"
+        "3. If the excerpts contain the answer, give a complete structured response "
+        "with headers, bullet points, or numbered lists as appropriate.\n"
+        "4. Cite the source filename and page number for each fact.\n"
+        "5. If something is NOT in the excerpts, say it was not found. "
+        "Do NOT substitute general knowledge or speculation.\n"
+        "6. Do NOT pad the response with filler text. Every sentence must convey "
+        "specific information from the excerpts. Stop when you have reported all "
+        "relevant facts."
         + INJECTION_DEFENSE_CLAUSE
     )
 
@@ -276,9 +298,11 @@ class ConversationEngine:
             prompt = (
                 f"{command}\n\n"
                 f"Answer using ONLY the document excerpts provided. "
-                f"Cite the source filename when referencing them. "
-                f"For specific stats, numbers, or rules: only report values that appear "
-                f"verbatim in the excerpts. If a value is missing from the excerpts, say so."
+                f"Give a THOROUGH answer — list every relevant detail, stat, power, "
+                f"rule, and requirement found in the excerpts. Use structured formatting "
+                f"(headers, bullets) for readability. "
+                f"Cite the source filename and page for each fact. "
+                f"If a value is missing from the excerpts, say so."
             )
         else:
             prompt = f"{command}\n\nRespond briefly and conversationally (2-3 sentences max)."
@@ -302,6 +326,20 @@ class ConversationEngine:
         rag_alt_queries: list[str] = []
         use_explicit_rag = rag_explicit or intent in ("factual", "synthesis")
         do_multi_hop     = rag_explicit or intent == "factual"
+
+        # Override the prompt for heuristic-detected factual/synthesis queries.
+        # When rag_explicit is True the prompt was already set above; this handles
+        # the case where the intent classifier detected a factual query.
+        if not rag_explicit and intent in ("factual", "synthesis"):
+            prompt = (
+                f"{command}\n\n"
+                f"Answer using ONLY the document excerpts provided. "
+                f"Give a THOROUGH answer — list every relevant detail, stat, power, "
+                f"rule, and requirement found in the excerpts. Use structured formatting "
+                f"(headers, bullets) for readability. "
+                f"Cite the source filename and page for each fact. "
+                f"If a value is missing from the excerpts, say so."
+            )
 
         if use_explicit_rag:
             try:
@@ -433,9 +471,17 @@ class ConversationEngine:
             prompt = "\n".join(lines) + "\n\n" + prompt
 
         all_images = ([screenshot_b64] if screenshot_b64 else []) + file_images_b64
+
+        # Use factual system prompt when document context was injected in
+        # explicit/factual mode — tells the LLM to give thorough, structured
+        # answers instead of 1-3 sentence conversational replies.
+        sys_prompt = self._CONVERSATION_SYSTEM_PROMPT
+        if doc_context and use_explicit_rag:
+            sys_prompt = self._FACTUAL_RAG_SYSTEM_PROMPT
+
         response = self._a.llm.generate(
             prompt,
-            system_prompt=self._CONVERSATION_SYSTEM_PROMPT,
+            system_prompt=sys_prompt,
             use_vision=bool(all_images),
             images_b64=all_images or None,
         )

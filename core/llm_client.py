@@ -29,33 +29,60 @@ def _truncate_degeneration(text: str, *, ngram_size: int = 5,
                            repeat_threshold: int = 3) -> str:
     """Detect and truncate LLM degeneration loops.
 
-    Scans the output for repeated N-grams.  When any N-gram appears
-    ``repeat_threshold`` times, the text is truncated at the start of
-    the second occurrence — keeping the first (useful) copy and
-    discarding the spiral.
+    Two detection strategies:
+    1. **N-gram repetition**: scans for repeated 5-grams. Catches copy-paste loops.
+    2. **Run-on detection**: catches semantic-loop degeneration where the model
+       produces a wall of text without sentence breaks. If any stretch exceeds
+       60 words without a sentence-ending punctuation mark (. ! ? or newline),
+       the text is truncated at the last complete sentence.
 
     Returns the (possibly shortened) text.
     """
+    # ── Strategy 1: N-gram repetition ────────────────────────
     words = text.split()
-    if len(words) < ngram_size * repeat_threshold:
-        return text
+    if len(words) >= ngram_size * repeat_threshold:
+        seen: dict[tuple, list[int]] = {}  # ngram -> list of word-positions
+        for i in range(len(words) - ngram_size + 1):
+            gram = tuple(w.lower() for w in words[i:i + ngram_size])
+            positions = seen.setdefault(gram, [])
+            positions.append(i)
+            if len(positions) >= repeat_threshold:
+                # Truncate at the start of the second occurrence
+                cut = positions[1]
+                truncated = " ".join(words[:cut]).rstrip(" ,;:-")
+                if len(truncated) > 40:
+                    log.warning(
+                        f"[LLM] Degeneration detected (ngram repeated "
+                        f"{len(positions)}x at word {cut}/{len(words)}), "
+                        f"truncating"
+                    )
+                    return truncated
 
-    seen: dict[tuple, list[int]] = {}  # ngram -> list of word-positions
-    for i in range(len(words) - ngram_size + 1):
-        gram = tuple(w.lower() for w in words[i:i + ngram_size])
-        positions = seen.setdefault(gram, [])
-        positions.append(i)
-        if len(positions) >= repeat_threshold:
-            # Truncate at the start of the second occurrence
-            cut = positions[1]
-            truncated = " ".join(words[:cut]).rstrip(" ,;:-")
-            if len(truncated) > 40:
-                log.warning(
-                    f"[LLM] Degeneration detected (ngram repeated "
-                    f"{len(positions)}x at word {cut}/{len(words)}), "
-                    f"truncating"
-                )
-                return truncated
+    # ── Strategy 2: Run-on sentence detection ────────────────
+    # Split on sentence-ending punctuation. If any segment has 60+
+    # words, the model has entered a semantic degeneration spiral
+    # (unique vocabulary but no coherent structure).
+    import re as _re
+    RUN_ON_THRESHOLD = 60
+    sentences = _re.split(r'(?<=[.!?\n])\s+', text)
+    if len(sentences) > 1:
+        for idx, sent in enumerate(sentences):
+            word_count = len(sent.split())
+            if word_count >= RUN_ON_THRESHOLD:
+                # Keep everything up to (but not including) this run-on sentence
+                good_part = ". ".join(sentences[:idx]).rstrip(" ,;:-")
+                if not good_part:
+                    # The very first sentence is a run-on — take first 60 words
+                    good_part = " ".join(sent.split()[:RUN_ON_THRESHOLD])
+                good_part = good_part.rstrip(" ,;:-")
+                if good_part and len(good_part) > 40:
+                    log.warning(
+                        f"[LLM] Run-on degeneration detected (segment {idx} "
+                        f"has {word_count} words without sentence break), "
+                        f"truncating"
+                    )
+                    return good_part
+
     return text
 
 

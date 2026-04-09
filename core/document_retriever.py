@@ -238,20 +238,28 @@ class DocumentRetriever:
 
             if use_explicit:
                 lines = [
-                    "The following excerpts are from the user's own documents. "
-                    "Prioritize this content — use it directly and cite the source filename. "
-                    "Use ONLY what is explicitly stated in these excerpts. "
-                    "For any specific stat, number, rule, or structured value — if it is not "
-                    "present in the excerpts, say it was not found rather than substituting "
-                    "from general knowledge. General knowledge may contradict the document."
+                    "AUTHORITATIVE DOCUMENT EXCERPTS — these are from the user's own "
+                    "reference library and are the ONLY source of truth for this answer.\n"
+                    "Instructions: Report ALL details found in these excerpts. "
+                    "Include every stat, power, weakness, requirement, cost, and rule "
+                    "mentioned. Quote or closely paraphrase the source text. "
+                    "Cite filename and page number for each fact. "
+                    "If a detail is present in the excerpts, you MUST include it. "
+                    "If a detail is NOT present, say it was not found. "
+                    "Do NOT contradict or reinterpret the excerpt text. "
+                    "Do NOT pad with filler or speculation."
                 ]
             else:
                 lines = [
                     "The following document excerpts may be relevant — "
                     "use them if helpful, ignore if not:"
                 ]
+            # Explicit mode: allow longer excerpts so stat blocks / rule
+            # tables aren't truncated mid-content. Ambient keeps 800 to
+            # avoid bloating casual conversation prompts.
+            max_chars = 1500 if use_explicit else 800
             for filename, text, dist, page_num in all_chunks:
-                truncated = text[:800] + "..." if len(text) > 800 else text
+                truncated = text[:max_chars] + "..." if len(text) > max_chars else text
                 source = (f"{filename} (page {page_num + 1})"
                           if page_num is not None else filename)
                 lines.append(f"- From {source}: {truncated}")
