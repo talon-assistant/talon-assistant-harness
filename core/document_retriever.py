@@ -232,24 +232,30 @@ class DocumentRetriever:
                     if missing_pages:
                         for pg in sorted(missing_pages):
                             try:
+                                # Fetch up to 3 chunks per page to handle
+                                # duplicates — pick the longest one.
                                 hits = self._docs.get(
                                     where={"$and": [
                                         {"filename": top_source},
                                         {"page_number": pg},
                                     ]},
-                                    limit=1,
+                                    limit=3,
                                     include=["documents", "metadatas"],
                                 )
+                                best_doc = None
                                 for doc, meta in zip(
                                     hits.get("documents", []),
                                     hits.get("metadatas", []),
                                 ):
                                     key = doc[:100]
                                     if key not in seen_keys:
-                                        seen_keys.add(key)
-                                        primary_chunks.append(
-                                            (top_source, doc, 0.9, pg)
-                                        )
+                                        if best_doc is None or len(doc) > len(best_doc):
+                                            best_doc = doc
+                                if best_doc:
+                                    seen_keys.add(best_doc[:100])
+                                    primary_chunks.append(
+                                        (top_source, best_doc, 0.9, pg)
+                                    )
                             except Exception:
                                 pass
 
@@ -294,18 +300,21 @@ class DocumentRetriever:
             for filename, text, dist, page_num in all_chunks:
                 # Vision-ingested chunks have format:
                 #   [VISION: <hallucinated description>]\n\nRAW TEXT:\n<actual content>
-                # The VISION section is often degenerated/hallucinated by the
-                # vision model.  Strip it and use only RAW TEXT for injection —
-                # it's the actual PDF-extracted content.
+                # Strip VISION, use only RAW TEXT for injection.
                 raw_marker = "\nRAW TEXT:\n"
                 if raw_marker in text:
                     raw_part = text.split(raw_marker, 1)[1]
-                    # Fall back to full text if RAW TEXT is too short (blank page)
-                    text = raw_part if len(raw_part.strip()) > 50 else text
+                    if len(raw_part.strip()) > 50:
+                        text = raw_part
 
-                # Explicit mode: allow up to 2000 chars per chunk so stat blocks
-                # and rule tables aren't truncated mid-content.
-                # Ambient keeps 800 to avoid bloating casual prompts.
+                # For explicit mode: extract keyword-relevant paragraphs
+                # instead of dumping the full page. This focuses the model's
+                # attention on the specific content that matches the query
+                # (e.g. the Feathery section, not the Furry/Scaly sections).
+                if use_explicit and keywords and len(text) > 600:
+                    text = self._extract_relevant_paragraphs(
+                        text, keywords, context_paragraphs=1, max_chars=2000)
+
                 max_chars = 2000 if use_explicit else 800
                 truncated = text[:max_chars] + "..." if len(text) > max_chars else text
                 source = (f"{filename} (page {page_num + 1})"
@@ -319,6 +328,61 @@ class DocumentRetriever:
             return ""
 
     # ── Internal helpers ──────────────────────────────────────────────────
+
+    @staticmethod
+    def _extract_relevant_paragraphs(
+        text: str,
+        keywords: set[str],
+        context_paragraphs: int = 1,
+        max_chars: int = 2000,
+    ) -> str:
+        """Extract paragraphs containing query keywords with surrounding context.
+
+        Instead of injecting an entire page, find the paragraphs that contain
+        query-relevant terms and include ±context_paragraphs of surrounding
+        content.  This focuses the model's attention on the specific section
+        that matches (e.g. the Feathery section, not Furry/Scaly).
+
+        Falls back to the original text if no keywords match or the result
+        would be too short.
+        """
+        paragraphs = [p.strip() for p in text.split("\n") if p.strip()]
+        if len(paragraphs) <= 3:
+            return text  # Already short enough
+
+        # Score each paragraph by keyword overlap
+        hits: set[int] = set()
+        for i, para in enumerate(paragraphs):
+            lower = para.lower()
+            if any(kw in lower for kw in keywords):
+                hits.add(i)
+
+        if not hits:
+            return text  # No keyword matches — return full text
+
+        # Expand each hit by ±context_paragraphs
+        included: set[int] = set()
+        for idx in hits:
+            for offset in range(-context_paragraphs, context_paragraphs + 1):
+                pos = idx + offset
+                if 0 <= pos < len(paragraphs):
+                    included.add(pos)
+
+        # Build result preserving order, with "..." between gaps
+        parts: list[str] = []
+        prev = -2
+        for idx in sorted(included):
+            if idx > prev + 1:
+                if parts:
+                    parts.append("...")
+            parts.append(paragraphs[idx])
+            prev = idx
+
+        result = "\n".join(parts)
+        # Fall back if the extraction is too short (lost important context)
+        if len(result) < 100:
+            return text
+        return result[:max_chars]
 
     def _rrf_fuse(
         self,
