@@ -51,7 +51,7 @@ class DocumentRetriever:
             return ""
 
         use_explicit = explicit or synthesis
-        n_results = 8 if use_explicit else 2
+        n_results = 12 if use_explicit else 2
         max_distance = 1.8 if use_explicit else 0.55
         meta_cache: dict[str, dict] = {}  # text[:100] → full ChromaDB metadata dict
 
@@ -156,9 +156,13 @@ class DocumentRetriever:
             else:
                 all_chunks.sort(key=lambda x: x[2])
 
-            # Candidate pool for reranker: slightly larger than final cap so
-            # the cross-encoder has enough to choose from.
-            RERANK_POOL = 12 if use_explicit else 2
+            # Candidate pool for reranker: substantially larger than final
+            # cap so the cross-encoder (our best ranker) sees enough
+            # diversity. With 35K+ chunks in the collection, RRF fusion
+            # of semantic + $contains can push relevant chunks past
+            # position 12, so a wider pool prevents the cross-encoder
+            # from missing them.
+            RERANK_POOL = 20 if use_explicit else 2
             FINAL_CAP   = 8  if use_explicit else 2
             all_chunks = all_chunks[:RERANK_POOL]
 

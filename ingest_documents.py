@@ -332,7 +332,7 @@ class DocumentIngester:
 
         # Clear stale chunks
         try:
-            existing = self.collection.get(where={"filename": filepath.name}, include=[])
+            existing = self.collection.get(where={"filename": filepath.name}, include=[], limit=10000)
             if existing["ids"]:
                 self.collection.delete(ids=existing["ids"])
                 log.info(f" → Cleared {len(existing['ids'])} existing chunks")
@@ -578,6 +578,7 @@ class DocumentIngester:
             existing = self.collection.get(
                 where={"filename": filepath.name},
                 include=[],
+                limit=10000,
             )
             if existing["ids"]:
                 self.collection.delete(ids=existing["ids"])
@@ -740,6 +741,7 @@ class DocumentIngester:
             existing = self.collection.get(
                 where={"filename": filepath.name},
                 include=[],
+                limit=10000,
             )
             if existing["ids"]:
                 self.collection.delete(ids=existing["ids"])
