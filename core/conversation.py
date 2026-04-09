@@ -320,9 +320,13 @@ class ConversationEngine:
                 raw = re.sub(r"```[a-zA-Z]*\n?", "", raw).strip()
                 queries = json.loads(raw)
                 if isinstance(queries, list) and queries:
-                    rag_query = str(queries[0])
-                    rag_alt_queries = [str(q) for q in queries[1:]]
-                    log.debug(f"[RAG] Queries: {queries}")
+                    # Always keep the raw user command as the primary
+                    # query — it often matches better than the LLM's
+                    # expansion. The LLM queries become alt_queries
+                    # that union additional results.
+                    rag_query = command
+                    rag_alt_queries = [str(q) for q in queries]
+                    log.debug(f"[RAG] Queries: raw + {queries}")
             except Exception:
                 pass  # Fall back to raw command silently
 
