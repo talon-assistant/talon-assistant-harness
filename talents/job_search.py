@@ -347,31 +347,66 @@ class JobSearchTalent(BaseTalent):
         with persistent profiles and login cookies. undetected-chromedriver
         patches the chromedriver binary to remove detection signals.
 
-        Falls back to persistent profile driver if uc is not installed.
+        Uses its own profile directory (not the shared persistent profile)
+        to avoid lock conflicts when other scrapers are running.
+
+        Falls back to a clean throwaway driver if uc is not installed.
         """
         try:
             import undetected_chromedriver as uc
+
+            # Detect installed Chrome major version to avoid mismatch
+            chrome_ver = None
+            try:
+                import subprocess as _sp
+                # Windows: read Chrome version from registry
+                result = _sp.run(
+                    ['reg', 'query',
+                     r'HKEY_CURRENT_USER\Software\Google\Chrome\BLBeacon',
+                     '/v', 'version'],
+                    capture_output=True, text=True, timeout=5,
+                )
+                if result.returncode == 0:
+                    for line in result.stdout.splitlines():
+                        if 'version' in line.lower():
+                            ver_str = line.strip().split()[-1]
+                            chrome_ver = int(ver_str.split('.')[0])
+                            break
+            except Exception:
+                pass
+
             options = uc.ChromeOptions()
             options.add_argument("--window-size=1920,1080")
             options.add_argument("--no-sandbox")
             options.add_argument("--disable-dev-shm-usage")
-            # Use persistent profile for cookies/session
-            options.add_argument(f"--user-data-dir={self._profile_dir}")
-            driver = uc.Chrome(
+
+            # Own profile dir for Indeed (avoids locking persistent profile)
+            indeed_profile = os.path.join(_data_dir(), "indeed_chrome_profile")
+            os.makedirs(indeed_profile, exist_ok=True)
+            options.add_argument(f"--user-data-dir={indeed_profile}")
+
+            kwargs = dict(
                 options=options,
                 headless=True,
                 use_subprocess=True,
             )
-            log.info("[JobSearch] Indeed: using undetected-chromedriver")
+            if chrome_ver:
+                kwargs["version_main"] = chrome_ver
+                log.info(f"[JobSearch] Indeed: using uc with Chrome {chrome_ver}")
+
+            driver = uc.Chrome(**kwargs)
+            log.info("[JobSearch] Indeed: undetected-chromedriver ready")
             return driver
         except ImportError:
             log.warning("[JobSearch] undetected-chromedriver not installed, "
                       "falling back to standard driver (may be blocked)")
-            return self._create_driver_persistent(headless=True)
         except Exception as e:
             log.warning(f"[JobSearch] undetected-chromedriver failed ({e}), "
                       "falling back to standard driver")
-            return self._create_driver_persistent(headless=True)
+
+        # Fallback: clean throwaway profile (will likely get blocked)
+        driver, self._indeed_temp_dir = self._create_driver_clean(headless=True)
+        return driver
 
     # ── Score existing unscored jobs ────────────────────────────────────────
 
@@ -2707,6 +2742,7 @@ class JobSearchTalent(BaseTalent):
         # Chrome beyond user-agent checks. undetected-chromedriver patches
         # the chromedriver binary itself to remove detection signals
         # (navigator.webdriver, WebGL SwiftShader, missing plugins, etc.).
+        self._indeed_temp_dir = None  # Set by fallback path if uc fails
         driver = self._create_indeed_driver()
         jobs: list[dict] = []
         seen_jks: set[str] = set()
@@ -2778,7 +2814,11 @@ class JobSearchTalent(BaseTalent):
 
             log.info(f"[JobSearch] Indeed: {len(jobs)} listings")
         finally:
-            driver.quit()
+            try:
+                driver.quit()
+            finally:
+                if self._indeed_temp_dir:
+                    shutil.rmtree(self._indeed_temp_dir, ignore_errors=True)
 
         return jobs
 
