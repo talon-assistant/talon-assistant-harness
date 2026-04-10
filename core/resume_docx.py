@@ -550,15 +550,35 @@ def render_resume_docx(
 
 
 def convert_to_pdf(docx_path: Path) -> Path | None:
-    """Convert a DOCX to PDF via docx2pdf. Returns the PDF path on success,
-    None on failure (logs the error).
+    """Convert a DOCX to PDF via docx2pdf (requires MS Word installed).
+
+    Runs the conversion in a subprocess because docx2pdf uses COM
+    automation which can raise a Windows fatal exception (0x800706be)
+    that kills the entire Python process. Isolating it in a child
+    process protects the main app from COM crashes.
     """
+    import subprocess as _sp
+    import sys
+
+    pdf_path = docx_path.with_suffix(".pdf")
+
+    # Run conversion in a child process to isolate COM crashes
+    script = (
+        "import sys; from docx2pdf import convert; "
+        f"convert(r'{docx_path}', r'{pdf_path}')"
+    )
     try:
-        import docx2pdf
-        pdf_path = docx_path.with_suffix(".pdf")
-        docx2pdf.convert(str(docx_path), str(pdf_path))
+        result = _sp.run(
+            [sys.executable, "-c", script],
+            capture_output=True, text=True, timeout=60,
+        )
         if pdf_path.exists():
             return pdf_path
+        if result.returncode != 0:
+            log.warning(f"[ResumeDocx] PDF conversion subprocess failed "
+                      f"(rc={result.returncode}): {result.stderr[:200]}")
+    except _sp.TimeoutExpired:
+        log.warning("[ResumeDocx] PDF conversion timed out (60s)")
     except Exception as e:
         log.warning(f"[ResumeDocx] PDF conversion failed: {e}")
     return None
