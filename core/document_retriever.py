@@ -138,7 +138,34 @@ class DocumentRetriever:
 
             # ── Phase 2: ranking ──────────────────────────────────────────
             all_terms = [query] + (alt_queries or [])
-            keywords = set(w.lower() for t in all_terms for w in t.split() if len(w) > 3)
+
+            # Strip common English filler words that inflate keyword scores
+            # on generic content. Only topic-specific terms should drive
+            # scoring — "provide detail" shouldn't boost a credits page.
+            _STOPWORDS = {
+                "what", "when", "where", "which", "who", "whom", "whose",
+                "that", "this", "these", "those", "there", "here",
+                "have", "has", "had", "been", "being", "were", "was",
+                "will", "would", "could", "should", "shall", "might",
+                "does", "did", "done", "doing", "make", "made",
+                "give", "gave", "given", "take", "took", "taken",
+                "tell", "told", "about", "with", "from", "into",
+                "much", "many", "more", "most", "some", "such",
+                "also", "just", "than", "then", "only", "very",
+                "like", "well", "even", "back", "over", "after",
+                "each", "every", "other", "both", "same", "know",
+                "provide", "detail", "details", "detailed", "explain",
+                "explain", "describe", "please", "possible", "list",
+                "show", "find", "help", "need", "want", "look",
+                "information", "info",
+                # Domain-generic: appears in every book in the collection
+                "shadowrun",
+            }
+
+            keywords = set(
+                w.lower() for t in all_terms for w in t.split()
+                if len(w) > 3 and w.lower() not in _STOPWORDS
+            )
 
             def _keyword_score(chunk_text: str) -> int:
                 lower = chunk_text.lower()
