@@ -339,6 +339,40 @@ class JobSearchTalent(BaseTalent):
             raise
         return driver, temp_dir
 
+    def _create_indeed_driver(self):
+        """Create an undetected-chromedriver instance for Indeed.
+
+        Indeed uses Cloudflare bot detection that fingerprints headless
+        Chrome at the binary level. Standard Selenium gets blocked even
+        with persistent profiles and login cookies. undetected-chromedriver
+        patches the chromedriver binary to remove detection signals.
+
+        Falls back to persistent profile driver if uc is not installed.
+        """
+        try:
+            import undetected_chromedriver as uc
+            options = uc.ChromeOptions()
+            options.add_argument("--window-size=1920,1080")
+            options.add_argument("--no-sandbox")
+            options.add_argument("--disable-dev-shm-usage")
+            # Use persistent profile for cookies/session
+            options.add_argument(f"--user-data-dir={self._profile_dir}")
+            driver = uc.Chrome(
+                options=options,
+                headless=True,
+                use_subprocess=True,
+            )
+            log.info("[JobSearch] Indeed: using undetected-chromedriver")
+            return driver
+        except ImportError:
+            log.warning("[JobSearch] undetected-chromedriver not installed, "
+                      "falling back to standard driver (may be blocked)")
+            return self._create_driver_persistent(headless=True)
+        except Exception as e:
+            log.warning(f"[JobSearch] undetected-chromedriver failed ({e}), "
+                      "falling back to standard driver")
+            return self._create_driver_persistent(headless=True)
+
     # ── Score existing unscored jobs ────────────────────────────────────────
 
     def _handle_score_existing(self) -> dict:
@@ -2669,10 +2703,11 @@ class JobSearchTalent(BaseTalent):
         from selenium.webdriver.support.ui import WebDriverWait
         from selenium.webdriver.support import expected_conditions as EC
 
-        # Indeed uses Cloudflare bot detection — a clean throwaway profile
-        # gets blocked immediately. Use the persistent profile (same as
-        # LinkedIn) so cookies and browsing history look human.
-        driver = self._create_driver_persistent(headless=True)
+        # Indeed uses Cloudflare bot detection that fingerprints headless
+        # Chrome beyond user-agent checks. undetected-chromedriver patches
+        # the chromedriver binary itself to remove detection signals
+        # (navigator.webdriver, WebGL SwiftShader, missing plugins, etc.).
+        driver = self._create_indeed_driver()
         jobs: list[dict] = []
         seen_jks: set[str] = set()
         max_pages = 5
