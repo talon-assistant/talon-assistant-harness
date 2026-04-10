@@ -406,6 +406,21 @@ class ConversationEngine:
 
             all_images = ([screenshot_b64] if screenshot_b64 else []) + file_images_b64
 
+            # DEBUG: dump the exact prompt to a file so we can see
+            # what the model actually receives.
+            try:
+                import pathlib
+                debug_path = pathlib.Path("data/logs/rag_debug_prompt.txt")
+                debug_path.parent.mkdir(parents=True, exist_ok=True)
+                with open(debug_path, "w", encoding="utf-8") as f:
+                    f.write("=== SYSTEM PROMPT ===\n")
+                    f.write(self._FACTUAL_RAG_SYSTEM_PROMPT)
+                    f.write("\n\n=== USER PROMPT ===\n")
+                    f.write(prompt)
+                log.info(f"[RAG DEBUG] Full prompt dumped to {debug_path}")
+            except Exception as e:
+                log.warning(f"[RAG DEBUG] Could not dump prompt: {e}")
+
             response = self._a.llm.generate(
                 prompt,
                 system_prompt=self._FACTUAL_RAG_SYSTEM_PROMPT,
