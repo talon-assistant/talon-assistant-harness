@@ -2691,6 +2691,32 @@ class JobSearchTalent(BaseTalent):
                 time.sleep(2)
 
                 cards = driver.find_elements(By.CSS_SELECTOR, 'div[data-jk]')
+
+                # Fallback selectors if data-jk isn't present
+                if not cards:
+                    cards = driver.find_elements(
+                        By.CSS_SELECTOR, 'div.job_seen_beacon')
+                if not cards:
+                    cards = driver.find_elements(
+                        By.CSS_SELECTOR, 'td.resultContent')
+
+                # Debug dump on first page zero results
+                if not cards and page_num == 0:
+                    try:
+                        debug_dir = os.path.join(_data_dir(), "debug")
+                        os.makedirs(debug_dir, exist_ok=True)
+                        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                        driver.save_screenshot(
+                            os.path.join(debug_dir, f"indeed_empty_{stamp}.png"))
+                        html = driver.page_source[:5000]
+                        with open(os.path.join(debug_dir, f"indeed_empty_{stamp}.html"),
+                                  "w", encoding="utf-8") as f:
+                            f.write(html)
+                        log.warning(f"[JobSearch] Indeed: 0 cards on page 1, "
+                                  f"debug dump saved to {debug_dir}")
+                    except Exception as e:
+                        log.warning(f"[JobSearch] Indeed debug dump failed: {e}")
+
                 page_added = 0
                 for card in cards:
                     try:
