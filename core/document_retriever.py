@@ -209,13 +209,28 @@ class DocumentRetriever:
             # When results cluster around one document, filter out noise
             # from other books and fetch neighboring pages to ensure
             # content spanning page boundaries is fully captured.
+            #
+            # Pick the primary source by TOTAL keyword score, not chunk count.
+            # A document with 3 highly-relevant chunks (Bestial Nature with
+            # "shifter", "feathery") beats a document with 5 generic chunks
+            # (Berlin Edition with "credits", "table of contents").
             if use_explicit and all_chunks:
-                from collections import Counter
-                source_counts = Counter(fn for fn, _, _, _ in all_chunks)
-                top_source, top_count = source_counts.most_common(1)[0]
+                from collections import defaultdict
+                source_kw_totals: dict[str, int] = defaultdict(int)
+                source_counts: dict[str, int] = defaultdict(int)
+                for fn, txt, _, _ in all_chunks:
+                    source_kw_totals[fn] += _keyword_score(txt)
+                    source_counts[fn] += 1
 
-                # If the primary source has ≥2 chunks, focus on it
-                if top_count >= 2:
+                # Pick source with highest total keyword score (ties broken by count)
+                top_source = max(
+                    source_kw_totals,
+                    key=lambda fn: (source_kw_totals[fn], source_counts[fn]),
+                )
+                top_count = source_counts[top_source]
+
+                # Only concentrate if the source has ≥2 chunks AND meaningful keyword overlap
+                if top_count >= 2 and source_kw_totals[top_source] >= 4:
                     primary_chunks = [c for c in all_chunks if c[0] == top_source]
                     other_chunks = [c for c in all_chunks if c[0] != top_source]
 
