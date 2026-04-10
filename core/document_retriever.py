@@ -314,14 +314,35 @@ class DocumentRetriever:
                             log.info(f"[RAG] Page-vicinity added {added} "
                                   f"adjacent page(s) from {top_source}")
 
-                    # Sort primary chunks by page number so the model reads
-                    # them in document order (easier to follow for stat blocks
-                    # that span multiple pages).
-                    primary_chunks.sort(
+                    # Reranker-selected pages have priority over vicinity
+                    # filler. If we need to cap, drop vicinity pages first.
+                    # Then sort by page number for reading order.
+                    reranker_pages = {pg for _, _, _, pg in primary_chunks
+                                      if pg is not None and any(
+                                          c[3] == pg and c[2] != 0.9
+                                          for c in primary_chunks)}
+                    vicinity_only = [c for c in primary_chunks
+                                     if c[3] not in reranker_pages]
+                    reranker_kept = [c for c in primary_chunks
+                                     if c[3] in reranker_pages]
+
+                    # Fill to FINAL_CAP: all reranker pages + vicinity to fill
+                    remaining_slots = FINAL_CAP - len(reranker_kept)
+                    if remaining_slots > 0:
+                        # Sort vicinity by proximity to reranker pages
+                        if reranker_pages:
+                            mid = sum(reranker_pages) / len(reranker_pages)
+                            vicinity_only.sort(
+                                key=lambda c: abs((c[3] or 999) - mid))
+                        final_primary = reranker_kept + vicinity_only[:remaining_slots]
+                    else:
+                        final_primary = reranker_kept[:FINAL_CAP]
+
+                    # Sort by page number for reading order
+                    final_primary.sort(
                         key=lambda c: c[3] if c[3] is not None else 999)
 
-                    # Keep primary source chunks + up to 2 from other sources
-                    all_chunks = primary_chunks[:FINAL_CAP]
+                    all_chunks = final_primary
                     remaining = FINAL_CAP - len(all_chunks)
                     if remaining > 0 and other_chunks:
                         all_chunks.extend(other_chunks[:min(2, remaining)])
@@ -357,16 +378,16 @@ class DocumentRetriever:
                     if len(raw_part.strip()) > 50:
                         text = raw_part
 
-                # For explicit mode: extract keyword-relevant paragraphs
-                # instead of dumping the full page. This focuses the model's
-                # attention on the specific content that matches the query
-                # (e.g. the Feathery section, not the Furry/Scaly sections).
-                if use_explicit and keywords and len(text) > 600:
-                    text = self._extract_relevant_paragraphs(
-                        text, keywords, context_paragraphs=8, max_chars=2500)
-
-                max_chars = 2000 if use_explicit else 800
-                truncated = text[:max_chars] + "..." if len(text) > max_chars else text
+                # Explicit mode: pass full page content — no truncation.
+                # Chunks are page-sized (~400-800 words). Truncating at
+                # any fixed limit risks cutting off stat blocks that appear
+                # at the tail end of a page (feathery shifter starts at
+                # char ~3200 on a 4075-char page). With 16K context and
+                # 8 chunks, full pages fit comfortably.
+                # Ambient mode: keep brief to avoid bloating casual replies.
+                if not use_explicit:
+                    text = text[:800] + "..." if len(text) > 800 else text
+                truncated = text
                 source = (f"{filename} (page {page_num + 1})"
                           if page_num is not None else filename)
                 lines.append(f"- From {source}: {truncated}")
