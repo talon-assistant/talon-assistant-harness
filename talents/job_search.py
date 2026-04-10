@@ -1,4 +1,4 @@
-"""JobSearchTalent -- automated job search across LinkedIn, Dice, and Built In.
+"""JobSearchTalent -- automated job search across LinkedIn, Dice, Built In, Indeed, and Glassdoor.
 
 Scrapes job listings from configured search URLs, identifies new postings
 not yet in the job tracker, adds them automatically, and runs automated
@@ -57,6 +57,10 @@ def _detect_site(url: str) -> str:
         return "dice"
     if "builtin.com" in host:
         return "builtin"
+    if "indeed.com" in host:
+        return "indeed"
+    if "glassdoor.com" in host:
+        return "glassdoor"
     return "unknown"
 
 
@@ -69,6 +73,9 @@ def _clean_search_url(url: str) -> str:
     if site == "linkedin":
         for key in ("currentJobId", "origin"):
             params.pop(key, None)
+    elif site == "indeed":
+        for key in ("vjk", "advn", "fromage", "from"):
+            params.pop(key, None)
 
     # Flatten single-value lists for urlencode
     flat = {k: v[0] if len(v) == 1 else v for k, v in params.items()}
@@ -76,17 +83,19 @@ def _clean_search_url(url: str) -> str:
 
 
 class JobSearchTalent(BaseTalent):
-    """Search LinkedIn, Dice, and Built In for job listings."""
+    """Search LinkedIn, Dice, Built In, Indeed, and Glassdoor for job listings."""
 
     name = "job_search"
     description = (
-        "Search for job listings on LinkedIn, Dice, and Built In; "
-        "track new postings and hand matches to Cowork for fit analysis"
+        "Search for job listings on LinkedIn, Dice, Built In, Indeed, "
+        "and Glassdoor; track new postings and hand matches to Cowork "
+        "for fit analysis"
     )
     keywords = [
         "job search", "job searches", "job hunt", "job hunting",
         "hunt for jobs", "search for jobs", "find jobs", "find job",
-        "check linkedin", "check dice", "new job listings",
+        "check linkedin", "check dice", "check indeed", "check glassdoor",
+        "new job listings",
         "search url", "search urls", "job listings",
         "todays job", "today's job", "do a job",
         "cover letter",
@@ -216,7 +225,7 @@ class JobSearchTalent(BaseTalent):
         site = _detect_site(url)
         if site == "unknown":
             return _fail(
-                "Unsupported site. Supported: LinkedIn, Dice, Built In."
+                "Unsupported site. Supported: LinkedIn, Dice, Built In, Indeed, Glassdoor."
             )
         self._search_config["urls"].append(url)
         self._save_search_config()
@@ -934,7 +943,7 @@ class JobSearchTalent(BaseTalent):
                 "position": str,
                 "location": str,
                 "job_url": str,
-                "source": str,         # "LinkedIn" / "Dice" / "Built In" / "Manual"
+                "source": str,         # "LinkedIn" / "Dice" / "Built In" / "Indeed" / "Glassdoor" / "Manual"
                 "duplicate": bool,     # True if the URL was already in the tracker
             }
         """
@@ -949,6 +958,8 @@ class JobSearchTalent(BaseTalent):
             "linkedin": "LinkedIn",
             "dice": "Dice",
             "builtin": "Built In",
+            "indeed": "Indeed",
+            "glassdoor": "Glassdoor",
         }.get(site, "Manual")
 
         # Dedup by bare URL before spinning up Chrome
@@ -1243,6 +1254,8 @@ class JobSearchTalent(BaseTalent):
                     "linkedin": self._scrape_linkedin,
                     "dice":     self._scrape_dice,
                     "builtin":  self._scrape_builtin,
+                    "indeed":   self._scrape_indeed,
+                    "glassdoor": self._scrape_glassdoor,
                 }.get(site)
                 if scraper:
                     jobs = scraper(url)
@@ -2643,6 +2656,270 @@ class JobSearchTalent(BaseTalent):
                 shutil.rmtree(temp_dir, ignore_errors=True)
 
         return jobs
+
+    # ── Indeed ──────────────────────────────────────────────────────────────
+
+    def _scrape_indeed(self, url: str) -> list[dict]:
+        """Scrape job listings from Indeed.com search results.
+
+        Paginates via &start=0,10,20,... (max 5 pages = 50 results).
+        Cards identified by the data-jk attribute (job key).
+        """
+        from selenium.webdriver.common.by import By
+        from selenium.webdriver.support.ui import WebDriverWait
+        from selenium.webdriver.support import expected_conditions as EC
+
+        driver, temp_dir = self._create_driver_clean(headless=True)
+        jobs: list[dict] = []
+        seen_jks: set[str] = set()
+        max_pages = 5
+
+        try:
+            for page_num in range(max_pages):
+                page_url = self._indeed_url_with_start(url, page_num * 10)
+                driver.get(page_url)
+                time.sleep(4)
+
+                try:
+                    WebDriverWait(driver, 12).until(
+                        EC.presence_of_element_located((
+                            By.CSS_SELECTOR, 'div[data-jk]',
+                        ))
+                    )
+                except Exception:
+                    pass
+                time.sleep(2)
+
+                cards = driver.find_elements(By.CSS_SELECTOR, 'div[data-jk]')
+                page_added = 0
+                for card in cards:
+                    try:
+                        jk = card.get_attribute("data-jk")
+                        if not jk or jk in seen_jks:
+                            continue
+                        job = self._parse_indeed_card(card, jk)
+                        if job:
+                            seen_jks.add(jk)
+                            jobs.append(job)
+                            page_added += 1
+                    except Exception:
+                        continue
+
+                log.info(
+                    f"[JobSearch] Indeed page {page_num + 1}: +{page_added} "
+                    f"({len(jobs)} total)"
+                )
+                if page_added == 0:
+                    break
+
+            log.info(f"[JobSearch] Indeed: {len(jobs)} listings")
+        finally:
+            try:
+                driver.quit()
+            finally:
+                shutil.rmtree(temp_dir, ignore_errors=True)
+
+        return jobs
+
+    @staticmethod
+    def _indeed_url_with_start(url: str, start: int) -> str:
+        """Return the Indeed search URL with &start=N set."""
+        parsed = urlparse(url)
+        params = parse_qs(parsed.query, keep_blank_values=True)
+        if start > 0:
+            params["start"] = [str(start)]
+        else:
+            params.pop("start", None)
+        flat = {k: v[0] if len(v) == 1 else v for k, v in params.items()}
+        return urlunparse(parsed._replace(query=urlencode(flat, doseq=True)))
+
+    @staticmethod
+    def _parse_indeed_card(card, jk: str) -> dict | None:
+        """Extract job fields from an Indeed card WebElement."""
+        from selenium.webdriver.common.by import By
+
+        # Title
+        try:
+            title_el = card.find_element(
+                By.CSS_SELECTOR, 'h2.jobTitle a, a[id^="job_"]')
+            title = title_el.text.strip()
+        except Exception:
+            return None
+
+        if not title:
+            return None
+
+        # Company
+        try:
+            company_el = card.find_element(
+                By.CSS_SELECTOR,
+                'span[data-testid="company-name"], span.companyName')
+            company = company_el.text.strip()
+        except Exception:
+            company = ""
+
+        # Location
+        try:
+            loc_el = card.find_element(
+                By.CSS_SELECTOR,
+                'div[data-testid="text-location"], div.companyLocation')
+            location = loc_el.text.strip()
+        except Exception:
+            location = ""
+
+        return {
+            "source": "Indeed",
+            "date_found": date.today().isoformat(),
+            "position": title,
+            "company": company,
+            "location": location,
+            "job_url": f"https://www.indeed.com/viewjob?jk={jk}",
+        }
+
+    # ── Glassdoor ──────────────────────────────────────────────────────────
+
+    def _scrape_glassdoor(self, url: str) -> list[dict]:
+        """Scrape job listings from Glassdoor.com search results.
+
+        Paginates via _IP{N}.htm path segment (max 4 pages).
+        Uses longer delays between pages due to aggressive bot detection.
+        """
+        import random
+        from selenium.webdriver.common.by import By
+        from selenium.webdriver.support.ui import WebDriverWait
+        from selenium.webdriver.support import expected_conditions as EC
+
+        driver, temp_dir = self._create_driver_clean(headless=True)
+        jobs: list[dict] = []
+        seen_urls: set[str] = set()
+        max_pages = 4
+
+        try:
+            for page_num in range(1, max_pages + 1):
+                page_url = self._glassdoor_url_with_page(url, page_num)
+                driver.get(page_url)
+                time.sleep(4 + random.uniform(0, 2))
+
+                # Dismiss signup/login modal if present
+                try:
+                    driver.execute_script(
+                        "document.querySelector('[class*=\"modal\"]')?.remove();"
+                        "document.querySelector('.backdrop')?.remove();"
+                        "document.querySelector('[id*=\"SignUpModal\"]')?.remove();"
+                    )
+                except Exception:
+                    pass
+
+                try:
+                    WebDriverWait(driver, 12).until(
+                        EC.presence_of_element_located((
+                            By.CSS_SELECTOR,
+                            'a[data-test="job-link"], '
+                            'li[data-test="jobListing"]',
+                        ))
+                    )
+                except Exception:
+                    pass
+                time.sleep(2)
+
+                # Primary selector, then fallback for CSS module class names
+                cards = driver.find_elements(
+                    By.CSS_SELECTOR, 'li[data-test="jobListing"]')
+                if not cards:
+                    cards = driver.find_elements(
+                        By.CSS_SELECTOR,
+                        'li[class*="JobsList_jobListItem"]')
+
+                page_added = 0
+                for card in cards:
+                    try:
+                        job = self._parse_glassdoor_card(card)
+                        if job and job["job_url"] not in seen_urls:
+                            seen_urls.add(job["job_url"])
+                            jobs.append(job)
+                            page_added += 1
+                    except Exception:
+                        continue
+
+                log.info(
+                    f"[JobSearch] Glassdoor page {page_num}: +{page_added} "
+                    f"({len(jobs)} total)"
+                )
+                if page_added == 0:
+                    break
+                time.sleep(random.uniform(1, 3))
+
+            log.info(f"[JobSearch] Glassdoor: {len(jobs)} listings")
+        finally:
+            try:
+                driver.quit()
+            finally:
+                shutil.rmtree(temp_dir, ignore_errors=True)
+
+        return jobs
+
+    @staticmethod
+    def _glassdoor_url_with_page(url: str, page_num: int) -> str:
+        """Return the Glassdoor search URL for page N.
+
+        Glassdoor embeds page number as _IP{N} in the URL path,
+        e.g. ...jobs-SRCH_IL.0,6_IC..._IP2.htm
+        """
+        import re
+        # Remove existing _IPN if present
+        cleaned = re.sub(r'_IP\d+\.htm', '.htm', url)
+        if page_num <= 1:
+            return cleaned
+        return cleaned.replace('.htm', f'_IP{page_num}.htm')
+
+    @staticmethod
+    def _parse_glassdoor_card(card) -> dict | None:
+        """Extract job fields from a Glassdoor card WebElement."""
+        from selenium.webdriver.common.by import By
+
+        # Title + URL from the job link
+        try:
+            link_el = card.find_element(
+                By.CSS_SELECTOR, 'a[data-test="job-link"]')
+            title = link_el.text.strip()
+            href = link_el.get_attribute("href") or ""
+        except Exception:
+            return None
+
+        if not title:
+            return None
+
+        if href and not href.startswith("http"):
+            href = "https://www.glassdoor.com" + href
+        # Strip tracking query params
+        href = href.split("?")[0] if href else ""
+
+        # Company
+        try:
+            company_el = card.find_element(
+                By.CSS_SELECTOR,
+                'div[data-test="emp-name"], '
+                'span[class*="EmployerProfile"]')
+            company = company_el.text.strip()
+        except Exception:
+            company = ""
+
+        # Location
+        try:
+            loc_el = card.find_element(
+                By.CSS_SELECTOR, 'span[data-test="emp-location"]')
+            location = loc_el.text.strip()
+        except Exception:
+            location = ""
+
+        return {
+            "source": "Glassdoor",
+            "date_found": date.today().isoformat(),
+            "position": title,
+            "company": company,
+            "location": location,
+            "job_url": href,
+        }
 
     # ── Dedup against tracker DB ─────────────────────────────────────────────
 
