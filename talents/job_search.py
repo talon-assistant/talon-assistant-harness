@@ -1,4 +1,4 @@
-"""JobSearchTalent -- automated job search across LinkedIn, Dice, Built In, Indeed, and Glassdoor.
+"""JobSearchTalent -- automated job search across LinkedIn, Dice, Built In, and Glassdoor.
 
 Scrapes job listings from configured search URLs, identifies new postings
 not yet in the job tracker, adds them automatically, and runs automated
@@ -57,8 +57,6 @@ def _detect_site(url: str) -> str:
         return "dice"
     if "builtin.com" in host:
         return "builtin"
-    if "indeed.com" in host:
-        return "indeed"
     if "glassdoor.com" in host:
         return "glassdoor"
     return "unknown"
@@ -73,9 +71,6 @@ def _clean_search_url(url: str) -> str:
     if site == "linkedin":
         for key in ("currentJobId", "origin"):
             params.pop(key, None)
-    elif site == "indeed":
-        for key in ("vjk", "advn", "fromage", "from"):
-            params.pop(key, None)
 
     # Flatten single-value lists for urlencode
     flat = {k: v[0] if len(v) == 1 else v for k, v in params.items()}
@@ -83,18 +78,18 @@ def _clean_search_url(url: str) -> str:
 
 
 class JobSearchTalent(BaseTalent):
-    """Search LinkedIn, Dice, Built In, Indeed, and Glassdoor for job listings."""
+    """Search LinkedIn, Dice, Built In, and Glassdoor for job listings."""
 
     name = "job_search"
     description = (
-        "Search for job listings on LinkedIn, Dice, Built In, Indeed, "
-        "and Glassdoor; track new postings and hand matches to Cowork "
+        "Search for job listings on LinkedIn, Dice, Built In, and "
+        "Glassdoor; track new postings and hand matches to Cowork "
         "for fit analysis"
     )
     keywords = [
         "job search", "job searches", "job hunt", "job hunting",
         "hunt for jobs", "search for jobs", "find jobs", "find job",
-        "check linkedin", "check dice", "check indeed", "check glassdoor",
+        "check linkedin", "check dice", "check glassdoor",
         "new job listings",
         "search url", "search urls", "job listings",
         "todays job", "today's job", "do a job",
@@ -225,7 +220,7 @@ class JobSearchTalent(BaseTalent):
         site = _detect_site(url)
         if site == "unknown":
             return _fail(
-                "Unsupported site. Supported: LinkedIn, Dice, Built In, Indeed, Glassdoor."
+                "Unsupported site. Supported: LinkedIn, Dice, Built In, Glassdoor."
             )
         self._search_config["urls"].append(url)
         self._save_search_config()
@@ -338,75 +333,6 @@ class JobSearchTalent(BaseTalent):
             shutil.rmtree(temp_dir, ignore_errors=True)
             raise
         return driver, temp_dir
-
-    def _create_indeed_driver(self):
-        """Create an undetected-chromedriver instance for Indeed.
-
-        Indeed uses Cloudflare bot detection that fingerprints headless
-        Chrome at the binary level. Standard Selenium gets blocked even
-        with persistent profiles and login cookies. undetected-chromedriver
-        patches the chromedriver binary to remove detection signals.
-
-        Uses its own profile directory (not the shared persistent profile)
-        to avoid lock conflicts when other scrapers are running.
-
-        Falls back to a clean throwaway driver if uc is not installed.
-        """
-        try:
-            import undetected_chromedriver as uc
-
-            # Detect installed Chrome major version to avoid mismatch
-            chrome_ver = None
-            try:
-                import subprocess as _sp
-                # Windows: read Chrome version from registry
-                result = _sp.run(
-                    ['reg', 'query',
-                     r'HKEY_CURRENT_USER\Software\Google\Chrome\BLBeacon',
-                     '/v', 'version'],
-                    capture_output=True, text=True, timeout=5,
-                )
-                if result.returncode == 0:
-                    for line in result.stdout.splitlines():
-                        if 'version' in line.lower():
-                            ver_str = line.strip().split()[-1]
-                            chrome_ver = int(ver_str.split('.')[0])
-                            break
-            except Exception:
-                pass
-
-            options = uc.ChromeOptions()
-            options.add_argument("--window-size=1920,1080")
-            options.add_argument("--no-sandbox")
-            options.add_argument("--disable-dev-shm-usage")
-
-            # Own profile dir for Indeed (avoids locking persistent profile)
-            indeed_profile = os.path.join(_data_dir(), "indeed_chrome_profile")
-            os.makedirs(indeed_profile, exist_ok=True)
-            options.add_argument(f"--user-data-dir={indeed_profile}")
-
-            kwargs = dict(
-                options=options,
-                headless=True,
-                use_subprocess=True,
-            )
-            if chrome_ver:
-                kwargs["version_main"] = chrome_ver
-                log.info(f"[JobSearch] Indeed: using uc with Chrome {chrome_ver}")
-
-            driver = uc.Chrome(**kwargs)
-            log.info("[JobSearch] Indeed: undetected-chromedriver ready")
-            return driver
-        except ImportError:
-            log.warning("[JobSearch] undetected-chromedriver not installed, "
-                      "falling back to standard driver (may be blocked)")
-        except Exception as e:
-            log.warning(f"[JobSearch] undetected-chromedriver failed ({e}), "
-                      "falling back to standard driver")
-
-        # Fallback: clean throwaway profile (will likely get blocked)
-        driver, self._indeed_temp_dir = self._create_driver_clean(headless=True)
-        return driver
 
     # ── Score existing unscored jobs ────────────────────────────────────────
 
@@ -1012,7 +938,7 @@ class JobSearchTalent(BaseTalent):
                 "position": str,
                 "location": str,
                 "job_url": str,
-                "source": str,         # "LinkedIn" / "Dice" / "Built In" / "Indeed" / "Glassdoor" / "Manual"
+                "source": str,         # "LinkedIn" / "Dice" / "Built In" / "Glassdoor" / "Manual"
                 "duplicate": bool,     # True if the URL was already in the tracker
             }
         """
@@ -1027,7 +953,6 @@ class JobSearchTalent(BaseTalent):
             "linkedin": "LinkedIn",
             "dice": "Dice",
             "builtin": "Built In",
-            "indeed": "Indeed",
             "glassdoor": "Glassdoor",
         }.get(site, "Manual")
 
@@ -1323,7 +1248,6 @@ class JobSearchTalent(BaseTalent):
                     "linkedin": self._scrape_linkedin,
                     "dice":     self._scrape_dice,
                     "builtin":  self._scrape_builtin,
-                    "indeed":   self._scrape_indeed,
                     "glassdoor": self._scrape_glassdoor,
                 }.get(site)
                 if scraper:
@@ -2725,157 +2649,6 @@ class JobSearchTalent(BaseTalent):
                 shutil.rmtree(temp_dir, ignore_errors=True)
 
         return jobs
-
-    # ── Indeed ──────────────────────────────────────────────────────────────
-
-    def _scrape_indeed(self, url: str) -> list[dict]:
-        """Scrape job listings from Indeed.com search results.
-
-        Paginates via &start=0,10,20,... (max 5 pages = 50 results).
-        Cards identified by the data-jk attribute (job key).
-        """
-        from selenium.webdriver.common.by import By
-        from selenium.webdriver.support.ui import WebDriverWait
-        from selenium.webdriver.support import expected_conditions as EC
-
-        # Indeed uses Cloudflare bot detection that fingerprints headless
-        # Chrome beyond user-agent checks. undetected-chromedriver patches
-        # the chromedriver binary itself to remove detection signals
-        # (navigator.webdriver, WebGL SwiftShader, missing plugins, etc.).
-        self._indeed_temp_dir = None  # Set by fallback path if uc fails
-        driver = self._create_indeed_driver()
-        jobs: list[dict] = []
-        seen_jks: set[str] = set()
-        max_pages = 5
-
-        try:
-            for page_num in range(max_pages):
-                page_url = self._indeed_url_with_start(url, page_num * 10)
-                driver.get(page_url)
-                time.sleep(4)
-
-                try:
-                    WebDriverWait(driver, 12).until(
-                        EC.presence_of_element_located((
-                            By.CSS_SELECTOR, 'div[data-jk]',
-                        ))
-                    )
-                except Exception:
-                    pass
-                time.sleep(2)
-
-                cards = driver.find_elements(By.CSS_SELECTOR, 'div[data-jk]')
-
-                # Fallback selectors if data-jk isn't present
-                if not cards:
-                    cards = driver.find_elements(
-                        By.CSS_SELECTOR, 'div.job_seen_beacon')
-                if not cards:
-                    cards = driver.find_elements(
-                        By.CSS_SELECTOR, 'td.resultContent')
-
-                # Debug dump on first page zero results
-                if not cards and page_num == 0:
-                    try:
-                        debug_dir = os.path.join(_data_dir(), "debug")
-                        os.makedirs(debug_dir, exist_ok=True)
-                        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                        driver.save_screenshot(
-                            os.path.join(debug_dir, f"indeed_empty_{stamp}.png"))
-                        html = driver.page_source[:5000]
-                        with open(os.path.join(debug_dir, f"indeed_empty_{stamp}.html"),
-                                  "w", encoding="utf-8") as f:
-                            f.write(html)
-                        log.warning(f"[JobSearch] Indeed: 0 cards on page 1, "
-                                  f"debug dump saved to {debug_dir}")
-                    except Exception as e:
-                        log.warning(f"[JobSearch] Indeed debug dump failed: {e}")
-
-                page_added = 0
-                for card in cards:
-                    try:
-                        jk = card.get_attribute("data-jk")
-                        if not jk or jk in seen_jks:
-                            continue
-                        job = self._parse_indeed_card(card, jk)
-                        if job:
-                            seen_jks.add(jk)
-                            jobs.append(job)
-                            page_added += 1
-                    except Exception:
-                        continue
-
-                log.info(
-                    f"[JobSearch] Indeed page {page_num + 1}: +{page_added} "
-                    f"({len(jobs)} total)"
-                )
-                if page_added == 0:
-                    break
-
-            log.info(f"[JobSearch] Indeed: {len(jobs)} listings")
-        finally:
-            try:
-                driver.quit()
-            finally:
-                if self._indeed_temp_dir:
-                    shutil.rmtree(self._indeed_temp_dir, ignore_errors=True)
-
-        return jobs
-
-    @staticmethod
-    def _indeed_url_with_start(url: str, start: int) -> str:
-        """Return the Indeed search URL with &start=N set."""
-        parsed = urlparse(url)
-        params = parse_qs(parsed.query, keep_blank_values=True)
-        if start > 0:
-            params["start"] = [str(start)]
-        else:
-            params.pop("start", None)
-        flat = {k: v[0] if len(v) == 1 else v for k, v in params.items()}
-        return urlunparse(parsed._replace(query=urlencode(flat, doseq=True)))
-
-    @staticmethod
-    def _parse_indeed_card(card, jk: str) -> dict | None:
-        """Extract job fields from an Indeed card WebElement."""
-        from selenium.webdriver.common.by import By
-
-        # Title
-        try:
-            title_el = card.find_element(
-                By.CSS_SELECTOR, 'h2.jobTitle a, a[id^="job_"]')
-            title = title_el.text.strip()
-        except Exception:
-            return None
-
-        if not title:
-            return None
-
-        # Company
-        try:
-            company_el = card.find_element(
-                By.CSS_SELECTOR,
-                'span[data-testid="company-name"], span.companyName')
-            company = company_el.text.strip()
-        except Exception:
-            company = ""
-
-        # Location
-        try:
-            loc_el = card.find_element(
-                By.CSS_SELECTOR,
-                'div[data-testid="text-location"], div.companyLocation')
-            location = loc_el.text.strip()
-        except Exception:
-            location = ""
-
-        return {
-            "source": "Indeed",
-            "date_found": date.today().isoformat(),
-            "position": title,
-            "company": company,
-            "location": location,
-            "job_url": f"https://www.indeed.com/viewjob?jk={jk}",
-        }
 
     # ── Glassdoor ──────────────────────────────────────────────────────────
 
