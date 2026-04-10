@@ -84,7 +84,9 @@ class ConversationEngine:
         "rules, requirements, weaknesses, costs. Use bullet points and headers. "
         "Cite filename and page. Do not add anything not in the excerpts. "
         "Do not say information is missing if it appears in the excerpts. "
-        "Stop when all facts are reported."
+        "Stop when all facts are reported.\n\n"
+        "Be concise. No filler, no speculation, no restating the question. "
+        "Go straight to the facts."
     )
 
     # Sentence terminators: period, comma, exclamation, question, dash, semicolon,
@@ -424,6 +426,7 @@ class ConversationEngine:
             response = self._a.llm.generate(
                 prompt,
                 system_prompt=self._FACTUAL_RAG_SYSTEM_PROMPT,
+                max_length=1024,
                 use_vision=bool(all_images),
                 images_b64=all_images or None,
             )
