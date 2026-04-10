@@ -363,7 +363,7 @@ class DocumentRetriever:
                 # (e.g. the Feathery section, not the Furry/Scaly sections).
                 if use_explicit and keywords and len(text) > 600:
                     text = self._extract_relevant_paragraphs(
-                        text, keywords, context_paragraphs=1, max_chars=2000)
+                        text, keywords, context_paragraphs=8, max_chars=2500)
 
                 max_chars = 2000 if use_explicit else 800
                 truncated = text[:max_chars] + "..." if len(text) > max_chars else text
