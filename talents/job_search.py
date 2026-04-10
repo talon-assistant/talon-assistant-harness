@@ -2669,7 +2669,10 @@ class JobSearchTalent(BaseTalent):
         from selenium.webdriver.support.ui import WebDriverWait
         from selenium.webdriver.support import expected_conditions as EC
 
-        driver, temp_dir = self._create_driver_clean(headless=True)
+        # Indeed uses Cloudflare bot detection — a clean throwaway profile
+        # gets blocked immediately. Use the persistent profile (same as
+        # LinkedIn) so cookies and browsing history look human.
+        driver = self._create_driver_persistent(headless=True)
         jobs: list[dict] = []
         seen_jks: set[str] = set()
         max_pages = 5
@@ -2740,10 +2743,7 @@ class JobSearchTalent(BaseTalent):
 
             log.info(f"[JobSearch] Indeed: {len(jobs)} listings")
         finally:
-            try:
-                driver.quit()
-            finally:
-                shutil.rmtree(temp_dir, ignore_errors=True)
+            driver.quit()
 
         return jobs
 
