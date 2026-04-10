@@ -289,12 +289,9 @@ class ConversationEngine:
         elif rag_explicit:
             prompt = (
                 f"{command}\n\n"
-                f"Answer using ONLY the document excerpts provided. "
-                f"Give a THOROUGH answer — list every relevant detail, stat, power, "
-                f"rule, and requirement found in the excerpts. Use structured formatting "
-                f"(headers, bullets) for readability. "
-                f"Cite the source filename and page for each fact. "
-                f"If a value is missing from the excerpts, say so."
+                f"Answer from the document excerpts only. "
+                f"List stats, powers, requirements, weaknesses, costs. "
+                f"Cite filename and page."
             )
         else:
             prompt = f"{command}\n\nRespond briefly and conversationally (2-3 sentences max)."
@@ -325,12 +322,9 @@ class ConversationEngine:
         if not rag_explicit and intent in ("factual", "synthesis"):
             prompt = (
                 f"{command}\n\n"
-                f"Answer using ONLY the document excerpts provided. "
-                f"Give a THOROUGH answer — list every relevant detail, stat, power, "
-                f"rule, and requirement found in the excerpts. Use structured formatting "
-                f"(headers, bullets) for readability. "
-                f"Cite the source filename and page for each fact. "
-                f"If a value is missing from the excerpts, say so."
+                f"Answer from the document excerpts only. "
+                f"List stats, powers, requirements, weaknesses, costs. "
+                f"Cite filename and page."
             )
 
         if use_explicit_rag:
@@ -427,6 +421,7 @@ class ConversationEngine:
                 prompt,
                 system_prompt=self._FACTUAL_RAG_SYSTEM_PROMPT,
                 max_length=1024,
+                temperature=0.1,
                 use_vision=bool(all_images),
                 images_b64=all_images or None,
             )
