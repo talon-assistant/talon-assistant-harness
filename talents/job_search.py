@@ -2663,7 +2663,9 @@ class JobSearchTalent(BaseTalent):
         from selenium.webdriver.support.ui import WebDriverWait
         from selenium.webdriver.support import expected_conditions as EC
 
-        driver, temp_dir = self._create_driver_clean(headless=True)
+        # Glassdoor gates results behind login — use persistent profile
+        # so session cookies are preserved (same as LinkedIn).
+        driver = self._create_driver_persistent(headless=True)
         jobs: list[dict] = []
         seen_urls: set[str] = set()
         max_pages = 4
@@ -2725,10 +2727,7 @@ class JobSearchTalent(BaseTalent):
 
             log.info(f"[JobSearch] Glassdoor: {len(jobs)} listings")
         finally:
-            try:
-                driver.quit()
-            finally:
-                shutil.rmtree(temp_dir, ignore_errors=True)
+            driver.quit()
 
         return jobs
 
