@@ -717,6 +717,21 @@ class JobTrackerTalent(BaseTalent):
 
         self._db.update_application(app["id"], **update_fields)
 
+        # When moving to "applied" on a LinkedIn job, fire background
+        # "I'm Interested" click on the company's LinkedIn page.
+        if (new_status == "applied"
+                and app.get("source", "").lower() == "linkedin"
+                and app.get("company")):
+            import threading
+            threading.Thread(
+                target=self._linkedin_im_interested,
+                args=(app["company"],),
+                daemon=True,
+                name="linkedin-interested",
+            ).start()
+            log.info(f"[JobTracker] LinkedIn 'I'm Interested' click queued "
+                     f"for {app['company']}")
+
         return {
             "success": True,
             "response": (
@@ -1100,6 +1115,93 @@ class JobTrackerTalent(BaseTalent):
             }],
             "spoken": False,
         }
+
+    @staticmethod
+    def _linkedin_im_interested(company: str) -> None:
+        """Click 'I'm Interested' on a company's LinkedIn page.
+
+        Navigates to the company's LinkedIn life/about page and clicks the
+        "I'm interested" button, which signals to the company's recruiters
+        that you're open to opportunities. Runs in a background thread so
+        it doesn't block the status update.
+
+        Uses the persistent Chrome profile (already logged into LinkedIn).
+        """
+        try:
+            from selenium import webdriver
+            from selenium.webdriver.chrome.options import Options
+            from selenium.webdriver.chrome.service import Service
+            from selenium.webdriver.common.by import By
+            from selenium.webdriver.support.ui import WebDriverWait
+            from selenium.webdriver.support import expected_conditions as EC
+            import time as _time
+
+            options = Options()
+            data_dir = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                "data", "job_search_chrome_profile",
+            )
+            options.add_argument(f"--user-data-dir={data_dir}")
+            options.add_argument("--headless=new")
+            options.add_argument("--disable-blink-features=AutomationControlled")
+            options.add_argument("--no-sandbox")
+            options.add_argument("--disable-dev-shm-usage")
+            options.add_argument(
+                "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/146.0.0.0 Safari/537.36"
+            )
+
+            try:
+                from webdriver_manager.chrome import ChromeDriverManager
+                service = Service(ChromeDriverManager().install())
+            except ImportError:
+                service = Service()
+
+            # Normalize company name for LinkedIn URL slug
+            slug = re.sub(r'[^a-z0-9]+', '-', company.lower()).strip('-')
+
+            driver = webdriver.Chrome(service=service, options=options)
+            try:
+                # Try the /life page first (where "I'm interested" usually lives)
+                driver.get(f"https://www.linkedin.com/company/{slug}/life")
+                _time.sleep(4)
+
+                # Look for the "I'm interested" button
+                btn = None
+                for selector in (
+                    'button[aria-label*="interested"]',
+                    'button[aria-label*="Interested"]',
+                    'button:has-text("interested")',
+                ):
+                    try:
+                        btn = driver.find_element(By.CSS_SELECTOR, selector)
+                        break
+                    except Exception:
+                        continue
+
+                # Fallback: search all buttons by text content
+                if not btn:
+                    buttons = driver.find_elements(By.TAG_NAME, "button")
+                    for b in buttons:
+                        txt = (b.text or "").lower().strip()
+                        if "interested" in txt and "not" not in txt:
+                            btn = b
+                            break
+
+                if btn:
+                    btn.click()
+                    _time.sleep(2)
+                    log.info(f"[JobTracker] Clicked 'I'm Interested' "
+                             f"for {company}")
+                else:
+                    log.info(f"[JobTracker] 'I'm Interested' button not "
+                             f"found for {company} (slug: {slug})")
+            finally:
+                driver.quit()
+        except Exception as e:
+            log.warning(f"[JobTracker] LinkedIn 'I'm Interested' failed "
+                       f"for {company}: {e}")
 
     @staticmethod
     def _fetch_job_description(job_url: str) -> str:
