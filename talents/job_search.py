@@ -2713,13 +2713,38 @@ class JobSearchTalent(BaseTalent):
                     pass
                 time.sleep(2)
 
-                # Primary selector, then fallback for CSS module class names
+                # Glassdoor changes DOM structure frequently. Try multiple
+                # selector strategies from most specific to most generic.
                 cards = driver.find_elements(
                     By.CSS_SELECTOR, 'li[data-test="jobListing"]')
                 if not cards:
                     cards = driver.find_elements(
+                        By.CSS_SELECTOR, 'li[class*="JobsList_jobListItem"]')
+                if not cards:
+                    cards = driver.find_elements(
+                        By.CSS_SELECTOR, 'li[class*="jobCard"]')
+                if not cards:
+                    # Generic fallback: find all job links and walk up to card
+                    cards = driver.find_elements(
                         By.CSS_SELECTOR,
-                        'li[class*="JobsList_jobListItem"]')
+                        'a[href*="/job-listing/"], a[href*="/partner/jobListing"]')
+
+                # Debug dump on first page zero results
+                if not cards and page_num == 1:
+                    try:
+                        debug_dir = os.path.join(_data_dir(), "debug")
+                        os.makedirs(debug_dir, exist_ok=True)
+                        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                        driver.save_screenshot(
+                            os.path.join(debug_dir, f"glassdoor_empty_{stamp}.png"))
+                        html = driver.page_source[:8000]
+                        with open(os.path.join(debug_dir, f"glassdoor_empty_{stamp}.html"),
+                                  "w", encoding="utf-8") as f:
+                            f.write(html)
+                        log.warning(f"[JobSearch] Glassdoor: 0 cards on page 1, "
+                                  f"debug dump saved to {debug_dir}")
+                    except Exception as e:
+                        log.warning(f"[JobSearch] Glassdoor debug dump failed: {e}")
 
                 page_added = 0
                 for card in cards:
@@ -2762,43 +2787,100 @@ class JobSearchTalent(BaseTalent):
 
     @staticmethod
     def _parse_glassdoor_card(card) -> dict | None:
-        """Extract job fields from a Glassdoor card WebElement."""
+        """Extract job fields from a Glassdoor card WebElement.
+
+        The card may be a <li> container (data-test selectors) or a bare
+        <a> link element (generic fallback). Handles both cases.
+        """
         from selenium.webdriver.common.by import By
 
+        tag = card.tag_name.lower()
+
+        # If the card IS the link (generic fallback found <a> elements)
+        if tag == "a":
+            title = card.text.strip().split("\n")[0] if card.text else ""
+            href = card.get_attribute("href") or ""
+            if not title:
+                return None
+            if href and not href.startswith("http"):
+                href = "https://www.glassdoor.com" + href
+            # Walk up to find company/location from parent card
+            company = ""
+            location = ""
+            try:
+                parent = card.find_element(By.XPATH, "../..")
+                text_lines = [ln.strip() for ln in (parent.text or "").split("\n")
+                              if ln.strip()]
+                # Heuristic: company is usually the first line, title second
+                for line in text_lines:
+                    if line != title and not line.startswith("$"):
+                        if not company:
+                            company = line
+                        elif "," in line or "remote" in line.lower():
+                            location = line
+                            break
+            except Exception:
+                pass
+            return {
+                "source": "Glassdoor",
+                "date_found": date.today().isoformat(),
+                "position": title,
+                "company": company,
+                "location": location,
+                "job_url": href.split("?")[0] if href else "",
+            }
+
+        # Standard <li> card path — try multiple selector patterns
         # Title + URL from the job link
-        try:
-            link_el = card.find_element(
-                By.CSS_SELECTOR, 'a[data-test="job-link"]')
-            title = link_el.text.strip()
-            href = link_el.get_attribute("href") or ""
-        except Exception:
-            return None
+        title = ""
+        href = ""
+        for selector in ('a[data-test="job-link"]',
+                         'a[class*="JobCard_jobTitle"]',
+                         'a[class*="jobTitle"]',
+                         'a[href*="/job-listing/"]',
+                         'a[href*="/partner/jobListing"]'):
+            try:
+                link_el = card.find_element(By.CSS_SELECTOR, selector)
+                title = link_el.text.strip()
+                href = link_el.get_attribute("href") or ""
+                if title:
+                    break
+            except Exception:
+                continue
 
         if not title:
             return None
 
         if href and not href.startswith("http"):
             href = "https://www.glassdoor.com" + href
-        # Strip tracking query params
         href = href.split("?")[0] if href else ""
 
-        # Company
-        try:
-            company_el = card.find_element(
-                By.CSS_SELECTOR,
-                'div[data-test="emp-name"], '
-                'span[class*="EmployerProfile"]')
-            company = company_el.text.strip()
-        except Exception:
-            company = ""
+        # Company — try multiple selectors
+        company = ""
+        for selector in ('div[data-test="emp-name"]',
+                         'span[class*="EmployerProfile"]',
+                         'span[class*="companyName"]',
+                         'div[class*="companyName"]'):
+            try:
+                company_el = card.find_element(By.CSS_SELECTOR, selector)
+                company = company_el.text.strip()
+                if company:
+                    break
+            except Exception:
+                continue
 
-        # Location
-        try:
-            loc_el = card.find_element(
-                By.CSS_SELECTOR, 'span[data-test="emp-location"]')
-            location = loc_el.text.strip()
-        except Exception:
-            location = ""
+        # Location — try multiple selectors
+        location = ""
+        for selector in ('span[data-test="emp-location"]',
+                         'span[class*="location"]',
+                         'div[class*="location"]'):
+            try:
+                loc_el = card.find_element(By.CSS_SELECTOR, selector)
+                location = loc_el.text.strip()
+                if location:
+                    break
+            except Exception:
+                continue
 
         return {
             "source": "Glassdoor",
