@@ -257,14 +257,21 @@ class JobSearchTalent(BaseTalent):
     # ── Login (LinkedIn) ─────────────────────────────────────────────────────
 
     def _handle_login(self) -> dict:
-        """Open Chrome with the dedicated profile so user can log into LinkedIn."""
+        """Open Chrome with the dedicated profile so user can log into job sites.
+
+        Opens LinkedIn first. User should also navigate to Glassdoor and
+        sign in while the browser is open — both use the same persistent
+        Chrome profile so all sessions are preserved.
+        """
         try:
             driver = self._create_driver_persistent(headless=False)
             driver.get("https://www.linkedin.com/login")
+            # Open Glassdoor in a second tab
+            driver.execute_script("window.open('https://www.glassdoor.com/profile/login_input.htm', '_blank');")
             return _ok(
-                "Chrome opened to LinkedIn login. Sign in, then close the "
-                "browser when done. Your session will be saved for future "
-                "searches.",
+                "Chrome opened with LinkedIn and Glassdoor login tabs. "
+                "Sign into both, then close the browser when done. "
+                "Your sessions will be saved for future searches.",
                 actions=[{"action": "login_prompt"}],
             )
         except Exception as e:
