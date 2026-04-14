@@ -784,7 +784,13 @@ class JobSearchTalent(BaseTalent):
             "is trying to prove something'. No chest-thumping lines "
             "like 'I've already done it' or 'I know how to do X'. "
             "Let the accomplishments speak for themselves.",
-            "- Open with a specific hook tied to the company or role.",
+            "- OPENING PARAGRAPH: Express genuine interest in the "
+            "company and what makes this role compelling. Do NOT "
+            "diagnose problems at the company, imply they are behind, "
+            "or suggest their security program is immature or broken. "
+            "Nobody wants to hear their house is a mess from someone "
+            "who hasn't walked in the door. Position the candidate as "
+            "drawn to the challenge, not as fixing something.",
             "- Pull specific metrics and accomplishments from the resume "
             "that match this role.",
             "- 3-4 paragraphs, under one page.",
