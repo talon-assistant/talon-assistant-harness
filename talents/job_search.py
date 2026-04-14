@@ -1,4 +1,4 @@
-"""JobSearchTalent -- automated job search across LinkedIn, Dice, Built In, and Glassdoor.
+"""JobSearchTalent -- automated job search across LinkedIn, Dice, Built In, and SimplyHired.
 
 Scrapes job listings from configured search URLs, identifies new postings
 not yet in the job tracker, adds them automatically, and runs automated
@@ -57,8 +57,8 @@ def _detect_site(url: str) -> str:
         return "dice"
     if "builtin.com" in host:
         return "builtin"
-    if "glassdoor.com" in host:
-        return "glassdoor"
+    if "simplyhired.com" in host:
+        return "simplyhired"
     return "unknown"
 
 
@@ -78,18 +78,18 @@ def _clean_search_url(url: str) -> str:
 
 
 class JobSearchTalent(BaseTalent):
-    """Search LinkedIn, Dice, Built In, and Glassdoor for job listings."""
+    """Search LinkedIn, Dice, Built In, and SimplyHired for job listings."""
 
     name = "job_search"
     description = (
         "Search for job listings on LinkedIn, Dice, Built In, and "
-        "Glassdoor; track new postings and hand matches to Cowork "
+        "SimplyHired; track new postings and hand matches to Cowork "
         "for fit analysis"
     )
     keywords = [
         "job search", "job searches", "job hunt", "job hunting",
         "hunt for jobs", "search for jobs", "find jobs", "find job",
-        "check linkedin", "check dice", "check glassdoor",
+        "check linkedin", "check dice", "check simplyhired",
         "new job listings",
         "search url", "search urls", "job listings",
         "todays job", "today's job", "do a job",
@@ -220,7 +220,7 @@ class JobSearchTalent(BaseTalent):
         site = _detect_site(url)
         if site == "unknown":
             return _fail(
-                "Unsupported site. Supported: LinkedIn, Dice, Built In, Glassdoor."
+                "Unsupported site. Supported: LinkedIn, Dice, Built In, SimplyHired."
             )
         self._search_config["urls"].append(url)
         self._save_search_config()
@@ -257,21 +257,14 @@ class JobSearchTalent(BaseTalent):
     # ── Login (LinkedIn) ─────────────────────────────────────────────────────
 
     def _handle_login(self) -> dict:
-        """Open Chrome with the dedicated profile so user can log into job sites.
-
-        Opens LinkedIn first. User should also navigate to Glassdoor and
-        sign in while the browser is open — both use the same persistent
-        Chrome profile so all sessions are preserved.
-        """
+        """Open Chrome with the dedicated profile so user can log into LinkedIn."""
         try:
             driver = self._create_driver_persistent(headless=False)
             driver.get("https://www.linkedin.com/login")
-            # Open Glassdoor in a second tab
-            driver.execute_script("window.open('https://www.glassdoor.com/profile/login_input.htm', '_blank');")
             return _ok(
-                "Chrome opened with LinkedIn and Glassdoor login tabs. "
-                "Sign into both, then close the browser when done. "
-                "Your sessions will be saved for future searches.",
+                "Chrome opened to LinkedIn login. Sign in, then close "
+                "the browser when done. Your session will be saved for "
+                "future searches.",
                 actions=[{"action": "login_prompt"}],
             )
         except Exception as e:
@@ -292,7 +285,7 @@ class JobSearchTalent(BaseTalent):
         options.add_argument("--disable-dev-shm-usage")
         # Standard desktop user-agent — headless Chrome advertises
         # "HeadlessChrome" in the UA string which is an instant block
-        # on Cloudflare-protected sites (Indeed, Glassdoor).
+        # on Cloudflare-protected sites (Indeed, SimplyHired).
         options.add_argument(
             "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -959,7 +952,7 @@ class JobSearchTalent(BaseTalent):
                 "position": str,
                 "location": str,
                 "job_url": str,
-                "source": str,         # "LinkedIn" / "Dice" / "Built In" / "Glassdoor" / "Manual"
+                "source": str,         # "LinkedIn" / "Dice" / "Built In" / "SimplyHired" / "Manual"
                 "duplicate": bool,     # True if the URL was already in the tracker
             }
         """
@@ -974,7 +967,7 @@ class JobSearchTalent(BaseTalent):
             "linkedin": "LinkedIn",
             "dice": "Dice",
             "builtin": "Built In",
-            "glassdoor": "Glassdoor",
+            "simplyhired": "SimplyHired",
         }.get(site, "Manual")
 
         # Dedup by bare URL before spinning up Chrome
@@ -1269,7 +1262,7 @@ class JobSearchTalent(BaseTalent):
                     "linkedin": self._scrape_linkedin,
                     "dice":     self._scrape_dice,
                     "builtin":  self._scrape_builtin,
-                    "glassdoor": self._scrape_glassdoor,
+                    "simplyhired": self._scrape_simplyhired,
                 }.get(site)
                 if scraper:
                     jobs = scraper(url)
@@ -2671,231 +2664,173 @@ class JobSearchTalent(BaseTalent):
 
         return jobs
 
-    # ── Glassdoor ──────────────────────────────────────────────────────────
+    # ── SimplyHired ─────────────────────────────────────────────────────────
 
-    def _scrape_glassdoor(self, url: str) -> list[dict]:
-        """Scrape job listings from Glassdoor.com search results.
+    def _scrape_simplyhired(self, url: str) -> list[dict]:
+        """Scrape job listings from SimplyHired.com search results.
 
-        Paginates via _IP{N}.htm path segment (max 4 pages).
-        Uses longer delays between pages due to aggressive bot detection.
+        SimplyHired uses Chakra UI with cursor-based pagination.
+        No Cloudflare bot detection, no login required. Uses clean
+        throwaway profile.
+
+        Strategy: find all /job/ links, walk up to the card <li>,
+        parse text lines for company and location (same approach as Dice).
         """
-        import random
         from selenium.webdriver.common.by import By
         from selenium.webdriver.support.ui import WebDriverWait
         from selenium.webdriver.support import expected_conditions as EC
 
-        # Glassdoor gates results behind login — use persistent profile
-        # so session cookies are preserved (same as LinkedIn).
-        driver = self._create_driver_persistent(headless=True)
+        driver, temp_dir = self._create_driver_clean(headless=True)
         jobs: list[dict] = []
         seen_urls: set[str] = set()
-        max_pages = 4
+        max_pages = 3  # ~20 results per page
 
         try:
+            page_url = url
             for page_num in range(1, max_pages + 1):
-                page_url = self._glassdoor_url_with_page(url, page_num)
                 driver.get(page_url)
-                time.sleep(4 + random.uniform(0, 2))
-
-                # Dismiss signup/login modal if present
-                try:
-                    driver.execute_script(
-                        "document.querySelector('[class*=\"modal\"]')?.remove();"
-                        "document.querySelector('.backdrop')?.remove();"
-                        "document.querySelector('[id*=\"SignUpModal\"]')?.remove();"
-                    )
-                except Exception:
-                    pass
+                time.sleep(4)
 
                 try:
                     WebDriverWait(driver, 12).until(
                         EC.presence_of_element_located((
-                            By.CSS_SELECTOR,
-                            'a[data-test="job-link"], '
-                            'li[data-test="jobListing"]',
+                            By.CSS_SELECTOR, 'a[href*="/job/"]',
                         ))
                     )
                 except Exception:
                     pass
                 time.sleep(2)
 
-                # Glassdoor changes DOM structure frequently. Try multiple
-                # selector strategies from most specific to most generic.
-                cards = driver.find_elements(
-                    By.CSS_SELECTOR, 'li[data-test="jobListing"]')
-                if not cards:
-                    cards = driver.find_elements(
-                        By.CSS_SELECTOR, 'li[class*="JobsList_jobListItem"]')
-                if not cards:
-                    cards = driver.find_elements(
-                        By.CSS_SELECTOR, 'li[class*="jobCard"]')
-                if not cards:
-                    # Generic fallback: find all job links and walk up to card
-                    cards = driver.find_elements(
-                        By.CSS_SELECTOR,
-                        'a[href*="/job-listing/"], a[href*="/partner/jobListing"]')
-
-                # Debug dump on first page zero results
-                if not cards and page_num == 1:
-                    try:
-                        debug_dir = os.path.join(_data_dir(), "debug")
-                        os.makedirs(debug_dir, exist_ok=True)
-                        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                        driver.save_screenshot(
-                            os.path.join(debug_dir, f"glassdoor_empty_{stamp}.png"))
-                        html = driver.page_source[:8000]
-                        with open(os.path.join(debug_dir, f"glassdoor_empty_{stamp}.html"),
-                                  "w", encoding="utf-8") as f:
-                            f.write(html)
-                        log.warning(f"[JobSearch] Glassdoor: 0 cards on page 1, "
-                                  f"debug dump saved to {debug_dir}")
-                    except Exception as e:
-                        log.warning(f"[JobSearch] Glassdoor debug dump failed: {e}")
+                links = driver.find_elements(
+                    By.CSS_SELECTOR, 'a[href*="/job/"]')
 
                 page_added = 0
-                for card in cards:
+                for link in links:
                     try:
-                        job = self._parse_glassdoor_card(card)
-                        if job and job["job_url"] not in seen_urls:
-                            seen_urls.add(job["job_url"])
-                            jobs.append(job)
-                            page_added += 1
+                        href = link.get_attribute("href") or ""
+                        if not href or "/job/" not in href:
+                            continue
+                        bare = href.split("?")[0]
+                        if bare in seen_urls:
+                            continue
+
+                        title = link.text.strip()
+                        if not title:
+                            continue
+
+                        # Walk up to the card container (<li>) for
+                        # company and location text
+                        company, location = self._parse_simplyhired_card_context(
+                            link, title)
+
+                        seen_urls.add(bare)
+                        jobs.append({
+                            "source": "SimplyHired",
+                            "date_found": date.today().isoformat(),
+                            "position": title,
+                            "company": company,
+                            "location": location,
+                            "job_url": bare,
+                        })
+                        page_added += 1
                     except Exception:
                         continue
 
                 log.info(
-                    f"[JobSearch] Glassdoor page {page_num}: +{page_added} "
+                    f"[JobSearch] SimplyHired page {page_num}: +{page_added} "
                     f"({len(jobs)} total)"
                 )
                 if page_added == 0:
                     break
-                time.sleep(random.uniform(1, 3))
 
-            log.info(f"[JobSearch] Glassdoor: {len(jobs)} listings")
+                # Find next page link (cursor-based pagination)
+                next_url = self._simplyhired_next_page(driver)
+                if not next_url:
+                    break
+                page_url = next_url
+
+            log.info(f"[JobSearch] SimplyHired: {len(jobs)} listings")
         finally:
-            driver.quit()
+            try:
+                driver.quit()
+            finally:
+                shutil.rmtree(temp_dir, ignore_errors=True)
 
         return jobs
 
     @staticmethod
-    def _glassdoor_url_with_page(url: str, page_num: int) -> str:
-        """Return the Glassdoor search URL for page N.
+    def _parse_simplyhired_card_context(link_el, title: str) -> tuple[str, str]:
+        """Walk up from a job link to find company and location text.
 
-        Glassdoor embeds page number as _IP{N} in the URL path,
-        e.g. ...jobs-SRCH_IL.0,6_IC..._IP2.htm
-        """
-        import re
-        # Remove existing _IPN if present
-        cleaned = re.sub(r'_IP\d+\.htm', '.htm', url)
-        if page_num <= 1:
-            return cleaned
-        return cleaned.replace('.htm', f'_IP{page_num}.htm')
-
-    @staticmethod
-    def _parse_glassdoor_card(card) -> dict | None:
-        """Extract job fields from a Glassdoor card WebElement.
-
-        The card may be a <li> container (data-test selectors) or a bare
-        <a> link element (generic fallback). Handles both cases.
+        SimplyHired cards have company as a link to /browse-jobs/companies/
+        and location as text containing a comma (city, state pattern).
         """
         from selenium.webdriver.common.by import By
 
-        tag = card.tag_name.lower()
+        company = ""
+        location = ""
 
-        # If the card IS the link (generic fallback found <a> elements)
-        if tag == "a":
-            title = card.text.strip().split("\n")[0] if card.text else ""
-            href = card.get_attribute("href") or ""
-            if not title:
-                return None
-            if href and not href.startswith("http"):
-                href = "https://www.glassdoor.com" + href
-            # Walk up to find company/location from parent card
-            company = ""
-            location = ""
+        try:
+            # Walk up to <li> card container
+            card = link_el
+            for _ in range(6):
+                card = card.find_element(By.XPATH, "..")
+                if card.tag_name.lower() == "li":
+                    break
+
+            # Company: look for link to /browse-jobs/companies/
             try:
-                parent = card.find_element(By.XPATH, "../..")
-                text_lines = [ln.strip() for ln in (parent.text or "").split("\n")
-                              if ln.strip()]
-                # Heuristic: company is usually the first line, title second
-                for line in text_lines:
-                    if line != title and not line.startswith("$"):
-                        if not company:
-                            company = line
-                        elif "," in line or "remote" in line.lower():
-                            location = line
-                            break
+                company_el = card.find_element(
+                    By.CSS_SELECTOR, 'a[href*="/browse-jobs/companies/"]')
+                company = company_el.text.strip()
             except Exception:
                 pass
-            return {
-                "source": "Glassdoor",
-                "date_found": date.today().isoformat(),
-                "position": title,
-                "company": company,
-                "location": location,
-                "job_url": href.split("?")[0] if href else "",
-            }
 
-        # Standard <li> card path — try multiple selector patterns
-        # Title + URL from the job link
-        title = ""
-        href = ""
-        for selector in ('a[data-test="job-link"]',
-                         'a[class*="JobCard_jobTitle"]',
-                         'a[class*="jobTitle"]',
-                         'a[href*="/job-listing/"]',
-                         'a[href*="/partner/jobListing"]'):
-            try:
-                link_el = card.find_element(By.CSS_SELECTOR, selector)
-                title = link_el.text.strip()
-                href = link_el.get_attribute("href") or ""
-                if title:
+            # Location: find text with city, state pattern in the card
+            # Exclude the title and company from the search
+            card_text = card.text or ""
+            for line in card_text.split("\n"):
+                line = line.strip()
+                if not line or line == title or line == company:
+                    continue
+                if line.startswith("$"):
+                    continue
+                # City, ST pattern or "Remote"
+                if ("," in line and len(line) < 40) or "remote" in line.lower():
+                    location = line
                     break
-            except Exception:
-                continue
+        except Exception:
+            pass
 
-        if not title:
-            return None
+        return company, location
 
-        if href and not href.startswith("http"):
-            href = "https://www.glassdoor.com" + href
-        href = href.split("?")[0] if href else ""
+    @staticmethod
+    def _simplyhired_next_page(driver) -> str | None:
+        """Find the 'Next' pagination link and return its URL."""
+        from selenium.webdriver.common.by import By
 
-        # Company — try multiple selectors
-        company = ""
-        for selector in ('div[data-test="emp-name"]',
-                         'span[class*="EmployerProfile"]',
-                         'span[class*="companyName"]',
-                         'div[class*="companyName"]'):
-            try:
-                company_el = card.find_element(By.CSS_SELECTOR, selector)
-                company = company_el.text.strip()
-                if company:
-                    break
-            except Exception:
-                continue
-
-        # Location — try multiple selectors
-        location = ""
-        for selector in ('span[data-test="emp-location"]',
-                         'span[class*="location"]',
-                         'div[class*="location"]'):
-            try:
-                loc_el = card.find_element(By.CSS_SELECTOR, selector)
-                location = loc_el.text.strip()
-                if location:
-                    break
-            except Exception:
-                continue
-
-        return {
-            "source": "Glassdoor",
-            "date_found": date.today().isoformat(),
-            "position": title,
-            "company": company,
-            "location": location,
-            "job_url": href,
-        }
+        try:
+            # SimplyHired uses cursor-based pagination with a next arrow/link
+            next_links = driver.find_elements(
+                By.CSS_SELECTOR, 'a[aria-label="Next"]')
+            if not next_links:
+                next_links = driver.find_elements(
+                    By.CSS_SELECTOR, 'a[aria-label="next page"]')
+            if not next_links:
+                # Fallback: find link with ">" or "Next" text
+                all_links = driver.find_elements(By.CSS_SELECTOR, 'nav a')
+                for a in all_links:
+                    txt = a.text.strip()
+                    if txt in (">", "›", "Next", "next"):
+                        next_links = [a]
+                        break
+            if next_links:
+                href = next_links[0].get_attribute("href")
+                if href:
+                    return href
+        except Exception:
+            pass
+        return None
 
     # ── Dedup against tracker DB ─────────────────────────────────────────────
 
