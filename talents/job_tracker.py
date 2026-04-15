@@ -721,11 +721,11 @@ class JobTrackerTalent(BaseTalent):
         # "I'm Interested" click on the company's LinkedIn page.
         if (new_status == "applied"
                 and app.get("source", "").lower() == "linkedin"
-                and app.get("company")):
+                and app.get("job_url")):
             import threading
             threading.Thread(
                 target=self._linkedin_im_interested,
-                args=(app["company"],),
+                args=(app["job_url"], app["company"]),
                 daemon=True,
                 name="linkedin-interested",
             ).start()
@@ -1117,23 +1117,22 @@ class JobTrackerTalent(BaseTalent):
         }
 
     @staticmethod
-    def _linkedin_im_interested(company: str) -> None:
+    def _linkedin_im_interested(job_url: str, company: str) -> None:
         """Click 'I'm Interested' on a company's LinkedIn page.
 
-        Navigates to the company's LinkedIn life/about page and clicks the
-        "I'm interested" button, which signals to the company's recruiters
-        that you're open to opportunities. Runs in a background thread so
-        it doesn't block the status update.
+        Step 1: Navigate to the job page to find the real company link
+                (e.g. linkedin.com/company/natera) from the DOM.
+        Step 2: Navigate to that company's /life page.
+        Step 3: Find and click the "I'm interested" button.
 
-        Uses the persistent Chrome profile (already logged into LinkedIn).
+        Runs in a background thread. Uses the persistent Chrome profile
+        (already logged into LinkedIn).
         """
         try:
             from selenium import webdriver
             from selenium.webdriver.chrome.options import Options
             from selenium.webdriver.chrome.service import Service
             from selenium.webdriver.common.by import By
-            from selenium.webdriver.support.ui import WebDriverWait
-            from selenium.webdriver.support import expected_conditions as EC
             import time as _time
 
             options = Options()
@@ -1158,21 +1157,38 @@ class JobTrackerTalent(BaseTalent):
             except ImportError:
                 service = Service()
 
-            # Normalize company name for LinkedIn URL slug
-            slug = re.sub(r'[^a-z0-9]+', '-', company.lower()).strip('-')
-
             driver = webdriver.Chrome(service=service, options=options)
             try:
-                # Try the /life page first (where "I'm interested" usually lives)
-                driver.get(f"https://www.linkedin.com/company/{slug}/life")
+                # Step 1: go to the job page, extract company URL from DOM
+                driver.get(job_url)
                 _time.sleep(4)
 
-                # Look for the "I'm interested" button
+                company_url = None
+                company_links = driver.find_elements(
+                    By.CSS_SELECTOR, 'a[href*="/company/"]')
+                for link in company_links:
+                    href = link.get_attribute("href") or ""
+                    if "/company/" in href and "/jobs" not in href:
+                        # Clean to base company URL
+                        # e.g. https://www.linkedin.com/company/natera?trk=...
+                        company_url = href.split("?")[0].rstrip("/")
+                        break
+
+                if not company_url:
+                    log.info(f"[JobTracker] No company link found on "
+                             f"{job_url} for 'I'm Interested'")
+                    return
+
+                # Step 2: navigate to company /life page
+                life_url = f"{company_url}/life"
+                driver.get(life_url)
+                _time.sleep(4)
+
+                # Step 3: find and click "I'm interested" button
                 btn = None
                 for selector in (
                     'button[aria-label*="interested"]',
                     'button[aria-label*="Interested"]',
-                    'button:has-text("interested")',
                 ):
                     try:
                         btn = driver.find_element(By.CSS_SELECTOR, selector)
@@ -1180,7 +1196,7 @@ class JobTrackerTalent(BaseTalent):
                     except Exception:
                         continue
 
-                # Fallback: search all buttons by text content
+                # Fallback: scan all buttons by text
                 if not btn:
                     buttons = driver.find_elements(By.TAG_NAME, "button")
                     for b in buttons:
@@ -1193,10 +1209,10 @@ class JobTrackerTalent(BaseTalent):
                     btn.click()
                     _time.sleep(2)
                     log.info(f"[JobTracker] Clicked 'I'm Interested' "
-                             f"for {company}")
+                             f"for {company} ({company_url})")
                 else:
                     log.info(f"[JobTracker] 'I'm Interested' button not "
-                             f"found for {company} (slug: {slug})")
+                             f"found for {company} ({life_url})")
             finally:
                 driver.quit()
         except Exception as e:
