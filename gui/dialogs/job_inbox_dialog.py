@@ -487,6 +487,24 @@ class JobInboxDialog(QDialog):
                     fields["date_applied"] = date.today().isoformat()
                 fields["date_updated"] = date.today().isoformat()
                 db.update_application(app_id, **fields)
+
+                # Fire LinkedIn "I'm Interested" when moving to applied
+                if new_status == "applied":
+                    app = db.get_application(app_id)
+                    if (app
+                            and app.get("source", "").lower() == "linkedin"
+                            and app.get("job_url")):
+                        import threading
+                        from talents.job_tracker import JobTrackerTalent
+                        threading.Thread(
+                            target=JobTrackerTalent._linkedin_im_interested,
+                            args=(app["job_url"], app["company"]),
+                            daemon=True,
+                            name="linkedin-interested",
+                        ).start()
+                        log.info(f"[JobInbox] LinkedIn 'I'm Interested' "
+                                 f"queued for {app['company']}")
+
             self._status_label.setText(f"#{app_id} → {new_status}")
         except Exception as e:
             log.error(f"[JobInbox] Status update failed: {e}")
