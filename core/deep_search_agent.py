@@ -52,20 +52,25 @@ You have these tools. Respond with ONE JSON object per turn — nothing else.
    Declare you have enough content. Exits the loop.
    Example: {"tool": "done", "args": {"answer_ready": true}}
 
-STRATEGY:
-- If the question mentions a specific game system, book, or topic, consider list_sources first to find the right book.
-- Start with a specific search that names the entity.
-- If a preview looks promising (has the keywords you need), call read_page for the full content.
-- For questions about stats, powers, abilities, costs, or rules:
-  read AT LEAST 2-3 different pages before declaring done.
-  Stat blocks and rules are typically spread across adjacent pages
-  (e.g. powers on one page, weaknesses on the next).
-- If the first page you read only has general/overview info, search
-  for more specific terms (e.g. "feathery karma cost", "natural weapon beak")
-  to find detailed stat blocks on other pages.
-- Call done ONLY when you have read full pages with specific stats,
-  numbers, requirements, and powers — not just a topic mention.
-- Max 5 iterations. Be efficient but thorough.
+STRATEGY (IMPORTANT — follow this order):
+1. Start with a specific search that names the entity.
+2. Look at the previews. Pick the ONE most promising chunk and read it with read_page.
+3. AFTER reading that page, evaluate what you have. If you have stats,
+   numbers, requirements, and powers → call done. If the page was general
+   overview → try a more specific search (e.g. "feathery karma cost",
+   "natural weapon beak", "gained powers").
+4. If the specific search turns up a different page, read THAT page.
+5. Do NOT blindly read every search result. Read → evaluate → decide
+   whether to read more, search differently, or declare done.
+
+RULES:
+- Call done as soon as you have specific stats/numbers/rules that answer
+  the question. Don't waste iterations reading marginal chunks.
+- If a search returns a preview page you've already read, skip it —
+  search for something different.
+- If list_sources helps identify a specific book for the topic, use it
+  BEFORE wasting searches on the whole collection.
+- Max 7 iterations. Be efficient.
 
 OUTPUT FORMAT: A single JSON object on one line. No explanation. No markdown fences. No prose around it.
 """
@@ -74,7 +79,7 @@ OUTPUT FORMAT: A single JSON object on one line. No explanation. No markdown fen
 class DeepSearchAgent:
     """Agentic RAG: LLM drives retrieval via tool calls."""
 
-    MAX_ITERATIONS = 5
+    MAX_ITERATIONS = 7
     MAX_JSON_RETRIES = 2
 
     def __init__(self, llm, retriever):
