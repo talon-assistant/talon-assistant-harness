@@ -220,14 +220,22 @@ class DocumentRetriever:
             # pairs score ≈ -10 to -3; borderline ≈ -3 to 0; relevant > 0.
             # -1.0 cuts out most noise while keeping strong marginal matches.
             RERANK_MIN_SCORE = -1.0
+            # Keyword boost: cross-encoder can produce near-zero scores on
+            # short queries where several chunks look loosely similar. The
+            # boost adds (kw_hits / n_keywords) * 0.2 to each chunk's score,
+            # promoting chunks with actual query-term presence over chunks
+            # the reranker marked as "kinda related". min_score is applied
+            # to the RAW reranker score so boost can't rescue true junk.
+            KW_BOOST = 0.2
             if use_explicit and len(all_chunks) > 1:
                 n_before = len(all_chunks)
                 all_chunks = _reranker.rerank(
                     query, all_chunks, self._reranker_model,
                     top_k=FINAL_CAP, min_score=RERANK_MIN_SCORE,
+                    keywords=keywords, kw_boost=KW_BOOST,
                 )
                 log.info(f"[RAG] Cross-encoder reranked {n_before}→{len(all_chunks)} chunks "
-                      f"(min_score={RERANK_MIN_SCORE})")
+                      f"(min_score={RERANK_MIN_SCORE}, kw_boost={KW_BOOST})")
                 if not all_chunks:
                     log.warning("[RAG] All chunks below reranker threshold — skipping injection")
                     return ""
