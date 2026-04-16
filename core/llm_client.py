@@ -346,27 +346,31 @@ class LLMClient:
         # Thinking-model directives: only affect behaviour when the loaded
         # model is a thinking model. Non-thinking models would emit the
         # literal "/no_think" as part of their reply, so we must gate this.
-        effective_system = system_prompt
+        # NOTE: Qwen 3+ respects /no_think and /think most reliably when
+        # the directive sits at the END of the user prompt, NOT alone in
+        # the system prompt. Observed failure: a system prompt of just
+        # "/no_think" with no following content is ignored and the model
+        # thinks anyway.
+        effective_prompt = prompt
         effective_max_length = max_length
         if (no_think or think) and self.is_thinking_model:
             directive = "/no_think" if no_think else "/think"
-            base = system_prompt or ""
-            effective_system = f"{directive}\n{base}" if base else directive
+            effective_prompt = f"{prompt}\n\n{directive}"
             if think and max_length:
                 effective_max_length = int(max_length * self.thinking_boost)
 
         if self.api_format == "llamacpp":
             raw = self._generate_llamacpp(
-                prompt, use_vision, effective_images,
-                effective_max_length, effective_system, temperature, rep_pen)
+                effective_prompt, use_vision, effective_images,
+                effective_max_length, system_prompt, temperature, rep_pen)
         elif self.api_format == "openai":
             raw = self._generate_openai(
-                prompt, use_vision, effective_images,
-                effective_max_length, effective_system, temperature)
+                effective_prompt, use_vision, effective_images,
+                effective_max_length, system_prompt, temperature)
         else:
             raw = self._generate_koboldcpp(
-                prompt, use_vision, effective_images,
-                effective_max_length, effective_system, temperature, rep_pen)
+                effective_prompt, use_vision, effective_images,
+                effective_max_length, system_prompt, temperature, rep_pen)
 
         # Strip <think>/<thinking> reasoning blocks BEFORE any further
         # processing. Qwen 3+ and similar models wrap their chain-of-
