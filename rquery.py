@@ -98,6 +98,10 @@ def main():
                         help="Skip alt query expansion entirely")
     parser.add_argument("--chunk-chars", type=int, default=100,
                         help="Preview chars per chunk (default: 100)")
+    parser.add_argument("--kw-boost", type=float, default=0.0,
+                        help="Add (kw_hits/n_kw)*BOOST to rerank scores "
+                             "before final sort. Try 0.2 to see effect. "
+                             "Default 0 (off).")
     args = parser.parse_args()
 
     query = args.query
@@ -304,16 +308,37 @@ def main():
         model = _reranker._get_model(reranker_model)
         pairs = [(query, c[1]) for c in rerank_pool]
         scores = model.predict(pairs).tolist()
-        scored = sorted(
-            zip(scores, rerank_pool), key=lambda x: x[0], reverse=True)
 
-        print(f"  {'rank':>4} {'score':>8}  {'kw':>3}  "
-              f"{'source':<45} {'pg':>5}  preview")
-        print(f"  {'-' * 4} {'-' * 8}  {'-' * 3}  "
-              f"{'-' * 45} {'-' * 5}  {'-' * 40}")
+        # Optional keyword boost (AND-like reranking)
+        n_kw = max(1, len(keywords))
+        boost = args.kw_boost
+        if boost > 0:
+            print(_c(f"  [kw-boost active: +(kw/{n_kw})*{boost:.2f} per chunk]",
+                     "magenta"))
+            adjusted = []
+            for s, c in zip(scores, rerank_pool):
+                kw = _keyword_score(c[1], keywords)
+                bonus = (kw / n_kw) * boost
+                adjusted.append((s + bonus, s, bonus, c))
+            adjusted.sort(key=lambda x: x[0], reverse=True)
+        else:
+            adjusted = [(s, s, 0.0, c)
+                        for s, c in zip(scores, rerank_pool)]
+            adjusted.sort(key=lambda x: x[0], reverse=True)
+
+        if boost > 0:
+            print(f"  {'rank':>4} {'final':>8} {'rerank':>8} {'+bonus':>7}  "
+                  f"{'kw':>3}  {'source':<40} {'pg':>5}  preview")
+            print(f"  {'-' * 4} {'-' * 8} {'-' * 8} {'-' * 7}  "
+                  f"{'-' * 3}  {'-' * 40} {'-' * 5}  {'-' * 40}")
+        else:
+            print(f"  {'rank':>4} {'score':>8}  {'kw':>3}  "
+                  f"{'source':<45} {'pg':>5}  preview")
+            print(f"  {'-' * 4} {'-' * 8}  {'-' * 3}  "
+                  f"{'-' * 45} {'-' * 5}  {'-' * 40}")
         min_score = -1.0
         cutoff_shown = False
-        for rank, (s, c) in enumerate(scored, 1):
+        for rank, (final_s, raw_s, bonus_s, c) in enumerate(adjusted, 1):
             fn, txt, dist, pg = c
             kw = _keyword_score(txt, keywords)
             pg_s = f"p{pg + 1}" if pg is not None else "-"
@@ -321,20 +346,30 @@ def main():
             if rank == args.final + 1:
                 print(_c(f"  --- above: top {args.final} kept --- "
                          f"below: dropped ---", "yellow"))
-            if s < min_score and not cutoff_shown:
-                print(_c(f"  --- below min_score={min_score} ---", "red"))
+            if raw_s < min_score and not cutoff_shown:
+                print(_c(f"  --- below reranker min_score={min_score} "
+                         f"(would be dropped without kw boost) ---", "red"))
                 cutoff_shown = True
 
-            color = "green" if s >= min_score and rank <= args.final else (
-                "yellow" if s >= min_score else "red")
-            line = (f"  {rank:>4} {s:>+8.3f}  {kw:>3}  "
-                    f"{fn[:45]:<45} {pg_s:>5}  "
-                    f"{_short(txt, args.chunk_chars)}")
+            color = "green" if raw_s >= min_score and rank <= args.final else (
+                "yellow" if raw_s >= min_score else "red")
+            if boost > 0:
+                line = (f"  {rank:>4} {final_s:>+8.3f} {raw_s:>+8.3f} "
+                        f"{bonus_s:>+7.3f}  {kw:>3}  "
+                        f"{fn[:40]:<40} {pg_s:>5}  "
+                        f"{_short(txt, args.chunk_chars)}")
+            else:
+                line = (f"  {rank:>4} {raw_s:>+8.3f}  {kw:>3}  "
+                        f"{fn[:45]:<45} {pg_s:>5}  "
+                        f"{_short(txt, args.chunk_chars)}")
             print(_c(line, color))
         print()
 
-        final_chunks = [c for s, c in scored
-                        if s >= min_score][:args.final]
+        # Apply min_score against the RAW reranker score, not boosted.
+        # Keep top N by final (boosted) score among those that passed.
+        passing = [(final_s, c) for final_s, raw_s, _, c in adjusted
+                   if raw_s >= min_score]
+        final_chunks = [c for _s, c in passing[:args.final]]
     else:
         print(_c("━━━ PHASE 5: Skipped reranker ━━━", "bold"))
         final_chunks = rerank_pool[:args.final]
