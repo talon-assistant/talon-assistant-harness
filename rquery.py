@@ -102,6 +102,9 @@ def main():
                         help="Add (kw_hits/n_kw)*BOOST to rerank scores "
                              "before final sort. Try 0.2 to see effect. "
                              "Default 0 (off).")
+    parser.add_argument("--contains-sticky", action="store_true",
+                        help="Guarantee all $contains chunks make it into "
+                             "the reranker pool (expands pool if needed).")
     args = parser.parse_args()
 
     query = args.query
@@ -271,6 +274,9 @@ def main():
 
     # ── PHASE 4: Candidate pool summary ──
     print(_c("━━━ PHASE 4: Combined candidate pool ━━━", "bold"))
+    # Track which keys came from $contains so we can mark them sticky
+    contains_keys = {c[1][:100] for c in contains_pool}
+
     all_candidates = semantic_chunks + alt_pool + contains_pool
     # Dedup by text prefix
     seen_all = set()
@@ -296,10 +302,27 @@ def main():
         print(f"    {n:>3}x  {fn[:60]}   (with kw hits: {len(kw_chunks)})")
     print()
 
-    # Take top-K for reranker by distance
+    # Pool selection: by distance ascending, top-K.
+    # With --contains-sticky: guarantee all $contains chunks make the pool,
+    # expanding the pool if needed.
     dedup_candidates.sort(key=lambda c: c[2])
-    rerank_pool = dedup_candidates[:args.pool]
-    print(f"  Sending top {len(rerank_pool)} (by distance) to reranker")
+
+    if args.contains_sticky:
+        sticky = [c for c in dedup_candidates
+                  if c[1][:100] in contains_keys]
+        non_sticky = [c for c in dedup_candidates
+                      if c[1][:100] not in contains_keys]
+        # Keep all sticky chunks plus fill remaining pool slots with
+        # top-distance non-sticky chunks.
+        remaining = max(0, args.pool - len(sticky))
+        rerank_pool = sticky + non_sticky[:remaining]
+        print(_c(f"  [contains-sticky active]", "magenta"))
+        print(f"  Sticky $contains chunks guaranteed: {len(sticky)}")
+        print(f"  Non-sticky fill slots:              {len(non_sticky[:remaining])}")
+        print(f"  Final reranker pool:                {len(rerank_pool)}")
+    else:
+        rerank_pool = dedup_candidates[:args.pool]
+        print(f"  Sending top {len(rerank_pool)} (by distance) to reranker")
     print()
 
     # ── PHASE 5: Reranker ──
