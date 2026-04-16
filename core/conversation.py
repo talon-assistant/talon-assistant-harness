@@ -133,24 +133,6 @@ class ConversationEngine:
         # "I'm going to search/look for X"
         (r"(?i)\bi'm going to (?:search for|look for|look up|find) (.+?)" + _END,
          "search the web for {0}"),
-        # Present-participle forms that Qwen often emits after affirmations
-        # like "yes"/"sure": "Opening X now", "Launching X", "Starting X up".
-        # The suffix clauses (now/for you/right away/$) guard against false
-        # positives like "Opening up about this is hard".
-        (r"(?i)\b(?:opening|launching|starting|firing up|pulling up|"
-         r"bringing up) (.+?) (?:now|for you|right now|right away|up)\b",
-         "open {0}"),
-        (r"(?i)\b(?:opening|launching|firing up|pulling up|bringing up) "
-         r"(.+?)" + _END,
-         "open {0}"),
-        # "Searching X" / "Looking up X" as continuations
-        (r"(?i)\bsearching (?:the web |online )?for (.+?)" + _END,
-         "search the web for {0}"),
-        (r"(?i)\blooking up (.+?)" + _END,
-         "search the web for {0}"),
-        # "Going to open/launch/start X"
-        (r"(?i)\bgoing to (?:open|launch|start) (.+?)" + _END,
-         "open {0}"),
     ]
 
     # ── Init ──────────────────────────────────────────────────────
@@ -566,15 +548,23 @@ class ConversationEngine:
     def detect_promise(self, response: str) -> str | None:
         """Detect an undelivered action promise in a conversation response.
 
-        Scans the LLM's reply for phrases like "I'll search the web for X" or
-        "let me open Chrome" and extracts an actionable command string.
+        Two-stage detection:
+        1. Fast-path regex patterns catch common "I'll search for X" /
+           "let me open Y" forms with no LLM latency.
+        2. If no regex match, fall back to an LLM-based classifier that
+           handles arbitrary phrasings like "Opening Notepad now" or
+           "Let me research that for you".
 
-        When multiple patterns match, the one that appears earliest in the
-        response wins (not the first in declaration order).
+        When multiple regex patterns match, the one appearing earliest
+        in the response wins.
 
-        Returns the implied command to execute, or None if nothing actionable
-        was found.
+        Returns the implied command to execute, or None if nothing
+        actionable was found.
         """
+        if not response or len(response.strip()) < 10:
+            return None
+
+        # Stage 1: regex fast-path
         best_action = None
         best_pos = len(response) + 1
 
@@ -582,13 +572,79 @@ class ConversationEngine:
             m = re.search(pattern, response)
             if m and template is not None and m.start() < best_pos:
                 groups = m.groups()
-                action = template.format(*[g.strip() if g else "" for g in groups])
+                action = template.format(
+                    *[g.strip() if g else "" for g in groups])
                 action = action.strip().rstrip(".,!;-")
                 if action:
                     best_action = action
                     best_pos = m.start()
 
-        return best_action
+        if best_action:
+            return best_action
+
+        # Stage 2: LLM-based classifier for anything regex missed
+        return self._detect_promise_llm(response)
+
+    def _detect_promise_llm(self, response: str) -> str | None:
+        """Use the LLM to decide if the response promised an action.
+
+        Runs a small focused classification call. Returns the command
+        to execute (e.g. "open notepad", "search the web for X") or None
+        if no concrete action was promised.
+        """
+        # Truncate long responses so we don't pay a big context cost
+        snippet = response.strip()[:800]
+
+        prompt = (
+            "You are a classifier. Analyze this assistant response and "
+            "decide if the assistant promised a CONCRETE action but did "
+            "not actually execute it.\n\n"
+            f'Assistant response: "{snippet}"\n\n'
+            "Concrete actions include:\n"
+            "- Opening an application or file\n"
+            "- Searching the web for something specific\n"
+            "- Navigating to a URL or website\n"
+            "- Playing a song, video, or media\n"
+            "- Looking up or researching a specific named topic\n\n"
+            "Return JSON. Use exactly one of these shapes:\n"
+            '  {"action": "open APP_NAME"}\n'
+            '  {"action": "search the web for SPECIFIC_QUERY"}\n'
+            '  {"action": "go to URL"}\n'
+            '  {"action": "play TITLE"}\n'
+            '  {"action": null}   ← use this if no concrete action was promised,\n'
+            "      or if the target is vague (e.g. 'I'll look that up' without "
+            "a specific topic), or if the assistant was just explaining or "
+            "asking a question.\n\n"
+            "JSON only. No prose, no markdown fences."
+        )
+
+        try:
+            raw = self._a.llm.generate(
+                prompt,
+                max_length=80,
+                temperature=0.0,
+                detect_degeneration=False,
+            )
+            text = (raw or "").strip()
+            text = re.sub(r"^```[a-zA-Z]*\n?", "", text)
+            text = re.sub(r"\n?```$", "", text)
+            m = re.search(r'\{[^{}]*\}', text, re.DOTALL)
+            if not m:
+                return None
+            parsed = json.loads(m.group())
+            action = parsed.get("action")
+            if not action or not isinstance(action, str):
+                return None
+            action = action.strip()
+            if not action or action.lower() in (
+                "null", "none", "no action", "nothing",
+            ):
+                return None
+            log.info(f"[Promise] LLM detected action: {action!r}")
+            return action
+        except Exception as e:
+            log.debug(f"[Promise] LLM detection error: {e}")
+            return None
 
     def check_documents_exist(self) -> bool:
         """Return True if at least one document chunk has been indexed.
