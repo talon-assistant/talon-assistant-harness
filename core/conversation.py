@@ -303,10 +303,19 @@ class ConversationEngine:
 
         # ── Document RAG injection (conversation path only) ──────────────────
 
-        # Heuristic intent classification (ambient path only — rag_explicit
-        # is already a deliberate user signal and must not be overridden).
-        intent = "ambient"
-        if not rag_explicit:
+        # Deep search takes precedence over everything else. Even if the LLM
+        # router set rag_explicit=True (meaning "standard document lookup"),
+        # an explicit "deep search" trigger should route through the agent.
+        cmd_lower_for_intent = command.lower()
+        if any(t in cmd_lower_for_intent for t in self._DEEP_SEARCH_TRIGGERS):
+            intent = "deep_search"
+            log.debug("[RAG] Intent: deep_search (trigger override)")
+        elif rag_explicit:
+            # LLM router already deemed this a document query; no heuristic
+            # override. Keep default intent "ambient" but let use_explicit_rag
+            # drive behavior below.
+            intent = "ambient"
+        else:
             intent = self._classify_query_intent(command)
             log.debug(f"[RAG] Intent: {intent}")
 
