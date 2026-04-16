@@ -262,6 +262,7 @@ class DeepSearchAgent:
                 system_prompt=_AGENT_SYSTEM_PROMPT,
                 max_length=200,
                 temperature=0.1,
+                detect_degeneration=False,  # JSON tool call — don't truncate
             )
         except Exception as e:
             log.error(f"[Agent] LLM call failed: {e}")

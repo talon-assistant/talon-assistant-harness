@@ -351,6 +351,7 @@ class ConversationEngine:
                     f"Request: {command}\nQueries:",
                     max_length=80,
                     temperature=0.0,
+                    detect_degeneration=False,  # JSON array — don't truncate
                 )
                 raw = re.sub(r"```[a-zA-Z]*\n?", "", raw).strip()
                 queries = json.loads(raw)

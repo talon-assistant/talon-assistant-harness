@@ -276,7 +276,8 @@ class DesktopControlTalent(BaseTalent):
         try:
             response = llm.generate(
                 prompt, use_vision=needs_vision, screenshot_b64=screenshot_b64,
-                max_length=1024, temperature=0.3)
+                max_length=1024, temperature=0.3,
+                detect_degeneration=False)  # JSON action plan — don't truncate
         except LLMError as e:
             return {"success": False, "response": f"LLM unavailable: {e}", "actions_taken": [], "spoken": False}
 

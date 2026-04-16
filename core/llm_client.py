@@ -194,7 +194,8 @@ class LLMClient:
 
     def generate(self, prompt, use_vision=False, screenshot_b64=None,
                  images_b64=None, max_length=None, system_prompt=None,
-                 temperature=None, rep_pen=None):
+                 temperature=None, rep_pen=None,
+                 detect_degeneration=True):
         """Send prompt to LLM server and return generated text.
 
         Dispatches to the appropriate backend based on ``self.api_format``.
@@ -208,6 +209,12 @@ class LLMClient:
             system_prompt: Optional system message (ChatML <|im_start|>system).
             temperature: Override temperature for this call.
             rep_pen: Override repetition penalty for this call.
+            detect_degeneration: If True (default), scan output for
+                n-gram repetition and run-on sentences and truncate if
+                detected.  Callers that expect structured output (JSON
+                action plans, tool-call JSON, etc.) should pass False —
+                truncating JSON mid-string breaks the parser, and
+                legitimate creative content can trip the run-on detector.
         """
         # Normalise: merge legacy screenshot_b64 into images_b64 list.
         effective_images = list(images_b64) if images_b64 else []
@@ -228,7 +235,9 @@ class LLMClient:
                 prompt, use_vision, effective_images,
                 max_length, system_prompt, temperature, rep_pen)
 
-        return _truncate_degeneration(raw)
+        if detect_degeneration:
+            return _truncate_degeneration(raw)
+        return raw
 
     # ── KoboldCpp Backend ─────────────────────────────────────
 
