@@ -830,22 +830,35 @@ class JobSearchTalent(BaseTalent):
         except subprocess.TimeoutExpired:
             return _fail("Cover letter generation timed out.")
 
-        # Save files
-        output_dir = Path.home() / "OneDrive" / "Documents" / "Cover Letters"
-        output_dir.mkdir(parents=True, exist_ok=True)
+        # Save files in the same per-application folder as the resume
+        # (~/OneDrive/Documents/jobappmaterials/{company}_{position}_{date}/).
+        # If the resume folder already exists for this application, reuse
+        # it. Otherwise create a new folder with today's date.
+        safe_company = _safe_slug(app.get("company", ""), max_len=60)
+        safe_position = _safe_slug(app.get("position", ""), max_len=50)
+        date_tag = date.today().strftime("%Y-%m-%d")
+        out_root = Path.home() / "OneDrive" / "Documents" / "jobappmaterials"
+        out_root.mkdir(parents=True, exist_ok=True)
 
-        import html as _html
-        _c = _html.unescape(app.get('company', '') or '')
-        _p = _html.unescape(app.get('position', '') or '')
-        safe_company = re.sub(r'[^\w\s-]', '', _c).strip()
-        safe_position = re.sub(r'[^\w\s-]', '', _p).strip()[:40]
-        base_name = f"{safe_company} - {safe_position}"
+        prefix = f"{safe_company}_{safe_position}_"
+        existing = sorted(
+            (p for p in out_root.iterdir()
+             if p.is_dir() and p.name.startswith(prefix)),
+            key=lambda p: p.name,
+            reverse=True,
+        )
+        if existing:
+            output_dir = existing[0]
+        else:
+            output_dir = out_root / f"{prefix}{date_tag}"
+            output_dir.mkdir(parents=True, exist_ok=True)
 
+        base_name = f"{safe_company}_{safe_position}_cover_letter"
         counter = 0
         suffix = ""
         while (output_dir / f"{base_name}{suffix}.docx").exists():
             counter += 1
-            suffix = f" ({counter})"
+            suffix = f"_{counter}"
 
         docx_path = output_dir / f"{base_name}{suffix}.docx"
         pdf_path = output_dir / f"{base_name}{suffix}.pdf"
@@ -859,10 +872,15 @@ class JobSearchTalent(BaseTalent):
             self._write_cover_letter_docx(letter, docx_path, app)
             saved.append(str(docx_path))
 
+            # Use the subprocess-isolated converter from resume_docx to
+            # survive docx2pdf COM crashes on Windows.
             try:
-                import docx2pdf
-                docx2pdf.convert(str(docx_path), str(pdf_path))
-                saved.append(str(pdf_path))
+                from core.resume_docx import convert_to_pdf
+                converted = convert_to_pdf(docx_path)
+                if converted:
+                    saved.append(str(converted))
+                else:
+                    warnings.append("PDF conversion returned no file.")
             except Exception as e:
                 warnings.append(f"PDF conversion failed: {e}")
                 log.warning(f"[JobSearch] PDF conversion failed: {e}")
