@@ -479,12 +479,19 @@ class DocumentRetriever:
         # Build where clause for source filter
         where = {"filename": source_filter} if source_filter else None
 
+        # When filtering by source, widen the pool aggressively. A single
+        # document has far fewer chunks, so pulling 32 candidates still
+        # lets the reranker choose from the whole book's most relevant
+        # pages rather than just the top 16.
+        n_semantic = 32 if source_filter else max(top_k * 2, 16)
+        contains_limit = 12 if source_filter else 6
+
         try:
             # Semantic search
             results = self._docs.query(
                 query_embeddings=_emb.embed_queries(
                     [query], self._embed_model),
-                n_results=max(top_k * 2, 16),  # widen pool before reranker
+                n_results=n_semantic,
                 where=where,
                 include=["documents", "metadatas", "distances"],
             )
@@ -513,13 +520,13 @@ class DocumentRetriever:
                             cont_results = self._docs.get(
                                 where={"filename": source_filter},
                                 where_document=where_doc,
-                                limit=6,
+                                limit=contains_limit,
                                 include=["documents", "metadatas"],
                             )
                         else:
                             cont_results = self._docs.get(
                                 where_document=where_doc,
-                                limit=6,
+                                limit=contains_limit,
                                 include=["documents", "metadatas"],
                             )
                         for doc, meta in zip(
@@ -541,20 +548,18 @@ class DocumentRetriever:
                 return []
 
             # Optional reranking
-            rerank_scores: dict[str, float] = {}
             if apply_reranker and len(hits) > 1:
+                # Wider reranker pool when filtering by source (small doc).
+                rerank_pool_size = 40 if source_filter else 20
                 try:
                     reranked = _reranker.rerank(
-                        query, hits[:20], self._reranker_model,
+                        query, hits[:rerank_pool_size], self._reranker_model,
                         top_k=top_k, min_score=-1.0,
                         keywords=keywords, kw_boost=0.2,
                     )
-                    # Build rerank score lookup — reranker returns chunks in
-                    # order but doesn't expose scores. We'll just use position.
                     hits = reranked
                 except Exception as e:
                     log.warning(f"[RAG] Reranker failed in agentic mode: {e}")
-                    # Fall back to distance sort
                     hits.sort(key=lambda x: x[2])
                     hits = hits[:top_k]
             else:

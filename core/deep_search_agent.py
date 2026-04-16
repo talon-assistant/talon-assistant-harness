@@ -56,8 +56,16 @@ STRATEGY:
 - If the question mentions a specific game system, book, or topic, consider list_sources first to find the right book.
 - Start with a specific search that names the entity.
 - If a preview looks promising (has the keywords you need), call read_page for the full content.
-- Call done when you've read at least one full page with the answer.
-- Max 5 iterations. Be efficient.
+- For questions about stats, powers, abilities, costs, or rules:
+  read AT LEAST 2-3 different pages before declaring done.
+  Stat blocks and rules are typically spread across adjacent pages
+  (e.g. powers on one page, weaknesses on the next).
+- If the first page you read only has general/overview info, search
+  for more specific terms (e.g. "feathery karma cost", "natural weapon beak")
+  to find detailed stat blocks on other pages.
+- Call done ONLY when you have read full pages with specific stats,
+  numbers, requirements, and powers — not just a topic mention.
+- Max 5 iterations. Be efficient but thorough.
 
 OUTPUT FORMAT: A single JSON object on one line. No explanation. No markdown fences. No prose around it.
 """
