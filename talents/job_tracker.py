@@ -29,6 +29,7 @@ import re
 import shutil
 import sqlite3
 import subprocess
+import threading
 from datetime import datetime, date, timedelta
 from pathlib import Path
 from typing import Any
@@ -163,6 +164,21 @@ class _DB:
                 conn.execute(
                     "ALTER TABLE applications "
                     "ADD COLUMN job_description TEXT DEFAULT ''"
+                )
+            if "recruiter_name" not in cols:
+                conn.execute(
+                    "ALTER TABLE applications "
+                    "ADD COLUMN recruiter_name TEXT DEFAULT ''"
+                )
+            if "recruiter_url" not in cols:
+                conn.execute(
+                    "ALTER TABLE applications "
+                    "ADD COLUMN recruiter_url TEXT DEFAULT ''"
+                )
+            if "connections_at_co" not in cols:
+                conn.execute(
+                    "ALTER TABLE applications "
+                    "ADD COLUMN connections_at_co TEXT DEFAULT ''"
                 )
 
     # -- applications --
@@ -1116,75 +1132,101 @@ class JobTrackerTalent(BaseTalent):
             "spoken": False,
         }
 
+    # ── LinkedIn automation helpers ─────────────────────────────────────────
+
+    # Lock prevents concurrent LinkedIn sessions (persistent profile
+    # can only have one active Selenium driver at a time).
+    _linkedin_lock = threading.Lock()
+    _last_recon_ts: float = 0.0
+    _RECON_COOLDOWN = 30.0  # seconds between recon calls
+
+    @staticmethod
+    def _create_linkedin_driver():
+        """Create a headless Chrome driver using the persistent profile."""
+        from selenium import webdriver
+        from selenium.webdriver.chrome.options import Options
+        from selenium.webdriver.chrome.service import Service
+
+        options = Options()
+        data_dir = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "data", "job_search_chrome_profile",
+        )
+        options.add_argument(f"--user-data-dir={data_dir}")
+        options.add_argument("--headless=new")
+        options.add_argument("--disable-blink-features=AutomationControlled")
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-dev-shm-usage")
+        options.add_argument(
+            "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/146.0.0.0 Safari/537.36"
+        )
+
+        try:
+            from webdriver_manager.chrome import ChromeDriverManager
+            service = Service(ChromeDriverManager().install())
+        except ImportError:
+            service = Service()
+
+        driver = webdriver.Chrome(service=service, options=options)
+        driver.set_page_load_timeout(25)
+        return driver
+
+    @staticmethod
+    def _extract_company_linkedin_url(driver, job_url: str) -> str | None:
+        """Navigate to a LinkedIn job page and extract the company URL.
+
+        Returns the base company URL (e.g. https://www.linkedin.com/company/natera)
+        or None if not found.
+        """
+        import time as _time
+        from selenium.webdriver.common.by import By
+
+        driver.get(job_url)
+        _time.sleep(4)
+
+        # Check for login wall
+        if "/login" in driver.current_url or "authwall" in driver.current_url:
+            log.warning("[JobTracker] LinkedIn login required — "
+                       "say 'job search login'")
+            return None
+
+        company_links = driver.find_elements(
+            By.CSS_SELECTOR, 'a[href*="/company/"]')
+        for link in company_links:
+            href = link.get_attribute("href") or ""
+            if "/company/" in href and "/jobs" not in href:
+                return href.split("?")[0].rstrip("/")
+        return None
+
     @staticmethod
     def _linkedin_im_interested(job_url: str, company: str) -> None:
         """Click 'I'm Interested' on a company's LinkedIn page.
 
-        Step 1: Navigate to the job page to find the real company link
-                (e.g. linkedin.com/company/natera) from the DOM.
-        Step 2: Navigate to that company's /life page.
-        Step 3: Find and click the "I'm interested" button.
-
-        Runs in a background thread. Uses the persistent Chrome profile
-        (already logged into LinkedIn).
+        Runs in a background thread. Uses the persistent Chrome profile.
         """
+        if not JobTrackerTalent._linkedin_lock.acquire(timeout=5):
+            log.info("[JobTracker] LinkedIn session busy, skipping "
+                     "'I'm Interested'")
+            return
         try:
-            from selenium import webdriver
-            from selenium.webdriver.chrome.options import Options
-            from selenium.webdriver.chrome.service import Service
-            from selenium.webdriver.common.by import By
             import time as _time
+            from selenium.webdriver.common.by import By
 
-            options = Options()
-            data_dir = os.path.join(
-                os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                "data", "job_search_chrome_profile",
-            )
-            options.add_argument(f"--user-data-dir={data_dir}")
-            options.add_argument("--headless=new")
-            options.add_argument("--disable-blink-features=AutomationControlled")
-            options.add_argument("--no-sandbox")
-            options.add_argument("--disable-dev-shm-usage")
-            options.add_argument(
-                "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/146.0.0.0 Safari/537.36"
-            )
-
+            driver = JobTrackerTalent._create_linkedin_driver()
             try:
-                from webdriver_manager.chrome import ChromeDriverManager
-                service = Service(ChromeDriverManager().install())
-            except ImportError:
-                service = Service()
-
-            driver = webdriver.Chrome(service=service, options=options)
-            try:
-                # Step 1: go to the job page, extract company URL from DOM
-                driver.get(job_url)
-                _time.sleep(4)
-
-                company_url = None
-                company_links = driver.find_elements(
-                    By.CSS_SELECTOR, 'a[href*="/company/"]')
-                for link in company_links:
-                    href = link.get_attribute("href") or ""
-                    if "/company/" in href and "/jobs" not in href:
-                        # Clean to base company URL
-                        # e.g. https://www.linkedin.com/company/natera?trk=...
-                        company_url = href.split("?")[0].rstrip("/")
-                        break
-
+                company_url = JobTrackerTalent._extract_company_linkedin_url(
+                    driver, job_url)
                 if not company_url:
                     log.info(f"[JobTracker] No company link found on "
                              f"{job_url} for 'I'm Interested'")
                     return
 
-                # Step 2: navigate to company /life page
                 life_url = f"{company_url}/life"
                 driver.get(life_url)
                 _time.sleep(4)
 
-                # Step 3: find and click "I'm interested" button
                 btn = None
                 for selector in (
                     'button[aria-label*="interested"]',
@@ -1196,7 +1238,6 @@ class JobTrackerTalent(BaseTalent):
                     except Exception:
                         continue
 
-                # Fallback: scan all buttons by text
                 if not btn:
                     buttons = driver.find_elements(By.TAG_NAME, "button")
                     for b in buttons:
@@ -1218,6 +1259,224 @@ class JobTrackerTalent(BaseTalent):
         except Exception as e:
             log.warning(f"[JobTracker] LinkedIn 'I'm Interested' failed "
                        f"for {company}: {e}")
+        finally:
+            JobTrackerTalent._linkedin_lock.release()
+
+    @staticmethod
+    def _discover_recruiter_and_connections(
+        job_url: str, company: str, app_id: int, db_path: str,
+    ) -> dict:
+        """Find the recruiter and 1st-degree connections at a company.
+
+        Single browser session, 4 phases:
+        1. Extract company URL from job page
+        2. Check "Meet the hiring team" on job page
+        3. Navigate to company /people/ for connections
+        4. Search company /people/?keywords=recruiter (if phase 2 found nothing)
+
+        Writes results to DB. Returns a summary dict.
+        """
+        import json as _json
+        import time as _time
+        from selenium.webdriver.common.by import By
+
+        result = {
+            "recruiter_name": "",
+            "recruiter_url": "",
+            "connections": [],
+            "error": "",
+        }
+
+        # Rate limit
+        now = _time.time()
+        wait = JobTrackerTalent._RECON_COOLDOWN - (
+            now - JobTrackerTalent._last_recon_ts)
+        if wait > 0:
+            log.info(f"[JobTracker] Recon: throttling {wait:.0f}s")
+            _time.sleep(wait)
+
+        if not JobTrackerTalent._linkedin_lock.acquire(timeout=10):
+            result["error"] = "Another LinkedIn task is running. Try again shortly."
+            return result
+
+        try:
+            JobTrackerTalent._last_recon_ts = _time.time()
+            driver = JobTrackerTalent._create_linkedin_driver()
+            try:
+                # ── Phase 1: extract company URL ──
+                company_url = JobTrackerTalent._extract_company_linkedin_url(
+                    driver, job_url)
+                if not company_url:
+                    result["error"] = "Could not find company LinkedIn page."
+                    return result
+
+                log.info(f"[JobTracker] Recon: company URL = {company_url}")
+
+                # ── Phase 2: "Meet the hiring team" on job page ──
+                # (We're still on the job page from phase 1)
+                for selector in (
+                    '.hirer-card__hirer-information a[href*="/in/"]',
+                    '.jobs-poster__name a[href*="/in/"]',
+                    'a[href*="/in/"][data-test-id*="hirer"]',
+                ):
+                    try:
+                        el = driver.find_element(By.CSS_SELECTOR, selector)
+                        name = el.text.strip()
+                        url = (el.get_attribute("href") or "").split("?")[0]
+                        if name and url:
+                            result["recruiter_name"] = name
+                            result["recruiter_url"] = url
+                            log.info(f"[JobTracker] Recon: recruiter from "
+                                     f"hiring team = {name}")
+                            break
+                    except Exception:
+                        continue
+
+                # Fallback: scan for "hiring team" section
+                if not result["recruiter_name"]:
+                    try:
+                        sections = driver.find_elements(By.TAG_NAME, "section")
+                        for sec in sections:
+                            header = sec.text[:100].lower()
+                            if "hiring" in header or "recruiter" in header:
+                                links = sec.find_elements(
+                                    By.CSS_SELECTOR, 'a[href*="/in/"]')
+                                if links:
+                                    name = links[0].text.strip()
+                                    url = (links[0].get_attribute("href")
+                                           or "").split("?")[0]
+                                    if name:
+                                        result["recruiter_name"] = name
+                                        result["recruiter_url"] = url
+                                        log.info(f"[JobTracker] Recon: "
+                                                 f"recruiter from section "
+                                                 f"= {name}")
+                                break
+                    except Exception:
+                        pass
+
+                # ── Phase 3: connections at company ──
+                people_url = f"{company_url}/people/"
+                driver.get(people_url)
+                _time.sleep(4)
+
+                connections = []
+                # LinkedIn shows connection cards on the people page
+                for selector in (
+                    'div[data-view-name="org-people-profile-card"]',
+                    '.org-people-profile-card',
+                    '.artdeco-entity-lockup',
+                ):
+                    cards = driver.find_elements(By.CSS_SELECTOR, selector)
+                    if cards:
+                        break
+
+                for card in cards[:10]:
+                    try:
+                        name_el = card.find_element(
+                            By.CSS_SELECTOR,
+                            '.artdeco-entity-lockup__title a, '
+                            'a[href*="/in/"]')
+                        name = name_el.text.strip()
+                        url = (name_el.get_attribute("href")
+                               or "").split("?")[0]
+                        title = ""
+                        try:
+                            title_el = card.find_element(
+                                By.CSS_SELECTOR,
+                                '.artdeco-entity-lockup__subtitle')
+                            title = title_el.text.strip()
+                        except Exception:
+                            pass
+                        if name:
+                            connections.append({
+                                "name": name, "title": title, "url": url,
+                            })
+                    except Exception:
+                        continue
+
+                result["connections"] = connections
+                if connections:
+                    log.info(f"[JobTracker] Recon: {len(connections)} "
+                             f"connection(s) at {company}")
+
+                # ── Phase 4: recruiter search (if phase 2 found nothing) ──
+                if not result["recruiter_name"]:
+                    search_url = (f"{company_url}/people/"
+                                  "?keywords=recruiter%20talent%20acquisition"
+                                  "%20hiring")
+                    driver.get(search_url)
+                    _time.sleep(4)
+
+                    for selector in (
+                        '.artdeco-entity-lockup',
+                        'div[data-view-name="org-people-profile-card"]',
+                    ):
+                        cards = driver.find_elements(
+                            By.CSS_SELECTOR, selector)
+                        if cards:
+                            break
+
+                    for card in cards[:3]:
+                        try:
+                            name_el = card.find_element(
+                                By.CSS_SELECTOR,
+                                '.artdeco-entity-lockup__title a, '
+                                'a[href*="/in/"]')
+                            name = name_el.text.strip()
+                            url = (name_el.get_attribute("href")
+                                   or "").split("?")[0]
+                            title = ""
+                            try:
+                                title_el = card.find_element(
+                                    By.CSS_SELECTOR,
+                                    '.artdeco-entity-lockup__subtitle')
+                                title = title_el.text.strip()
+                            except Exception:
+                                pass
+                            if name and title:
+                                title_lower = title.lower()
+                                if any(kw in title_lower for kw in (
+                                    "recruit", "talent", "hiring",
+                                    "people", "hr ",
+                                )):
+                                    result["recruiter_name"] = (
+                                        f"{name}, {title}")
+                                    result["recruiter_url"] = url
+                                    log.info(f"[JobTracker] Recon: "
+                                             f"recruiter from search "
+                                             f"= {name}, {title}")
+                                    break
+                        except Exception:
+                            continue
+
+                # ── Phase 5: write to DB ──
+                try:
+                    db = _DB(db_path)
+                    update = {}
+                    if result["recruiter_name"]:
+                        update["recruiter_name"] = result["recruiter_name"]
+                        update["recruiter_url"] = result["recruiter_url"]
+                        update["contact_name"] = result["recruiter_name"]
+                    if result["connections"]:
+                        update["connections_at_co"] = _json.dumps(
+                            result["connections"])
+                    if update:
+                        db.update_application(app_id, **update)
+                        log.info(f"[JobTracker] Recon: saved results for "
+                                 f"#{app_id} {company}")
+                except Exception as e:
+                    log.error(f"[JobTracker] Recon: DB write failed: {e}")
+
+            finally:
+                driver.quit()
+        except Exception as e:
+            result["error"] = str(e)
+            log.warning(f"[JobTracker] Recon failed for {company}: {e}")
+        finally:
+            JobTrackerTalent._linkedin_lock.release()
+
+        return result
 
     @staticmethod
     def _fetch_job_description(job_url: str) -> str:

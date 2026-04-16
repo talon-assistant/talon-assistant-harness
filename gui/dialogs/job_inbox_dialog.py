@@ -13,6 +13,7 @@ talent), so the inbox stays responsive.
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import webbrowser
@@ -74,7 +75,7 @@ _COLUMNS = [
     ("Source", 90),
     ("Found", 90),
     ("Status", 120),
-    ("Actions", 360),
+    ("Actions", 430),
 ]
 
 
@@ -89,6 +90,7 @@ class _PipelineWorker(QThread):
         "prepare_everything"  -> both
         "add_from_url"        -> scrape a raw URL and add to tracker
         "run_search"          -> scrape every configured search URL + score
+        "linkedin_recon"      -> recruiter discovery + network mining
     """
 
     done = pyqtSignal(str, dict)   # (action, result_dict)
@@ -112,6 +114,36 @@ class _PipelineWorker(QThread):
             if self._action == "run_search":
                 result = self._job_search._handle_search(context={})
                 self.done.emit(self._action, result or {})
+                return
+
+            if self._action == "linkedin_recon":
+                from talents.job_tracker import JobTrackerTalent, _DB, _data_dir
+                db_path = os.path.join(_data_dir(), "job_tracker.db")
+                db = _DB(db_path)
+                app = db.get_application(self._app_id)
+                if not app:
+                    self.failed.emit(self._action, f"Job #{self._app_id} not found.")
+                    return
+                if not app.get("job_url") or "linkedin.com" not in app["job_url"]:
+                    self.failed.emit(self._action,
+                                     "Recon requires a LinkedIn job URL.")
+                    return
+                recon = JobTrackerTalent._discover_recruiter_and_connections(
+                    app["job_url"], app["company"], self._app_id, db_path)
+                result = {"success": not recon.get("error"), "response": ""}
+                parts = []
+                if recon.get("recruiter_name"):
+                    parts.append(f"Recruiter: {recon['recruiter_name']}")
+                if recon.get("connections"):
+                    n = len(recon["connections"])
+                    names = ", ".join(c["name"] for c in recon["connections"][:5])
+                    parts.append(f"{n} connection(s): {names}")
+                if recon.get("error"):
+                    parts.append(f"Error: {recon['error']}")
+                if not parts:
+                    parts.append("No recruiter or connections found.")
+                result["response"] = "\n".join(parts)
+                self.done.emit(self._action, result)
                 return
 
             # All talent-level commands expect a text command string
@@ -373,7 +405,22 @@ class JobInboxDialog(QDialog):
             self._table.setItem(r, 1, fit_item)
 
             # Company / Position / Location / Source / Date
-            self._table.setItem(r, 2, QTableWidgetItem(row.get("company") or ""))
+            # Company column with recon indicators
+            company_text = row.get("company") or ""
+            indicators = []
+            if row.get("recruiter_name"):
+                indicators.append("[R]")
+            conn_json = row.get("connections_at_co") or ""
+            if conn_json:
+                try:
+                    n = len(json.loads(conn_json))
+                    if n > 0:
+                        indicators.append(f"[C:{n}]")
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            if indicators:
+                company_text = f"{company_text} {' '.join(indicators)}"
+            self._table.setItem(r, 2, QTableWidgetItem(company_text))
             self._table.setItem(r, 3, QTableWidgetItem(row.get("position") or ""))
             self._table.setItem(r, 4, QTableWidgetItem(row.get("location") or ""))
             self._table.setItem(r, 5, QTableWidgetItem(row.get("source") or ""))
@@ -424,6 +471,17 @@ class JobInboxDialog(QDialog):
                 lambda _c, url=row.get("job_url", ""):
                     self._open_url(url)
             )
+            btn_recon = QPushButton("Recon")
+            btn_recon.setToolTip("Find recruiter + connections at company (LinkedIn)")
+            btn_recon.clicked.connect(
+                lambda _c, app_id=int(row["id"]):
+                    self._on_run_pipeline("linkedin_recon", app_id)
+            )
+            # Disable if not a LinkedIn job
+            if "linkedin" not in (row.get("job_url") or "").lower():
+                btn_recon.setEnabled(False)
+                btn_recon.setToolTip("Recon only available for LinkedIn jobs")
+
             btn_del = QPushButton("Delete")
             btn_del.setToolTip("Permanently delete this row")
             btn_del.clicked.connect(
@@ -431,7 +489,7 @@ class JobInboxDialog(QDialog):
                     self._on_delete(app_id)
             )
 
-            for b in (btn_all, btn_res, btn_cl, btn_open, btn_del):
+            for b in (btn_all, btn_res, btn_cl, btn_recon, btn_open, btn_del):
                 b.setFixedHeight(28)
                 b.setMinimumWidth(62)
                 ab.addWidget(b)
@@ -464,6 +522,37 @@ class JobInboxDialog(QDialog):
         if not app:
             return
         parts = []
+
+        # Recruiter and connections (from Recon)
+        recruiter = app.get("recruiter_name") or ""
+        recruiter_url = app.get("recruiter_url") or ""
+        connections_json = app.get("connections_at_co") or ""
+        if recruiter or connections_json:
+            recon_parts = ["--- Recon ---"]
+            if recruiter:
+                line = f"Recruiter: {recruiter}"
+                if recruiter_url:
+                    line += f"  ({recruiter_url})"
+                recon_parts.append(line)
+            if connections_json:
+                try:
+                    conns = json.loads(connections_json)
+                    if conns:
+                        recon_parts.append(f"Connections at company ({len(conns)}):")
+                        for c in conns[:10]:
+                            name = c.get("name", "")
+                            title = c.get("title", "")
+                            url = c.get("url", "")
+                            line = f"  - {name}"
+                            if title:
+                                line += f" ({title})"
+                            if url:
+                                line += f"  {url}"
+                            recon_parts.append(line)
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            parts.append("\n".join(recon_parts))
+
         notes = app.get("notes") or ""
         if notes:
             parts.append(notes)
