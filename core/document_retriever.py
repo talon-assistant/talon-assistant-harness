@@ -406,6 +406,276 @@ class DocumentRetriever:
             log.error(f"[RAG] Document context error: {e}")
             return ""
 
+    # ── Public API for agentic retrieval ──────────────────────────────────
+
+    def list_sources(self) -> list[dict]:
+        """Return a list of all source files with chunk counts.
+
+        Used by DeepSearchAgent so the LLM can see what documents exist
+        before deciding where to search.
+
+        Returns:
+            [{filename, chunks}, ...] sorted by chunk count descending.
+        """
+        try:
+            # Grab all metadata — no way to do group-by in ChromaDB directly
+            results = self._docs.get(
+                include=["metadatas"], limit=100000,
+            )
+            counts: dict[str, int] = {}
+            for meta in results.get("metadatas", []):
+                fn = meta.get("filename", "unknown")
+                counts[fn] = counts.get(fn, 0) + 1
+            return sorted(
+                [{"filename": fn, "chunks": n}
+                 for fn, n in counts.items()],
+                key=lambda r: -r["chunks"],
+            )
+        except Exception as e:
+            log.error(f"[RAG] list_sources failed: {e}")
+            return []
+
+    def get_raw_chunks(self, query: str, top_k: int = 8,
+                       source_filter: str | None = None,
+                       apply_reranker: bool = True) -> list[dict]:
+        """Agentic entry point: return raw chunks with metadata.
+
+        Args:
+            query:          Search query string.
+            top_k:          Max chunks to return.
+            source_filter:  If set, restrict search to this filename only.
+            apply_reranker: If True, apply cross-encoder reranking.
+
+        Returns:
+            [{chunk_id, source, page, text, preview, dist, kw_score, rerank_score?}, ...]
+            where chunk_id is "{filename}::p{page}::s{sub_chunk}" for stable reference.
+        """
+        if len(query.strip()) < 2:
+            return []
+
+        # Build keyword set (lowercase, stopword-filtered) for scoring
+        _STOPWORDS = {
+            "what", "when", "where", "which", "who", "whom", "whose",
+            "that", "this", "these", "those", "there", "here",
+            "have", "has", "had", "been", "being", "were", "was",
+            "will", "would", "could", "should", "shall", "might",
+            "does", "did", "done", "make", "made", "give", "gave",
+            "tell", "told", "about", "with", "from", "into",
+            "much", "many", "more", "most", "some", "such",
+            "also", "just", "than", "then", "only", "very",
+            "provide", "detail", "details", "explain", "describe",
+            "please", "possible", "list", "show", "find", "help",
+            "information", "info", "shadowrun",
+        }
+        keywords = {
+            w.lower() for w in query.split()
+            if len(w) > 3 and w.lower() not in _STOPWORDS
+        }
+
+        def _kw_score(txt: str) -> int:
+            lower = txt.lower()
+            return sum(1 for kw in keywords if kw in lower)
+
+        # Build where clause for source filter
+        where = {"filename": source_filter} if source_filter else None
+
+        try:
+            # Semantic search
+            results = self._docs.query(
+                query_embeddings=_emb.embed_queries(
+                    [query], self._embed_model),
+                n_results=max(top_k * 2, 16),  # widen pool before reranker
+                where=where,
+                include=["documents", "metadatas", "distances"],
+            )
+            hits: list[tuple] = []
+            meta_by_key: dict[str, dict] = {}
+            if results.get("documents") and results["documents"][0]:
+                for doc, meta, dist in zip(
+                    results["documents"][0],
+                    results["metadatas"][0],
+                    results["distances"][0],
+                ):
+                    key = doc[:100]
+                    meta_by_key[key] = meta
+                    hits.append((
+                        meta.get("filename", "?"), doc, dist,
+                        meta.get("page_number"),
+                    ))
+
+            # $contains fallback for exact keyword matches
+            seen = {t[:100] for _, t, _, _ in hits}
+            for kw in list(keywords)[:4]:
+                for variant in {kw, kw.title()}:
+                    try:
+                        where_doc = {"$contains": variant}
+                        if source_filter:
+                            cont_results = self._docs.get(
+                                where={"filename": source_filter},
+                                where_document=where_doc,
+                                limit=6,
+                                include=["documents", "metadatas"],
+                            )
+                        else:
+                            cont_results = self._docs.get(
+                                where_document=where_doc,
+                                limit=6,
+                                include=["documents", "metadatas"],
+                            )
+                        for doc, meta in zip(
+                            cont_results.get("documents", []),
+                            cont_results.get("metadatas", []),
+                        ):
+                            key = doc[:100]
+                            if key not in seen:
+                                seen.add(key)
+                                meta_by_key[key] = meta
+                                hits.append((
+                                    meta.get("filename", "?"), doc, 1.0,
+                                    meta.get("page_number"),
+                                ))
+                    except Exception:
+                        pass
+
+            if not hits:
+                return []
+
+            # Optional reranking
+            rerank_scores: dict[str, float] = {}
+            if apply_reranker and len(hits) > 1:
+                try:
+                    reranked = _reranker.rerank(
+                        query, hits[:20], self._reranker_model,
+                        top_k=top_k, min_score=-1.0,
+                        keywords=keywords, kw_boost=0.2,
+                    )
+                    # Build rerank score lookup — reranker returns chunks in
+                    # order but doesn't expose scores. We'll just use position.
+                    hits = reranked
+                except Exception as e:
+                    log.warning(f"[RAG] Reranker failed in agentic mode: {e}")
+                    # Fall back to distance sort
+                    hits.sort(key=lambda x: x[2])
+                    hits = hits[:top_k]
+            else:
+                hits.sort(key=lambda x: x[2])
+                hits = hits[:top_k]
+
+            # Convert to dict format with chunk_id
+            out: list[dict] = []
+            for fn, txt, dist, pg in hits:
+                meta = meta_by_key.get(txt[:100], {})
+                sub = meta.get("sub_chunk", 0)
+                chunk_id = self._build_chunk_id(fn, pg, sub)
+
+                # Strip VISION section for preview / text
+                raw_marker = "\nRAW TEXT:\n"
+                display_text = txt
+                if raw_marker in txt:
+                    raw_part = txt.split(raw_marker, 1)[1]
+                    if len(raw_part.strip()) > 50:
+                        display_text = raw_part
+
+                preview = display_text[:200].replace("\n", " ").strip()
+                if len(display_text) > 200:
+                    preview += "..."
+
+                out.append({
+                    "chunk_id": chunk_id,
+                    "source": fn,
+                    "page": (pg + 1) if pg is not None else None,
+                    "text": display_text,
+                    "preview": preview,
+                    "dist": dist,
+                    "kw_score": _kw_score(txt),
+                })
+            return out
+        except Exception as e:
+            log.error(f"[RAG] get_raw_chunks failed: {e}")
+            return []
+
+    def get_chunk_by_id(self, chunk_id: str) -> dict | None:
+        """Fetch a specific chunk by its {filename}::p{page}::s{sub} id.
+
+        Returns the full (untruncated) chunk text so the agent can read
+        a page in detail after seeing its preview in a search result.
+        """
+        parsed = self._parse_chunk_id(chunk_id)
+        if not parsed:
+            return None
+        filename, page, sub = parsed
+        try:
+            where_clauses = [{"filename": filename}]
+            if page is not None:
+                where_clauses.append({"page_number": page})
+            if sub is not None:
+                where_clauses.append({"sub_chunk": sub})
+
+            where = (where_clauses[0] if len(where_clauses) == 1
+                     else {"$and": where_clauses})
+            results = self._docs.get(
+                where=where,
+                limit=5,  # multiple sub-chunks possible
+                include=["documents", "metadatas"],
+            )
+            docs = results.get("documents", [])
+            metas = results.get("metadatas", [])
+            if not docs:
+                return None
+
+            # Pick the longest match (best content for the page)
+            best_idx = 0
+            for i, d in enumerate(docs):
+                if len(d) > len(docs[best_idx]):
+                    best_idx = i
+            doc = docs[best_idx]
+            meta = metas[best_idx]
+
+            # Strip VISION section for display
+            raw_marker = "\nRAW TEXT:\n"
+            display_text = doc
+            if raw_marker in doc:
+                raw_part = doc.split(raw_marker, 1)[1]
+                if len(raw_part.strip()) > 50:
+                    display_text = raw_part
+
+            return {
+                "chunk_id": chunk_id,
+                "source": meta.get("filename", "?"),
+                "page": (meta.get("page_number") + 1)
+                        if meta.get("page_number") is not None else None,
+                "text": display_text,
+            }
+        except Exception as e:
+            log.error(f"[RAG] get_chunk_by_id failed for {chunk_id}: {e}")
+            return None
+
+    @staticmethod
+    def _build_chunk_id(filename: str, page: int | None,
+                        sub: int | None = 0) -> str:
+        """Stable chunk id: {filename}::p{page}::s{sub}."""
+        page_s = f"p{page + 1}" if page is not None else "p?"
+        sub_s = f"s{sub if sub is not None else 0}"
+        return f"{filename}::{page_s}::{sub_s}"
+
+    @staticmethod
+    def _parse_chunk_id(chunk_id: str) -> tuple[str, int | None, int | None] | None:
+        """Reverse of _build_chunk_id. Returns (filename, page_idx, sub) or None."""
+        try:
+            parts = chunk_id.split("::")
+            if len(parts) != 3:
+                return None
+            filename = parts[0]
+            page = None
+            if parts[1].startswith("p") and parts[1][1:] != "?":
+                page = int(parts[1][1:]) - 1  # display is 1-based, stored 0-based
+            sub = None
+            if parts[2].startswith("s"):
+                sub = int(parts[2][1:])
+            return filename, page, sub
+        except Exception:
+            return None
+
     # ── Internal helpers ──────────────────────────────────────────────────
 
     @staticmethod

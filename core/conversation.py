@@ -313,13 +313,15 @@ class ConversationEngine:
         # Multi-query expansion for explicit/factual/synthesis modes.
         rag_query = command
         rag_alt_queries: list[str] = []
-        use_explicit_rag = rag_explicit or intent in ("factual", "synthesis")
+        is_deep_search = intent == "deep_search"
+        use_explicit_rag = (rag_explicit or is_deep_search
+                            or intent in ("factual", "synthesis"))
         do_multi_hop     = rag_explicit or intent == "factual"
 
-        # Override the prompt for heuristic-detected factual/synthesis queries.
+        # Override the prompt for heuristic-detected factual/synthesis/deep queries.
         # When rag_explicit is True the prompt was already set above; this handles
         # the case where the intent classifier detected a factual query.
-        if not rag_explicit and intent in ("factual", "synthesis"):
+        if not rag_explicit and intent in ("factual", "synthesis", "deep_search"):
             prompt = (
                 f"{command}\n\n"
                 f"Answer from the document excerpts only. "
@@ -362,6 +364,20 @@ class ConversationEngine:
             # If the user explicitly asks to cross-reference ("compare with my documents",
             # "check the rulebook", etc.), rag_explicit overrides and RAG runs alongside.
             doc_context = ""
+        elif is_deep_search:
+            # Agentic RAG: LLM drives retrieval via tool calls.
+            # Strip the trigger phrase from the query so the agent
+            # doesn't search for "deep search ...".
+            clean_query = command
+            for trigger in self._DEEP_SEARCH_TRIGGERS:
+                clean_query = re.sub(
+                    rf'\b{re.escape(trigger)}\b',
+                    '', clean_query, flags=re.IGNORECASE,
+                )
+            clean_query = clean_query.strip()
+            if not clean_query:
+                clean_query = command
+            doc_context = self._run_deep_search(clean_query)
         elif use_explicit_rag:
             doc_context = self._a.memory.get_document_context(
                 rag_query,
@@ -598,17 +614,54 @@ class ConversationEngine:
 
     # ── Internal helpers ──────────────────────────────────────────
 
+    _DEEP_SEARCH_TRIGGERS = (
+        "deep search", "deep research", "research deeply",
+        "thoroughly search", "research thoroughly",
+    )
+
+    def _run_deep_search(self, query: str) -> str:
+        """Run the agentic deep search for a query.
+
+        Instantiates DeepSearchAgent lazily so it doesn't load on startup
+        for users who never use this feature. Returns the formatted
+        document context string ready for RAG injection.
+        """
+        try:
+            from core.deep_search_agent import DeepSearchAgent
+            retriever = self._a.memory._retriever
+            agent = DeepSearchAgent(self._a.llm, retriever)
+            log.info(f"[DeepSearch] Starting agent for: {query!r}")
+            context, trace = agent.run(query)
+            log.info(f"[DeepSearch] Agent completed after "
+                     f"{len(trace)} iteration(s), context={len(context)} chars")
+            for i, entry in enumerate(trace, 1):
+                log.debug(f"[DeepSearch] Iter {i}: {entry['tool']}"
+                          f"({entry.get('args', {})}) -> "
+                          f"{entry.get('result_summary', '')[:100]}")
+            return context
+        except Exception as e:
+            log.error(f"[DeepSearch] Agent failed: {e}", exc_info=True)
+            # Fall back to standard explicit RAG
+            return self._a.memory.get_document_context(
+                query, explicit=True)
+
     def _classify_query_intent(self, command: str) -> str:
         """Heuristic classification of query intent for RAG routing.
 
         Returns one of:
-            "skip"      — clearly conversational, no RAG call needed
-            "ambient"   — default ambient RAG behaviour
-            "synthesis" — compare/list-all patterns -> wide explicit RAG, no multi-hop
-            "factual"   — question + document cues -> full explicit RAG with multi-hop
+            "skip"        — clearly conversational, no RAG call needed
+            "ambient"     — default ambient RAG behaviour
+            "synthesis"   — compare/list-all patterns -> wide explicit RAG
+            "factual"     — question + document cues -> full explicit RAG
+            "deep_search" — agentic RAG: LLM drives retrieval via tool calls
         """
         cmd = command.lower().strip()
         words = set(cmd.split())
+
+        # Deep search: explicit opt-in via trigger phrase
+        for trigger in self._DEEP_SEARCH_TRIGGERS:
+            if trigger in cmd:
+                return "deep_search"
 
         # "skip": short social phrases — exact or prefix match
         for pattern in self._SKIP_PATTERNS:
