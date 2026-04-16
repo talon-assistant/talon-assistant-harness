@@ -263,6 +263,7 @@ class DeepSearchAgent:
                 max_length=200,
                 temperature=0.1,
                 detect_degeneration=False,  # JSON tool call — don't truncate
+                no_think=True,  # agent emits JSON directly, no reasoning
             )
         except Exception as e:
             log.error(f"[Agent] LLM call failed: {e}")

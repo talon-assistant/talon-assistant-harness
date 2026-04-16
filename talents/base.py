@@ -341,7 +341,10 @@ class BaseTalent(ABC):
             f"Command: {command}"
         )
         try:
-            raw = llm.generate(prompt, max_length=max_length, temperature=temperature)
+            raw = llm.generate(
+                prompt, max_length=max_length, temperature=temperature,
+                no_think=True,  # single-value extraction: no reasoning
+            )
             result = raw.strip().strip('"').strip("'")
             if not result or result.upper() == "NONE":
                 return fallback
