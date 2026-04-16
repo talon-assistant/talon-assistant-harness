@@ -9,73 +9,12 @@ The active format is set via ``config["llm"]["api_format"]`` (default:
 ``"koboldcpp"`` for backward compatibility).
 """
 
-import re
 import requests
 import json
 from urllib.parse import urlparse
 
 import logging
 log = logging.getLogger(__name__)
-
-
-# Qwen 3+ and similar reasoning models wrap their chain-of-thought in
-# <think>...</think> or <thinking>...</thinking> blocks. These tags MUST
-# be stripped before any downstream consumer (user display, JSON parser,
-# regex extractor, voice synthesis) sees the output. Otherwise tags and
-# reasoning content leak into UIs, break argument parsing ("location =
-# '<think>'"), and confuse tool-call extractors.
-#
-# Handles:
-#  - Matched pairs: <think>...</think>
-#  - Unclosed opening tag: <think>... (take everything before as answer,
-#    or if answer is empty, drop the whole trailing think block)
-#  - Stray closing tag: ...</think>content — keep content after the tag
-#  - Both <think> and <thinking> variants
-#  - Multiline content inside tags
-_THINK_TAG_PATTERNS = [
-    re.compile(r'<think>.*?</think>', re.DOTALL | re.IGNORECASE),
-    re.compile(r'<thinking>.*?</thinking>', re.DOTALL | re.IGNORECASE),
-]
-_UNCLOSED_THINK_PATTERN = re.compile(
-    r'<think(?:ing)?>.*$', re.DOTALL | re.IGNORECASE)
-_STRAY_CLOSE_PATTERN = re.compile(
-    r'^.*?</think(?:ing)?>\s*', re.DOTALL | re.IGNORECASE)
-
-
-def _strip_think_tags(text: str) -> str:
-    """Remove <think>/<thinking> reasoning blocks from LLM output.
-
-    Returns the final answer with all reasoning blocks removed. Called
-    on every generate() return so downstream consumers never see the
-    reasoning tokens.
-    """
-    if not text or "<think" not in text.lower() and "</think" not in text.lower():
-        return text
-
-    cleaned = text
-    # Remove matched pairs first
-    for pattern in _THINK_TAG_PATTERNS:
-        cleaned = pattern.sub('', cleaned)
-
-    # Handle unclosed <think>... (model got cut off mid-reasoning).
-    # If there's content AFTER the opening tag to end-of-string and nothing
-    # closes it, the "answer" is whatever came before the tag.
-    if re.search(r'<think(?:ing)?>', cleaned, re.IGNORECASE):
-        before = re.split(
-            r'<think(?:ing)?>', cleaned, maxsplit=1,
-            flags=re.IGNORECASE)[0]
-        cleaned = before
-
-    # Handle stray closing tag without matching opener: assume everything
-    # before the closing tag was reasoning, keep content after.
-    if re.search(r'</think(?:ing)?>', cleaned, re.IGNORECASE):
-        after_split = re.split(
-            r'</think(?:ing)?>', cleaned, maxsplit=1,
-            flags=re.IGNORECASE)
-        if len(after_split) == 2:
-            cleaned = after_split[1]
-
-    return cleaned.strip()
 
 
 class LLMError(Exception):
@@ -295,12 +234,6 @@ class LLMClient:
             raw = self._generate_koboldcpp(
                 prompt, use_vision, effective_images,
                 max_length, system_prompt, temperature, rep_pen)
-
-        # Strip <think>/<thinking> reasoning blocks BEFORE any further
-        # processing. Qwen 3+ and similar models wrap their chain-of-
-        # thought in these tags. Leaving them in breaks JSON parsers,
-        # argument extractors ("location = '<think>'"), and UIs.
-        raw = _strip_think_tags(raw)
 
         if detect_degeneration:
             return _truncate_degeneration(raw)
