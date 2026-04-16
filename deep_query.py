@@ -46,8 +46,8 @@ def _c(text: str, color: str) -> str:
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("query", help="The query string")
-    parser.add_argument("--max-iter", type=int, default=5,
-                        help="Max agent iterations (default: 5)")
+    parser.add_argument("--max-iter", type=int, default=None,
+                        help="Max agent iterations (default: use agent class default)")
     args = parser.parse_args()
 
     query = args.query
@@ -79,7 +79,8 @@ def main():
     llm = LLMClient(cfg)
     retriever = DocumentRetriever(docs, embed_model, reranker_model)
     agent = DeepSearchAgent(llm, retriever)
-    agent.MAX_ITERATIONS = args.max_iter
+    if args.max_iter is not None:
+        agent.MAX_ITERATIONS = args.max_iter
 
     print(_c("━━━ Running agent loop ━━━", "bold"))
     print()
