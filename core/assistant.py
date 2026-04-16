@@ -1483,10 +1483,42 @@ class TalonAssistant:
                         talent = fallback
                         # Fall through to normal result handling below
                     else:
-                        # No other talent matched — conversation fallback
-                        response = self._handle_conversation(command, context)
+                        # No other talent matched — conversation fallback.
+                        # Promise interception runs on the ORIGINAL response
+                        # before security filtering (same reasoning as the
+                        # other fallback path).
+                        raw_response = self._handle_conversation(
+                            command, context)
+
+                        if not _executing_rule and raw_response:
+                            implied = self._conversation.detect_promise(
+                                raw_response)
+                            if implied:
+                                log.info(f"[RoutingGap] '{command}' → "
+                                      f"conversation promised '{implied}' "
+                                      f"— intercepting (decline path)")
+                                intercept_result = self.process_command(
+                                    implied,
+                                    speak_response=speak_response,
+                                    _executing_rule=True,
+                                )
+                                if (intercept_result
+                                        and intercept_result.get("success")):
+                                    if intercept_result.get("response"):
+                                        self._conversation.buffer_turn(
+                                            command,
+                                            intercept_result["response"].strip())
+                                    log.info(f"{'=' * 50}\n")
+                                    return {
+                                        "response": intercept_result.get(
+                                            "response", ""),
+                                        "talent": intercept_result.get(
+                                            "talent", ""),
+                                        "success": True,
+                                    }
+
                         response = self._security_filter_response(
-                            response, context="conversation")
+                            raw_response, context="conversation")
                         if speak_response and response:
                             self.voice.speak(response)
                         elif response:
@@ -1554,14 +1586,15 @@ class TalonAssistant:
 
             else:
                 # No talent matched -- conversational fallback
-                response = self._handle_conversation(command, context)
-                response = self._security_filter_response(response, context="conversation")
+                raw_response = self._handle_conversation(command, context)
 
-                # Promise interception: if the model promised an action but
-                # nothing executed, extract the implied command and run it now.
-                # _executing_rule guard prevents infinite interception loops.
-                if not _executing_rule and response:
-                    implied = self._conversation.detect_promise(response)
+                # Promise interception runs on the ORIGINAL response before
+                # security filtering. If we let the filter rewrite or suppress
+                # first, the promise text would be gone and detection would
+                # silently fail. _executing_rule guard prevents infinite
+                # interception loops.
+                if not _executing_rule and raw_response:
+                    implied = self._conversation.detect_promise(raw_response)
                     if implied:
                         log.info(f"[RoutingGap] '{command}' → conversation promised "
                               f"'{implied}' — intercepting and routing")
@@ -1582,7 +1615,9 @@ class TalonAssistant:
                                 "success": True,
                             }
 
-                # Output the response (security-filtered above, before speaking)
+                # No promise intercepted — filter and output the response
+                response = self._security_filter_response(
+                    raw_response, context="conversation")
                 if speak_response and response:
                     self.voice.speak(response)
                 elif response:

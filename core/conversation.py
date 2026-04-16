@@ -133,6 +133,24 @@ class ConversationEngine:
         # "I'm going to search/look for X"
         (r"(?i)\bi'm going to (?:search for|look for|look up|find) (.+?)" + _END,
          "search the web for {0}"),
+        # Present-participle forms that Qwen often emits after affirmations
+        # like "yes"/"sure": "Opening X now", "Launching X", "Starting X up".
+        # The suffix clauses (now/for you/right away/$) guard against false
+        # positives like "Opening up about this is hard".
+        (r"(?i)\b(?:opening|launching|starting|firing up|pulling up|"
+         r"bringing up) (.+?) (?:now|for you|right now|right away|up)\b",
+         "open {0}"),
+        (r"(?i)\b(?:opening|launching|firing up|pulling up|bringing up) "
+         r"(.+?)" + _END,
+         "open {0}"),
+        # "Searching X" / "Looking up X" as continuations
+        (r"(?i)\bsearching (?:the web |online )?for (.+?)" + _END,
+         "search the web for {0}"),
+        (r"(?i)\blooking up (.+?)" + _END,
+         "search the web for {0}"),
+        # "Going to open/launch/start X"
+        (r"(?i)\bgoing to (?:open|launch|start) (.+?)" + _END,
+         "open {0}"),
     ]
 
     # ── Init ──────────────────────────────────────────────────────
