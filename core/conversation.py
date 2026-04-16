@@ -362,7 +362,6 @@ class ConversationEngine:
                     max_length=80,
                     temperature=0.0,
                     detect_degeneration=False,  # JSON array — don't truncate
-                    no_think=True,  # short JSON output, no reasoning needed
                 )
                 raw = re.sub(r"```[a-zA-Z]*\n?", "", raw).strip()
                 queries = json.loads(raw)
@@ -446,7 +445,6 @@ class ConversationEngine:
                 temperature=0.1,
                 use_vision=bool(all_images),
                 images_b64=all_images or None,
-                think=True,  # factual RAG benefits from reasoning over excerpts
             )
 
             self._a.memory.log_command(command, success=True, response=response)
@@ -636,7 +634,6 @@ class ConversationEngine:
                 max_length=80,
                 temperature=0.0,
                 detect_degeneration=False,
-                no_think=True,  # classifier: no reasoning, just JSON
             )
             text = (raw or "").strip()
             text = re.sub(r"^```[a-zA-Z]*\n?", "", text)
@@ -847,16 +844,13 @@ class ConversationEngine:
         transcript = "\n".join(lines)
         prompt = (
             f"Conversation so far:\n{transcript}\n\n"
-            "Summarise what has been discussed in ONE sentence "
-            "(max 30 words). Focus on topics and requests made. "
-            "Do not list failures, preferences, or self-suggested "
-            "improvements. Be factual and concise. Output the summary "
-            "sentence only, nothing else."
+            "Summarise what has been discussed in 1-2 sentences (max 40 words). "
+            "Focus on topics, requests made, and any stated preferences. "
+            "Be factual and concise."
         )
         try:
             summary = self._a.llm.generate(
-                prompt, max_length=80, temperature=0.1,
-                no_think=True).strip()
+                prompt, max_length=80, temperature=0.1).strip()
             if summary:
                 # Security: scan before injecting into future prompts (session-scoped risk)
                 suppressed, _alert = self._a.security.check_output(summary, context="summarizer")

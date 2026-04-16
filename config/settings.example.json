@@ -7,7 +7,6 @@
     "top_p": 0.9,
     "rep_pen": 1.2,
     "timeout": 120,
-    "thinking_max_length_boost": 2.5,
     "stop_sequences": ["<|im_end|>", "<|endoftext|>"],
     "prompt_template": {
       "user_prefix": "<|im_start|>user\n",

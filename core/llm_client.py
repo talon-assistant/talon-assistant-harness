@@ -161,14 +161,6 @@ class LLMClient:
         self.stop_sequences = llm_config["stop_sequences"]
         self.prompt_template = llm_config["prompt_template"]
         self.api_format = llm_config.get("api_format", "koboldcpp")
-        # Thinking model support: when True, /no_think and /think directives
-        # are injected into system prompts based on call-site hints, and
-        # max_length is boosted when thinking is active. Auto-detected on
-        # first generate() call (see _ensure_thinking_detected).
-        self.thinking_boost = float(
-            llm_config.get("thinking_max_length_boost", 2.5))
-        self._is_thinking_model: bool | None = None
-        self._thinking_probe_attempted: bool = False
         # Optional reference to LLMServerManager (set by main.py in builtin mode).
         # Used to return a friendly "still loading" message instead of a 503/timeout.
         self.server_manager = None
@@ -261,54 +253,10 @@ class LLMClient:
 
     # ── Generation ────────────────────────────────────────────
 
-    def _ensure_thinking_detected(self):
-        """Probe the loaded model ONCE to see if it emits <think> tags.
-
-        Runs a tiny inference call and checks the output for <think>.
-        Result is cached for the rest of the session. Safe to call
-        repeatedly — only actually probes once.
-
-        Fails gracefully: if KoboldCpp isn't reachable, assumes
-        non-thinking model and moves on.
-        """
-        if self._thinking_probe_attempted:
-            return
-        self._thinking_probe_attempted = True
-        try:
-            # Direct backend call so we don't recurse through generate()
-            if self.api_format == "llamacpp":
-                raw = self._generate_llamacpp(
-                    "Hello", False, None, 60, None, 0.0, None)
-            elif self.api_format == "openai":
-                raw = self._generate_openai(
-                    "Hello", False, None, 60, None, 0.0)
-            else:
-                raw = self._generate_koboldcpp(
-                    "Hello", False, None, 60, None, 0.0, None)
-            lower = (raw or "").lower()
-            self._is_thinking_model = ("<think" in lower
-                                       or "</think" in lower)
-            log.info(f"[LLM] Thinking-model auto-detect: "
-                     f"{self._is_thinking_model}")
-        except Exception as e:
-            log.warning(f"[LLM] Thinking-model probe failed ({e}); "
-                      f"assuming non-thinking.")
-            self._is_thinking_model = False
-
-    @property
-    def is_thinking_model(self) -> bool:
-        """True if the loaded model emits <think>/<thinking> tags.
-
-        Lazily probed on first access. Cached afterward.
-        """
-        self._ensure_thinking_detected()
-        return bool(self._is_thinking_model)
-
     def generate(self, prompt, use_vision=False, screenshot_b64=None,
                  images_b64=None, max_length=None, system_prompt=None,
                  temperature=None, rep_pen=None,
-                 detect_degeneration=True,
-                 no_think=False, think=False):
+                 detect_degeneration=True):
         """Send prompt to LLM server and return generated text.
 
         Dispatches to the appropriate backend based on ``self.api_format``.
@@ -328,14 +276,6 @@ class LLMClient:
                 action plans, tool-call JSON, etc.) should pass False —
                 truncating JSON mid-string breaks the parser, and
                 legitimate creative content can trip the run-on detector.
-            no_think: Suppress reasoning on thinking models by prepending
-                /no_think to the system prompt. Fast-path calls (routing,
-                classification, short JSON) should pass True.  No-op on
-                non-thinking models.
-            think: Force reasoning on thinking models by prepending
-                /think to the system prompt. max_length is multiplied by
-                thinking_boost (default 2.5) to leave room for reasoning
-                tokens.  No-op on non-thinking models.
         """
         # Normalise: merge legacy screenshot_b64 into images_b64 list.
         effective_images = list(images_b64) if images_b64 else []
@@ -343,30 +283,18 @@ class LLMClient:
             effective_images.insert(0, screenshot_b64)
         effective_images = effective_images or None
 
-        # Thinking-model directives: only affect behaviour when the loaded
-        # model is a thinking model. Non-thinking models would emit the
-        # literal "/no_think" as part of their reply, so we must gate this.
-        effective_system = system_prompt
-        effective_max_length = max_length
-        if (no_think or think) and self.is_thinking_model:
-            directive = "/no_think" if no_think else "/think"
-            base = system_prompt or ""
-            effective_system = f"{directive}\n{base}" if base else directive
-            if think and max_length:
-                effective_max_length = int(max_length * self.thinking_boost)
-
         if self.api_format == "llamacpp":
             raw = self._generate_llamacpp(
                 prompt, use_vision, effective_images,
-                effective_max_length, effective_system, temperature, rep_pen)
+                max_length, system_prompt, temperature, rep_pen)
         elif self.api_format == "openai":
             raw = self._generate_openai(
                 prompt, use_vision, effective_images,
-                effective_max_length, effective_system, temperature)
+                max_length, system_prompt, temperature)
         else:
             raw = self._generate_koboldcpp(
                 prompt, use_vision, effective_images,
-                effective_max_length, effective_system, temperature, rep_pen)
+                max_length, system_prompt, temperature, rep_pen)
 
         # Strip <think>/<thinking> reasoning blocks BEFORE any further
         # processing. Qwen 3+ and similar models wrap their chain-of-

@@ -671,7 +671,6 @@ class TalonAssistant:
                 system_prompt=prompt,
                 temperature=0.1,
                 max_length=20,
-                no_think=True,  # router: one-word answer, no reasoning
             )
             if not response or response.startswith("Error:"):
                 return None
