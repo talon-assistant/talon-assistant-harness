@@ -155,14 +155,23 @@ class DeepSearchAgent:
                 summary = self._summarize_sources(result)
             elif tool == "read_page":
                 cid = args.get("chunk_id", "")
-                result = self._tool_read_page(cid)
-                if result:
-                    read_chunks[cid] = result
-                    summary = (f"Full text of {cid} "
-                               f"({len(result.get('text', ''))} chars) "
-                               f"appended to accumulated chunks.")
+                if cid in read_chunks:
+                    # Already read — don't waste an iteration re-reading.
+                    summary = (f"Already read {cid} in a previous iteration. "
+                               f"Pick a different chunk or call done if you "
+                               f"have enough information.")
                 else:
-                    summary = f"Chunk {cid} not found."
+                    result = self._tool_read_page(cid)
+                    if result:
+                        read_chunks[cid] = result
+                        summary = (f"Full text of {cid} "
+                                   f"({len(result.get('text', ''))} chars) "
+                                   f"appended to accumulated chunks. "
+                                   f"You now have {len(read_chunks)} full "
+                                   f"page(s). If this is enough to answer, "
+                                   f"call done.")
+                    else:
+                        summary = f"Chunk {cid} not found."
             else:
                 summary = f"Unknown tool: {tool}"
 
@@ -172,9 +181,59 @@ class DeepSearchAgent:
                 "raw_llm_output": raw,
             })
 
+        # Filter out chunks that don't share keywords with the query.
+        # The agent sometimes reads tangentially-related chunks (e.g. Greasy
+        # Skin from Changelings while searching for feathery shifter) — those
+        # pollute the final context and make the LLM hedge or wander.
+        filtered_read = self._filter_by_keywords(query, read_chunks)
+        if len(filtered_read) < len(read_chunks):
+            dropped = len(read_chunks) - len(filtered_read)
+            log.info(f"[Agent] Filtered out {dropped} chunk(s) with no "
+                     f"keyword overlap (likely tangential)")
+
         # Format accumulated chunks for final RAG injection
-        formatted = self._format_final_context(read_chunks, seen_previews)
+        formatted = self._format_final_context(filtered_read, seen_previews)
         return formatted, history
+
+    @staticmethod
+    def _filter_by_keywords(query: str, chunks: dict[str, dict]) -> dict[str, dict]:
+        """Remove chunks with zero keyword overlap with the query.
+
+        Keeps chunks with at least one query keyword. Always keeps at least
+        one chunk so the final context is never empty, even if the agent
+        went completely off-topic.
+        """
+        _STOPWORDS = {
+            "what", "when", "where", "which", "who", "whom", "whose",
+            "that", "this", "these", "those", "there", "here",
+            "have", "has", "had", "been", "being",
+            "will", "would", "could", "should",
+            "about", "with", "from", "into",
+            "provide", "detail", "explain", "describe", "please",
+            "shadowrun",
+        }
+        keywords = {
+            w.lower() for w in query.split()
+            if len(w) > 3 and w.lower() not in _STOPWORDS
+        }
+        if not keywords:
+            return chunks
+
+        def score(text: str) -> int:
+            lower = text.lower()
+            return sum(1 for kw in keywords if kw in lower)
+
+        scored = [(cid, c, score(c.get("text", "")))
+                  for cid, c in chunks.items()]
+        relevant = {cid: c for cid, c, s in scored if s > 0}
+
+        # Safety: if filtering removed everything, keep the highest-scoring
+        # chunk so we don't return empty context.
+        if not relevant and scored:
+            scored.sort(key=lambda t: -t[2])
+            cid, c, _ = scored[0]
+            return {cid: c}
+        return relevant
 
     # ── Tool implementations ──────────────────────────────────────────────
 
