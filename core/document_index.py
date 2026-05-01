@@ -48,9 +48,14 @@ TOC_LINE_RE = re.compile(
 @dataclass
 class TocEntry:
     title: str
-    page_printed: int
     level: int = 0
+    # PDF target: page_printed is the printed page number; page_pdf is the
+    # resolved PDF page index after offset detection.
+    page_printed: int | None = None
     page_pdf: int | None = None
+    # EPUB target: chapter_idx is the spine position of the chapter that
+    # contains this section. NULL for PDFs.
+    chapter_idx: int | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -228,7 +233,80 @@ def resolve_pdf_pages(entries: list[TocEntry], offset: int) -> list[TocEntry]:
             title=e.title,
             page_printed=e.page_printed,
             level=e.level,
-            page_pdf=e.page_printed + offset,
+            page_pdf=e.page_printed + offset
+                     if e.page_printed is not None else None,
         )
         for e in entries
     ]
+
+
+# ---------------------------------------------------------------------------
+# EPUB TOC extraction (uses ebooklib's structured toc + spine)
+# ---------------------------------------------------------------------------
+
+def extract_epub_toc(book) -> list[TocEntry]:
+    """Walk an ebooklib Book's TOC and return flat entries with chapter_idx.
+
+    EPUBs ship with a structured table of contents (NCX or nav doc) that
+    ebooklib exposes as `book.toc`. Each entry has a title and an href.
+    The href points at a chapter file (possibly with a #fragment); we map
+    the chapter file to its position in the spine to get a chapter_idx
+    that matches our chunk metadata.
+
+    TOC entries whose href doesn't resolve to any chapter (rare — usually
+    cover.xhtml or notes pages excluded from the spine) are skipped.
+    """
+    try:
+        import ebooklib
+    except ImportError:
+        return []
+
+    # Build href → chapter_idx map. Chapters are walked in spine order.
+    href_to_idx: dict[str, int] = {}
+    for idx, item in enumerate(book.get_items_of_type(ebooklib.ITEM_DOCUMENT)):
+        # ebooklib uses file_name, possibly with directory prefix
+        href_to_idx[item.file_name] = idx
+        # Also strip directory and try just the basename — toc hrefs are
+        # often relative-from-OEBPS while spine items include the prefix
+        bare = item.file_name.split("/")[-1]
+        href_to_idx.setdefault(bare, idx)
+
+    out: list[TocEntry] = []
+    seen: set[tuple[str, int]] = set()
+
+    def _walk(items, level: int) -> None:
+        for entry in items:
+            if isinstance(entry, tuple) and len(entry) == 2:
+                # (Section/Link, [children])
+                node, children = entry
+                _emit(node, level)
+                _walk(children, level + 1)
+            else:
+                _emit(entry, level)
+
+    def _emit(node, level: int) -> None:
+        title = (getattr(node, "title", "") or "").strip()
+        href = getattr(node, "href", "") or ""
+        if not title or not href:
+            return
+        # Strip #fragment — we resolve to the chapter file only
+        href_file = href.split("#", 1)[0]
+        idx = href_to_idx.get(href_file)
+        if idx is None:
+            # Try basename match as fallback
+            bare = href_file.split("/")[-1]
+            idx = href_to_idx.get(bare)
+        if idx is None:
+            return
+        key = (title.lower(), idx)
+        if key in seen:
+            return
+        seen.add(key)
+        out.append(TocEntry(
+            title=title,
+            level=level,
+            chapter_idx=idx,
+        ))
+
+    _walk(book.toc or [], 0)
+    return out

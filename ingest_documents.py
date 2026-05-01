@@ -504,6 +504,10 @@ class DocumentIngester:
         log.info(f" ✓ Ingested {chunks_stored} chunks "
               f"in {int(elapsed_total // 60)}m{int(elapsed_total % 60):02d}s "
               f"(epub+vision)")
+
+        # Build TOC index from the structured ebooklib spine + nav
+        self._build_toc_index_epub(filepath.name, book)
+
         return chunks_stored
 
     def extract_text(self, filepath):
@@ -548,7 +552,7 @@ class DocumentIngester:
 
     def _build_toc_index(self, filename: str,
                          pages: dict[int, str]) -> None:
-        """Run the TOC parser on raw page text and persist results.
+        """Run the PDF TOC parser on raw page text and persist results.
 
         Failsoft: any error here is logged and swallowed. Main ingestion
         continues even if TOC indexing breaks.
@@ -568,17 +572,46 @@ class DocumentIngester:
         try:
             toc_pages, entries = parse_toc(pages)
             if not toc_pages:
-                store.mark_no_toc(filename)
+                store.mark_no_toc(filename, source_type="pdf")
                 log.info(f"   ↳ TOC: none detected, marked")
                 return
             offset, confidence, n_sample = detect_page_offset(entries, pages)
             resolved = resolve_pdf_pages(entries, offset)
             n = store.store_book(
-                filename, resolved, toc_pages, offset, confidence)
+                filename, resolved, toc_pages, offset, confidence,
+                source_type="pdf")
             log.info(f"   ↳ TOC: {n} entries, offset {offset}, "
                      f"confidence {confidence:.0%} ({int(confidence * n_sample)}/{n_sample})")
         except Exception as exc:
             log.error(f"   ⚠ TOC indexing failed for {filename}: {exc}")
+
+    def _build_toc_index_epub(self, filename: str, book) -> None:
+        """Walk an EPUB's structured TOC and persist results.
+
+        EPUBs ship with an authoritative TOC in the NCX/nav doc. We use
+        that directly via ebooklib rather than parsing chapter text — the
+        spine is the source of truth for chapter ordering.
+
+        Failsoft: any error is logged and swallowed.
+        """
+        try:
+            from core.document_index import extract_epub_toc
+        except Exception as exc:
+            log.warning(f" ⚠ EPUB TOC extractor unavailable: {exc}")
+            return
+        store = self._get_toc_store()
+        if store is None:
+            return
+        try:
+            entries = extract_epub_toc(book)
+            if not entries:
+                store.mark_no_toc(filename, source_type="epub")
+                log.info(f"   ↳ TOC: none detected, marked")
+                return
+            n = store.store_book(filename, entries, source_type="epub")
+            log.info(f"   ↳ TOC: {n} entries from EPUB nav")
+        except Exception as exc:
+            log.error(f"   ⚠ EPUB TOC indexing failed for {filename}: {exc}")
 
     # ------------------------------------------------------------------
     # Vision-enhanced PDF ingestion

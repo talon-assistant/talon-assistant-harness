@@ -428,11 +428,14 @@ class DocumentRetriever:
         """Look up TOC entries in one book matching `query`.
 
         Returns entries with chunk_ids that the agent can pass to read_page.
-        Empty list if no TOC indexed for this book or no matches.
+        Builds a page-style chunk_id (`p{N+1}`) for PDF entries and a
+        chapter-style chunk_id (`ch{N}`) for EPUB entries.
 
         Returns:
-            [{chunk_id, title, page_printed, page_pdf, level, filename}, ...]
-            sorted by relevance (phrase match > keyword count > earlier page).
+            [{chunk_id, title, page_printed, page_pdf, chapter_idx,
+              level, filename}, ...]
+            sorted by relevance (phrase match > keyword count > earlier in book).
+            Empty list if no TOC indexed for this book or no matches.
         """
         store = self._get_toc_store()
         if store is None:
@@ -440,12 +443,22 @@ class DocumentRetriever:
         matches = store.lookup(filename, query, max_results=max_results)
         out: list[dict] = []
         for m in matches:
-            chunk_id = self._build_chunk_id(filename, m["page_pdf"], 0)
+            if m.get("chapter_idx") is not None:
+                chunk_id = self._build_chunk_id(
+                    filename, m["chapter_idx"], 0,
+                    position_type="chapter")
+            elif m.get("page_pdf") is not None:
+                chunk_id = self._build_chunk_id(
+                    filename, m["page_pdf"], 0,
+                    position_type="page")
+            else:
+                continue  # malformed entry — skip
             out.append({
                 "chunk_id": chunk_id,
                 "title": m["title"],
-                "page_printed": m["page_printed"],
-                "page_pdf": m["page_pdf"],
+                "page_printed": m.get("page_printed"),
+                "page_pdf": m.get("page_pdf"),
+                "chapter_idx": m.get("chapter_idx"),
                 "level": m["level"],
                 "filename": filename,
             })
@@ -673,7 +686,10 @@ class DocumentRetriever:
             return []
 
     def get_chunk_by_id(self, chunk_id: str) -> dict | None:
-        """Fetch a specific chunk by its {filename}::p{page}::s{sub} id.
+        """Fetch a specific chunk by its {filename}::{p|ch}{N}::s{sub} id.
+
+        Routes to either page_number (PDFs) or chapter (EPUBs) metadata
+        depending on the chunk_id's position_type.
 
         Returns the full (untruncated) chunk text so the agent can read
         a page in detail after seeing its preview in a search result.
@@ -681,11 +697,14 @@ class DocumentRetriever:
         parsed = self._parse_chunk_id(chunk_id)
         if not parsed:
             return None
-        filename, page, sub = parsed
+        filename, position_type, position, sub = parsed
         try:
             where_clauses = [{"filename": filename}]
-            if page is not None:
-                where_clauses.append({"page_number": page})
+            if position is not None:
+                if position_type == "chapter":
+                    where_clauses.append({"chapter": position})
+                else:
+                    where_clauses.append({"page_number": position})
             if sub is not None:
                 where_clauses.append({"sub_chunk": sub})
 
@@ -717,11 +736,15 @@ class DocumentRetriever:
                 if len(raw_part.strip()) > 50:
                     display_text = raw_part
 
+            page_disp = None
+            if meta.get("page_number") is not None:
+                page_disp = meta.get("page_number") + 1
+
             return {
                 "chunk_id": chunk_id,
                 "source": meta.get("filename", "?"),
-                "page": (meta.get("page_number") + 1)
-                        if meta.get("page_number") is not None else None,
+                "page": page_disp,
+                "chapter": meta.get("chapter"),
                 "text": display_text,
             }
         except Exception as e:
@@ -729,28 +752,53 @@ class DocumentRetriever:
             return None
 
     @staticmethod
-    def _build_chunk_id(filename: str, page: int | None,
-                        sub: int | None = 0) -> str:
-        """Stable chunk id: {filename}::p{page}::s{sub}."""
-        page_s = f"p{page + 1}" if page is not None else "p?"
+    def _build_chunk_id(filename: str, position: int | None,
+                        sub: int | None = 0,
+                        position_type: str = "page") -> str:
+        """Stable chunk id: {filename}::{p{N+1}|ch{N}}::s{sub}.
+
+        position_type:
+          "page"    — for PDFs. Displayed 1-based (p1, p2, ...).
+          "chapter" — for EPUBs. Displayed 0-based (ch0, ch1, ...).
+        """
+        if position_type == "chapter":
+            pos_s = f"ch{position}" if position is not None else "ch?"
+        else:
+            pos_s = f"p{position + 1}" if position is not None else "p?"
         sub_s = f"s{sub if sub is not None else 0}"
-        return f"{filename}::{page_s}::{sub_s}"
+        return f"{filename}::{pos_s}::{sub_s}"
 
     @staticmethod
-    def _parse_chunk_id(chunk_id: str) -> tuple[str, int | None, int | None] | None:
-        """Reverse of _build_chunk_id. Returns (filename, page_idx, sub) or None."""
+    def _parse_chunk_id(chunk_id: str
+                        ) -> tuple[str, str, int | None, int | None] | None:
+        """Reverse of _build_chunk_id.
+
+        Returns:
+            (filename, position_type, position_idx, sub) where position_type
+            is 'page' or 'chapter', position_idx is always 0-based regardless
+            of the displayed format. None if the id is malformed.
+        """
         try:
             parts = chunk_id.split("::")
             if len(parts) != 3:
                 return None
             filename = parts[0]
-            page = None
-            if parts[1].startswith("p") and parts[1][1:] != "?":
-                page = int(parts[1][1:]) - 1  # display is 1-based, stored 0-based
+            position = None
+            position_type = "page"
+            tag = parts[1]
+            if tag.startswith("ch"):
+                position_type = "chapter"
+                if tag[2:] != "?":
+                    position = int(tag[2:])
+            elif tag.startswith("p"):
+                position_type = "page"
+                if tag[1:] != "?":
+                    # Display is 1-based, stored 0-based
+                    position = int(tag[1:]) - 1
             sub = None
             if parts[2].startswith("s"):
                 sub = int(parts[2][1:])
-            return filename, page, sub
+            return filename, position_type, position, sub
         except Exception:
             return None
 

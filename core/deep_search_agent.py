@@ -170,10 +170,13 @@ class DeepSearchAgent:
                 # Track these like search previews so the agent doesn't
                 # re-fetch a page it has only seen the TOC stub for.
                 for item in result:
+                    page_disp = (item["page_pdf"] + 1
+                                 if item.get("page_pdf") is not None else None)
                     seen_previews[item["chunk_id"]] = {
                         "chunk_id": item["chunk_id"],
                         "source": item["filename"],
-                        "page": item["page_pdf"] + 1,
+                        "page": page_disp,
+                        "chapter": item.get("chapter_idx"),
                         "preview": f"[TOC: {item['title']}]",
                     }
                 summary = self._summarize_toc_result(result, fn, q)
@@ -378,8 +381,14 @@ class DeepSearchAgent:
                     f"Try a different term or fall back to search/filter_source.")
         lines = [f"{len(results)} TOC match(es) in {filename}:"]
         for r in results[:8]:
+            if r.get("chapter_idx") is not None:
+                loc = f"chapter {r['chapter_idx']}"
+            elif r.get("page_printed"):
+                loc = f"page {r['page_printed']}"
+            else:
+                loc = "?"
             lines.append(
-                f"    \"{r['title']}\" → page {r['page_printed']} "
+                f"    \"{r['title']}\" → {loc} "
                 f"(chunk_id: {r['chunk_id']})"
             )
         lines.append("    → Pick the most relevant entry and call read_page "
@@ -406,12 +415,19 @@ class DeepSearchAgent:
             "DOCUMENT EXCERPTS (source of truth — report ALL details found):"
         ]
 
+        def _src_label(c: dict) -> str:
+            source = c.get("source", "?")
+            page = c.get("page")
+            chapter = c.get("chapter")
+            if page:
+                return f"{source} (page {page})"
+            if chapter is not None:
+                return f"{source} (chapter {chapter})"
+            return source
+
         # Full-text read chunks first (the agent chose these)
         for chunk_id, chunk in read_chunks.items():
-            source = chunk.get("source", "?")
-            page = chunk.get("page")
-            src = f"{source} (page {page})" if page else source
-            lines.append(f"- From {src}: {chunk.get('text', '')}")
+            lines.append(f"- From {_src_label(chunk)}: {chunk.get('text', '')}")
 
         # Previews for chunks the agent saw but didn't read in full
         # (limit to avoid bloat)
@@ -422,9 +438,7 @@ class DeepSearchAgent:
         if preview_only and len(read_chunks) < 4:
             # Only include if we don't already have enough full chunks
             for cid, c in preview_only[:4]:
-                source = c.get("source", "?")
-                page = c.get("page")
-                src = f"{source} (page {page})" if page else source
-                lines.append(f"- (preview) From {src}: {c.get('preview', '')}")
+                lines.append(
+                    f"- (preview) From {_src_label(c)}: {c.get('preview', '')}")
 
         return "\n".join(lines) + "\n"

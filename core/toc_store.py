@@ -70,6 +70,18 @@ class TocStore:
                 CREATE INDEX IF NOT EXISTS idx_book_toc_title_lower
                     ON book_toc(filename, title_lower);
             """)
+            # Idempotent migrations for the EPUB path. ALTER ADD COLUMN
+            # raises if the column exists; we swallow that to keep startup
+            # safe across versions.
+            for stmt in (
+                "ALTER TABLE book_toc ADD COLUMN chapter_idx INTEGER",
+                "ALTER TABLE book_metadata ADD COLUMN source_type TEXT "
+                "NOT NULL DEFAULT 'pdf'",
+            ):
+                try:
+                    c.execute(stmt)
+                except sqlite3.OperationalError:
+                    pass
 
     # ── Writers ───────────────────────────────────────────────────────────
 
@@ -77,11 +89,15 @@ class TocStore:
         self,
         filename: str,
         entries: list[TocEntry],
-        toc_pages: list[int],
-        page_offset: int,
-        offset_confidence: float,
+        toc_pages: list[int] | None = None,
+        page_offset: int = 0,
+        offset_confidence: float = 0.0,
+        source_type: str = "pdf",
     ) -> int:
         """Store a parsed book. Replaces any existing rows for this filename.
+
+        For PDFs, entries should have page_printed and page_pdf set.
+        For EPUBs, entries should have chapter_idx set.
 
         Returns the number of entries written.
         """
@@ -93,36 +109,45 @@ class TocStore:
             c.execute(
                 """INSERT INTO book_metadata
                    (filename, page_offset, offset_confidence, has_toc,
-                    has_index, toc_pages, entry_count, indexed_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    has_index, toc_pages, entry_count, indexed_at, source_type)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     filename,
                     page_offset,
                     offset_confidence,
                     1 if entries else 0,
                     0,  # has_index reserved
-                    json.dumps(toc_pages),
+                    json.dumps(toc_pages or []),
                     len(entries),
                     datetime.now().isoformat(),
+                    source_type,
                 ),
             )
 
+            written = 0
             for e in entries:
-                if e.page_pdf is None:
+                # Skip entries without any usable target. PDFs need page_pdf;
+                # EPUBs need chapter_idx.
+                if e.page_pdf is None and e.chapter_idx is None:
                     continue
+                # Use sentinels for the NOT NULL columns when the field is
+                # not applicable for this source type.
+                p_printed = e.page_printed if e.page_printed is not None else 0
+                p_pdf = e.page_pdf if e.page_pdf is not None else -1
                 c.execute(
                     """INSERT INTO book_toc
                        (filename, title, title_lower, page_printed,
-                        page_pdf, level)
-                       VALUES (?, ?, ?, ?, ?, ?)""",
+                        page_pdf, level, chapter_idx)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
                     (
                         filename, e.title, e.title.lower(),
-                        e.page_printed, e.page_pdf, e.level,
+                        p_printed, p_pdf, e.level, e.chapter_idx,
                     ),
                 )
-            return len(entries)
+                written += 1
+            return written
 
-    def mark_no_toc(self, filename: str) -> None:
+    def mark_no_toc(self, filename: str, source_type: str = "pdf") -> None:
         """Record that a book was scanned and has no TOC.
 
         Lets backfill skip it on subsequent runs.
@@ -132,9 +157,9 @@ class TocStore:
             c.execute("DELETE FROM book_metadata WHERE filename = ?", (filename,))
             c.execute(
                 """INSERT INTO book_metadata
-                   (filename, has_toc, indexed_at)
-                   VALUES (?, 0, ?)""",
-                (filename, datetime.now().isoformat()),
+                   (filename, has_toc, indexed_at, source_type)
+                   VALUES (?, 0, ?, ?)""",
+                (filename, datetime.now().isoformat(), source_type),
             )
 
     # ── Readers ───────────────────────────────────────────────────────────
@@ -195,7 +220,8 @@ class TocStore:
         with self._conn() as c:
             # Pull all entries for the book; rank in Python (small set per book)
             rows = c.execute(
-                "SELECT title, title_lower, page_printed, page_pdf, level "
+                "SELECT title, title_lower, page_printed, page_pdf, level, "
+                "chapter_idx "
                 "FROM book_toc WHERE filename = ?",
                 (filename,),
             ).fetchall()
@@ -219,15 +245,22 @@ class TocStore:
             phrase_match = 1 if query_lower in title_lower else 0
             if not phrase_match and n_hits < min_required:
                 continue
+            # Sort key for "earlier in the book": prefer chapter_idx for
+            # EPUBs, page_pdf for PDFs. Sentinel -1 from PDFs without
+            # printed pages still sorts low which is acceptable.
+            order_key = (r["chapter_idx"] if r["chapter_idx"] is not None
+                         else r["page_pdf"])
             scored.append((
                 -phrase_match,        # phrase match first (lower sort key)
                 -n_hits,              # then more hits first
-                r["page_pdf"],        # then earlier pages
+                order_key,            # then earlier in the book
                 r["title"],           # stable tiebreaker so dicts never compared
                 {
                     "title": r["title"],
-                    "page_printed": r["page_printed"],
-                    "page_pdf": r["page_pdf"],
+                    "page_printed": (r["page_printed"]
+                                     if r["page_printed"] else None),
+                    "page_pdf": (r["page_pdf"] if r["page_pdf"] >= 0 else None),
+                    "chapter_idx": r["chapter_idx"],
                     "level": r["level"],
                 },
             ))
