@@ -1387,7 +1387,20 @@ class TalonAssistant:
             # straight to conversation so _handle_conversation can analyze the
             # attachment.  Talents like desktop_control have no access to
             # attached images and would produce wrong results (e.g. "Done!").
-            if attachments:
+            #
+            # Deep-search triggers ("deep search", "deep research", etc.)
+            # also bypass talent routing — otherwise web_search and similar
+            # high-priority talents grab the command before conversation.py
+            # gets a chance to invoke the DeepSearchAgent.
+            _DEEP_SEARCH_TRIGGERS = (
+                "deep search", "deep research", "research deeply",
+                "thoroughly search", "research thoroughly",
+            )
+            _cmd_lower = command.lower()
+            is_deep_search_command = any(
+                t in _cmd_lower for t in _DEEP_SEARCH_TRIGGERS)
+
+            if attachments or is_deep_search_command:
                 talent = None
             else:
                 talent = self._find_talent(command, exclude_planner=_planner_substep)
