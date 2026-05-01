@@ -48,12 +48,18 @@ def main():
     parser.add_argument("query", help="The query string")
     parser.add_argument("--max-iter", type=int, default=None,
                         help="Max agent iterations (default: use agent class default)")
+    parser.add_argument("--chroma", type=str, default=None,
+                        help="Override chroma_db path (e.g. point at the "
+                             "Desktop runtime DB while testing)")
+    parser.add_argument("--book-index", type=str,
+                        default="data/talon_book_index.db",
+                        help="Path to TOC SQLite (default: data/talon_book_index.db)")
     args = parser.parse_args()
 
     query = args.query
     cfg = _load_config()
     mem_cfg = cfg.get("memory", {})
-    chroma_path = mem_cfg.get("chroma_path", "data/chroma_db")
+    chroma_path = args.chroma or mem_cfg.get("chroma_path", "data/chroma_db")
     embed_model = mem_cfg.get("embedding_model", "BAAI/bge-base-en-v1.5")
     reranker_model = mem_cfg.get(
         "reranker_model", "BAAI/bge-reranker-base")
@@ -77,7 +83,8 @@ def main():
         sys.exit(1)
 
     llm = LLMClient(cfg)
-    retriever = DocumentRetriever(docs, embed_model, reranker_model)
+    retriever = DocumentRetriever(docs, embed_model, reranker_model,
+                                  toc_store_path=args.book_index)
     agent = DeepSearchAgent(llm, retriever)
     if args.max_iter is not None:
         agent.MAX_ITERATIONS = args.max_iter

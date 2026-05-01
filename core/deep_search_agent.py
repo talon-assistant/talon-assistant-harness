@@ -37,39 +37,49 @@ You have these tools. Respond with ONE JSON object per turn — nothing else.
    Example: {"tool": "search", "args": {"query": "feathery shifter karma cost"}}
 
 2. list_sources()
-   See which documents exist in the library with chunk counts.
+   See which documents exist in the library with chunk counts. Each entry
+   notes whether the book has a parsed table of contents (has_toc=true)
+   that you can navigate via lookup_in_toc.
    Example: {"tool": "list_sources", "args": {}}
 
 3. filter_source(filename, query, top_k=8)
    Search within ONE specific document. Use this once you know which book has the content.
    Example: {"tool": "filter_source", "args": {"filename": "E-CAT28801S_Bestial_Nature.pdf", "query": "feathery"}}
 
-4. read_page(chunk_id)
+4. lookup_in_toc(filename, query)
+   Look the term up in a book's table of contents and get the page(s) the
+   author tagged for it. This is how a human reader navigates a reference
+   book — flip to the right page, don't search every page. ONLY works for
+   books where list_sources says has_toc=true.
+   Example: {"tool": "lookup_in_toc", "args": {"filename": "CAT28008_Wild_Life.pdf", "query": "Pegasus"}}
+
+5. read_page(chunk_id)
    Fetch the FULL text of a specific chunk (not just the preview). Use this to zoom in on the most promising hit.
    Example: {"tool": "read_page", "args": {"chunk_id": "E-CAT28801S_Bestial_Nature.pdf::p13::s0"}}
 
-5. done(answer_ready)
+6. done(answer_ready)
    Declare you have enough content. Exits the loop.
    Example: {"tool": "done", "args": {"answer_ready": true}}
 
 STRATEGY (IMPORTANT — follow this order):
-1. Start with a specific search that names the entity.
-2. Look at the previews. Pick the ONE most promising chunk and read it with read_page.
-3. AFTER reading that page, evaluate what you have. If you have stats,
-   numbers, requirements, and powers → call done. If the page was general
-   overview → try a more specific search (e.g. "feathery karma cost",
-   "natural weapon beak", "gained powers").
-4. If the specific search turns up a different page, read THAT page.
-5. Do NOT blindly read every search result. Read → evaluate → decide
-   whether to read more, search differently, or declare done.
+1. If you can guess which book holds the answer, call list_sources first to
+   confirm the book is there and check has_toc.
+2. If has_toc is true and the question names a specific entity, person,
+   place, spell, critter, rule, etc. — try lookup_in_toc FIRST. The TOC
+   gives you the page the author chose to put the content on. Read that
+   page directly. This is faster and more accurate than search.
+3. If lookup_in_toc returns nothing useful, fall back to search or
+   filter_source.
+4. After reading a page, evaluate what you have. If you have stats,
+   numbers, requirements, powers → call done. If the page was overview
+   only → try lookup_in_toc with a more specific term, or search for
+   the missing detail.
+5. Do NOT blindly read every result. Read → evaluate → decide.
 
 RULES:
 - Call done as soon as you have specific stats/numbers/rules that answer
   the question. Don't waste iterations reading marginal chunks.
-- If a search returns a preview page you've already read, skip it —
-  search for something different.
-- If list_sources helps identify a specific book for the topic, use it
-  BEFORE wasting searches on the whole collection.
+- If a search returns a page you've already read, skip it — search differently.
 - Max 7 iterations. Be efficient.
 
 OUTPUT FORMAT: A single JSON object on one line. No explanation. No markdown fences. No prose around it.
@@ -153,6 +163,20 @@ class DeepSearchAgent:
             elif tool == "list_sources":
                 result = self._tool_list_sources()
                 summary = self._summarize_sources(result)
+            elif tool == "lookup_in_toc":
+                fn = args.get("filename", "")
+                q = args.get("query", "")
+                result = self._tool_lookup_in_toc(fn, q)
+                # Track these like search previews so the agent doesn't
+                # re-fetch a page it has only seen the TOC stub for.
+                for item in result:
+                    seen_previews[item["chunk_id"]] = {
+                        "chunk_id": item["chunk_id"],
+                        "source": item["filename"],
+                        "page": item["page_pdf"] + 1,
+                        "preview": f"[TOC: {item['title']}]",
+                    }
+                summary = self._summarize_toc_result(result, fn, q)
             elif tool == "read_page":
                 cid = args.get("chunk_id", "")
                 if cid in read_chunks:
@@ -250,6 +274,11 @@ class DeepSearchAgent:
     def _tool_list_sources(self) -> list[dict]:
         return self._retriever.list_sources()
 
+    def _tool_lookup_in_toc(self, filename: str, query: str) -> list[dict]:
+        if not filename or not query:
+            return []
+        return self._retriever.lookup_in_toc(filename, query, max_results=8)
+
     def _tool_read_page(self, chunk_id: str) -> dict | None:
         return self._retriever.get_chunk_by_id(chunk_id)
 
@@ -326,9 +355,35 @@ class DeepSearchAgent:
     def _summarize_sources(sources: list[dict]) -> str:
         if not sources:
             return "No sources found."
-        lines = [f"{len(sources)} document(s) in library:"]
-        for s in sources[:20]:
+        # Always surface every has_toc book, plus a sample of the rest.
+        toc = [s for s in sources if s.get("has_toc")]
+        rest = [s for s in sources if not s.get("has_toc")]
+        lines = [f"{len(sources)} document(s) in library "
+                 f"({len(toc)} with parsed TOC):"]
+        for s in toc:
+            lines.append(
+                f"    {s['filename']} ({s['chunks']} chunks) [has_toc]")
+        # Cap the rest so the prompt doesn't bloat
+        for s in rest[:15]:
             lines.append(f"    {s['filename']} ({s['chunks']} chunks)")
+        if len(rest) > 15:
+            lines.append(f"    ... and {len(rest) - 15} more without TOC")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _summarize_toc_result(results: list[dict], filename: str,
+                              query: str) -> str:
+        if not results:
+            return (f"No TOC entries match '{query}' in {filename}. "
+                    f"Try a different term or fall back to search/filter_source.")
+        lines = [f"{len(results)} TOC match(es) in {filename}:"]
+        for r in results[:8]:
+            lines.append(
+                f"    \"{r['title']}\" → page {r['page_printed']} "
+                f"(chunk_id: {r['chunk_id']})"
+            )
+        lines.append("    → Pick the most relevant entry and call read_page "
+                     "with its chunk_id.")
         return "\n".join(lines)
 
     # ── Final context formatting ──────────────────────────────────────────

@@ -118,7 +118,8 @@ VISION_EXTRACT_PROMPT = (
 class DocumentIngester:
     """Ingests documents into ChromaDB for RAG"""
 
-    def __init__(self, documents_dir=None, chroma_path=None):
+    def __init__(self, documents_dir=None, chroma_path=None,
+                 book_index_path=None):
         # Try to load paths from config
         config_path = Path("config/settings.json")
         embed_model = "BAAI/bge-base-en-v1.5"
@@ -128,14 +129,19 @@ class DocumentIngester:
             documents_dir = documents_dir or config.get("documents", {}).get("directory", "documents")
             chroma_path = chroma_path or config.get("memory", {}).get("chroma_path", "data/chroma_db")
             embed_model = config.get("memory", {}).get("embedding_model", embed_model)
+            book_index_path = book_index_path or config.get("memory", {}).get(
+                "book_index_path", "data/talon_book_index.db")
         else:
             documents_dir = documents_dir or "documents"
             chroma_path = chroma_path or "data/chroma_db"
+            book_index_path = book_index_path or "data/talon_book_index.db"
 
         self._embed_model = embed_model
 
         self.documents_dir = Path(documents_dir)
         self.chroma_path = chroma_path
+        self._book_index_path = book_index_path
+        self._toc_store = None  # lazy
 
         self.client = chromadb.PersistentClient(path=chroma_path)
         self.collection = self.client.get_or_create_collection(
@@ -524,6 +530,57 @@ class DocumentIngester:
             return None
 
     # ------------------------------------------------------------------
+    # TOC indexing (runs alongside both vision and text ingestion paths)
+    # ------------------------------------------------------------------
+
+    def _get_toc_store(self):
+        """Lazily open the TocStore. Returns None if anything fails — TOC
+        indexing is fail-soft and never blocks the main ingestion."""
+        if self._toc_store is not None:
+            return self._toc_store
+        try:
+            from core.toc_store import TocStore
+            self._toc_store = TocStore(self._book_index_path)
+            return self._toc_store
+        except Exception as exc:
+            log.warning(f" ⚠ TocStore unavailable: {exc}")
+            return None
+
+    def _build_toc_index(self, filename: str,
+                         pages: dict[int, str]) -> None:
+        """Run the TOC parser on raw page text and persist results.
+
+        Failsoft: any error here is logged and swallowed. Main ingestion
+        continues even if TOC indexing breaks.
+        """
+        if not pages:
+            return
+        try:
+            from core.document_index import (
+                parse_toc, detect_page_offset, resolve_pdf_pages
+            )
+        except Exception as exc:
+            log.warning(f" ⚠ TOC parser unavailable: {exc}")
+            return
+        store = self._get_toc_store()
+        if store is None:
+            return
+        try:
+            toc_pages, entries = parse_toc(pages)
+            if not toc_pages:
+                store.mark_no_toc(filename)
+                log.info(f"   ↳ TOC: none detected, marked")
+                return
+            offset, confidence, n_sample = detect_page_offset(entries, pages)
+            resolved = resolve_pdf_pages(entries, offset)
+            n = store.store_book(
+                filename, resolved, toc_pages, offset, confidence)
+            log.info(f"   ↳ TOC: {n} entries, offset {offset}, "
+                     f"confidence {confidence:.0%} ({int(confidence * n_sample)}/{n_sample})")
+        except Exception as exc:
+            log.error(f"   ⚠ TOC indexing failed for {filename}: {exc}")
+
+    # ------------------------------------------------------------------
     # Vision-enhanced PDF ingestion
     # ------------------------------------------------------------------
 
@@ -647,6 +704,10 @@ class DocumentIngester:
         chunks_stored = 0
         t_start = time.time()
 
+        # Page text accumulator for TOC indexing — populated alongside
+        # the main loop and consumed once the page sweep is done.
+        toc_pages_text: dict[int, str] = {}
+
         for page_idx in range(page_count):
             page = doc[page_idx]
             page_num = page_idx + 1  # 1-based for display
@@ -691,6 +752,8 @@ class DocumentIngester:
 
             # --- Clean OCR artifacts from raw text ---
             clean_raw = _clean_ocr_text(raw_text) if raw_text else ""
+            if clean_raw:
+                toc_pages_text[page_idx] = clean_raw
 
             # --- Build chunk text ---
             # The stored document text includes both VISION and RAW TEXT
@@ -769,6 +832,10 @@ class DocumentIngester:
         log.info(f" ✓ Ingested {chunks_stored} page-chunks "
               f"in {int(total_elapsed // 60)}m{int(total_elapsed % 60):02d}s "
               f"(vision-enhanced)")
+
+        # Build TOC index from the page text we just collected
+        self._build_toc_index(filepath.name, toc_pages_text)
+
         return chunks_stored
 
     def ingest_file(self, filepath, chunk_size=400, overlap=50,

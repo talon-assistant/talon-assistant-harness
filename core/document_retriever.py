@@ -17,10 +17,13 @@ log = logging.getLogger(__name__)
 class DocumentRetriever:
     """Retrieve and rank document chunks from a ChromaDB collection."""
 
-    def __init__(self, docs_collection, embed_model: str, reranker_model: str):
+    def __init__(self, docs_collection, embed_model: str, reranker_model: str,
+                 toc_store_path: str = "data/talon_book_index.db"):
         self._docs = docs_collection
         self._embed_model = embed_model
         self._reranker_model = reranker_model
+        self._toc_store_path = toc_store_path
+        self._toc_store = None  # lazy: loaded on first TOC lookup
 
     # ── Public API ────────────────────────────────────────────────────────
 
@@ -408,28 +411,98 @@ class DocumentRetriever:
 
     # ── Public API for agentic retrieval ──────────────────────────────────
 
+    def _get_toc_store(self):
+        """Lazily open the TocStore. Returns None on any failure."""
+        if self._toc_store is not None:
+            return self._toc_store
+        try:
+            from core.toc_store import TocStore
+            self._toc_store = TocStore(self._toc_store_path)
+            return self._toc_store
+        except Exception as e:
+            log.warning(f"[RAG] TocStore unavailable: {e}")
+            return None
+
+    def lookup_in_toc(self, filename: str, query: str,
+                      max_results: int = 8) -> list[dict]:
+        """Look up TOC entries in one book matching `query`.
+
+        Returns entries with chunk_ids that the agent can pass to read_page.
+        Empty list if no TOC indexed for this book or no matches.
+
+        Returns:
+            [{chunk_id, title, page_printed, page_pdf, level, filename}, ...]
+            sorted by relevance (phrase match > keyword count > earlier page).
+        """
+        store = self._get_toc_store()
+        if store is None:
+            return []
+        matches = store.lookup(filename, query, max_results=max_results)
+        out: list[dict] = []
+        for m in matches:
+            chunk_id = self._build_chunk_id(filename, m["page_pdf"], 0)
+            out.append({
+                "chunk_id": chunk_id,
+                "title": m["title"],
+                "page_printed": m["page_printed"],
+                "page_pdf": m["page_pdf"],
+                "level": m["level"],
+                "filename": filename,
+            })
+        return out
+
+    def has_toc(self, filename: str) -> bool:
+        """Is there a parsed TOC available for this book?"""
+        store = self._get_toc_store()
+        if store is None:
+            return False
+        meta = store.get_metadata(filename)
+        return bool(meta and meta.get("has_toc"))
+
     def list_sources(self) -> list[dict]:
         """Return a list of all source files with chunk counts.
 
         Used by DeepSearchAgent so the LLM can see what documents exist
-        before deciding where to search.
+        before deciding where to search. The `has_toc` flag tells the
+        agent which books support `lookup_in_toc` for direct navigation.
 
         Returns:
-            [{filename, chunks}, ...] sorted by chunk count descending.
+            [{filename, chunks, has_toc}, ...] sorted by chunk count descending.
         """
         try:
-            # Grab all metadata — no way to do group-by in ChromaDB directly
-            results = self._docs.get(
-                include=["metadatas"], limit=100000,
-            )
+            # Page through metadata — ChromaDB has a bind-variable cap that
+            # breaks at ~30k+ chunks if we ask for everything at once.
             counts: dict[str, int] = {}
-            for meta in results.get("metadatas", []):
-                fn = meta.get("filename", "unknown")
-                counts[fn] = counts.get(fn, 0) + 1
+            offset = 0
+            batch = 5000
+            while True:
+                results = self._docs.get(
+                    include=["metadatas"], limit=batch, offset=offset,
+                )
+                metas = results.get("metadatas", [])
+                if not metas:
+                    break
+                for meta in metas:
+                    fn = meta.get("filename", "unknown")
+                    counts[fn] = counts.get(fn, 0) + 1
+                offset += batch
+                if len(metas) < batch:
+                    break
+            store = self._get_toc_store()
+            toc_books: set[str] = set()
+            if store is not None:
+                try:
+                    toc_books = set(store.all_books_with_toc())
+                except Exception:
+                    pass
+            # Sort: TOC-indexed books first (the agent can navigate them
+            # via lookup_in_toc), then by chunk count descending. This
+            # keeps high-leverage books at the top of the agent's view
+            # even when an EPUB happens to have more chunks.
             return sorted(
-                [{"filename": fn, "chunks": n}
+                [{"filename": fn, "chunks": n, "has_toc": fn in toc_books}
                  for fn, n in counts.items()],
-                key=lambda r: -r["chunks"],
+                key=lambda r: (not r["has_toc"], -r["chunks"]),
             )
         except Exception as e:
             log.error(f"[RAG] list_sources failed: {e}")
