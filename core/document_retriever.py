@@ -558,6 +558,23 @@ class DocumentRetriever:
             if len(w) > 3 and w.lower() not in _STOPWORDS
         }
 
+        # Compound-word variant: PDFs sometimes extract space-separated
+        # terms as one word ("Mana Bolt" → "Manabolt"). When the query has
+        # 2-3 alphabetic words, also search for the concatenated form so
+        # those chunks make the candidate pool. The original phrase still
+        # drives reranker scoring.
+        query_variants: list[str] = [query]
+        words_for_variant = query.split()
+        if 2 <= len(words_for_variant) <= 3 and all(
+                w.replace("-", "").replace("'", "").isalpha()
+                for w in words_for_variant):
+            concat = "".join(words_for_variant).lower()
+            if concat and concat != query.lower().replace(" ", ""):
+                query_variants.append(concat)
+                # Also add to keywords so $contains and kw_score pick it up
+                if len(concat) > 3 and concat not in _STOPWORDS:
+                    keywords.add(concat)
+
         def _kw_score(txt: str) -> int:
             lower = txt.lower()
             return sum(1 for kw in keywords if kw in lower)
@@ -573,28 +590,34 @@ class DocumentRetriever:
         contains_limit = 12 if source_filter else 6
 
         try:
-            # Semantic search
+            # Semantic search across all variants — ChromaDB returns parallel
+            # result lists, one per query embedding, which we union+dedupe.
             results = self._docs.query(
                 query_embeddings=_emb.embed_queries(
-                    [query], self._embed_model),
+                    query_variants, self._embed_model),
                 n_results=n_semantic,
                 where=where,
                 include=["documents", "metadatas", "distances"],
             )
             hits: list[tuple] = []
             meta_by_key: dict[str, dict] = {}
-            if results.get("documents") and results["documents"][0]:
-                for doc, meta, dist in zip(
-                    results["documents"][0],
-                    results["metadatas"][0],
-                    results["distances"][0],
+            seen_keys: set[str] = set()
+            if results.get("documents"):
+                for docs_q, metas_q, dists_q in zip(
+                    results["documents"],
+                    results["metadatas"],
+                    results["distances"],
                 ):
-                    key = doc[:100]
-                    meta_by_key[key] = meta
-                    hits.append((
-                        meta.get("filename", "?"), doc, dist,
-                        meta.get("page_number"),
-                    ))
+                    for doc, meta, dist in zip(docs_q, metas_q, dists_q):
+                        key = doc[:100]
+                        if key in seen_keys:
+                            continue
+                        seen_keys.add(key)
+                        meta_by_key[key] = meta
+                        hits.append((
+                            meta.get("filename", "?"), doc, dist,
+                            meta.get("page_number"),
+                        ))
 
             # $contains fallback for exact keyword matches
             seen = {t[:100] for _, t, _, _ in hits}
