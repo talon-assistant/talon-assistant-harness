@@ -62,19 +62,27 @@ You have these tools. Respond with ONE JSON object per turn — nothing else.
    Example: {"tool": "done", "args": {"answer_ready": true}}
 
 STRATEGY (IMPORTANT — follow this order):
-1. If you can guess which book holds the answer, call list_sources first to
-   confirm the book is there and check has_toc.
+1. If the user names a book (e.g. "in Shadowrun Berlin Edition", "in
+   Schneier's Applied Cryptography"), call list_sources first to find the
+   exact filename and check has_toc.
 2. If has_toc is true and the question names a specific entity, person,
    place, spell, critter, rule, etc. — try lookup_in_toc FIRST. The TOC
    gives you the page the author chose to put the content on. Read that
    page directly. This is faster and more accurate than search.
-3. If lookup_in_toc returns nothing useful, fall back to search or
-   filter_source.
-4. After reading a page, evaluate what you have. If you have stats,
+3. If lookup_in_toc returns nothing useful AND the user named a book,
+   use filter_source on that book — NEVER use plain search when you
+   already know which book to look in. Search is for when you don't
+   know which book has the answer.
+4. When calling search/filter_source, query for the SUBJECT only — do
+   not include the book name in the query string. Book filtering is
+   handled by filter_source's filename argument, not the query text.
+   GOOD: filter_source(filename="Berlin.pdf", query="mana bolt")
+   BAD: search(query="mana bolt shadowrun berlin edition")
+5. After reading a page, evaluate what you have. If you have stats,
    numbers, requirements, powers → call done. If the page was overview
    only → try lookup_in_toc with a more specific term, or search for
    the missing detail.
-5. Do NOT blindly read every result. Read → evaluate → decide.
+6. Do NOT blindly read every result. Read → evaluate → decide.
 
 RULES:
 - Call done as soon as you have specific stats/numbers/rules that answer
@@ -182,17 +190,30 @@ class DeepSearchAgent:
                 summary = self._summarize_toc_result(result, fn, q)
             elif tool == "read_page":
                 cid = args.get("chunk_id", "")
-                if cid in read_chunks:
-                    # Already read — don't waste an iteration re-reading.
-                    summary = (f"Already read {cid} in a previous iteration. "
-                               f"Pick a different chunk or call done if you "
-                               f"have enough information.")
+                # read_page returns the entire page/chapter (all sub-chunks
+                # joined), so any sibling sub_chunk on the same page is a
+                # duplicate request. Compare by the page/chapter prefix
+                # ("filename::pN" or "filename::chN") rather than the full id.
+                page_prefix = cid.rsplit("::s", 1)[0] if "::s" in cid else cid
+                already_read_prefixes = {
+                    k.rsplit("::s", 1)[0] if "::s" in k else k
+                    for k in read_chunks
+                }
+                if page_prefix in already_read_prefixes:
+                    summary = (f"Already read {page_prefix} in a previous "
+                               f"iteration (read_page returns the whole "
+                               f"page). Pick a different page/chapter or "
+                               f"call done if you have enough information.")
                 else:
                     result = self._tool_read_page(cid)
                     if result:
                         read_chunks[cid] = result
+                        joined = result.get("sub_chunks_joined", 1)
+                        joined_note = (f", joined {joined} sub-chunks"
+                                       if joined > 1 else "")
                         summary = (f"Full text of {cid} "
-                                   f"({len(result.get('text', ''))} chars) "
+                                   f"({len(result.get('text', ''))} chars"
+                                   f"{joined_note}) "
                                    f"appended to accumulated chunks. "
                                    f"You now have {len(read_chunks)} full "
                                    f"page(s). If this is enough to answer, "

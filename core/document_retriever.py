@@ -569,9 +569,12 @@ class DocumentRetriever:
                 w.replace("-", "").replace("'", "").isalpha()
                 for w in words_for_variant):
             concat = "".join(words_for_variant).lower()
-            if concat and concat != query.lower().replace(" ", ""):
+            # Add the concatenation as long as it's distinct from the
+            # original query string (which it always is when the query
+            # has spaces — the earlier check compared concat against the
+            # space-stripped query, which made this branch a no-op).
+            if concat and concat != query.lower():
                 query_variants.append(concat)
-                # Also add to keywords so $contains and kw_score pick it up
                 if len(concat) > 3 and concat not in _STOPWORDS:
                     keywords.add(concat)
 
@@ -664,7 +667,7 @@ class DocumentRetriever:
                     reranked = _reranker.rerank(
                         query, hits[:rerank_pool_size], self._reranker_model,
                         top_k=top_k, min_score=-1.0,
-                        keywords=keywords, kw_boost=0.2,
+                        keywords=keywords, kw_boost=0.5,
                     )
                     hits = reranked
                 except Exception as e:
@@ -680,7 +683,13 @@ class DocumentRetriever:
             for fn, txt, dist, pg in hits:
                 meta = meta_by_key.get(txt[:100], {})
                 sub = meta.get("sub_chunk", 0)
-                chunk_id = self._build_chunk_id(fn, pg, sub)
+                # EPUB chunks use chapter, not page_number
+                position_type = ("chapter" if meta.get("chapter") is not None
+                                 else "page")
+                position = (meta.get("chapter") if position_type == "chapter"
+                            else pg)
+                chunk_id = self._build_chunk_id(
+                    fn, position, sub, position_type=position_type)
 
                 # Strip VISION section for preview / text
                 raw_marker = "\nRAW TEXT:\n"
@@ -690,14 +699,13 @@ class DocumentRetriever:
                     if len(raw_part.strip()) > 50:
                         display_text = raw_part
 
-                preview = display_text[:200].replace("\n", " ").strip()
-                if len(display_text) > 200:
-                    preview += "..."
+                preview = self._keyword_preview(display_text, keywords)
 
                 out.append({
                     "chunk_id": chunk_id,
                     "source": fn,
                     "page": (pg + 1) if pg is not None else None,
+                    "chapter": meta.get("chapter"),
                     "text": display_text,
                     "preview": preview,
                     "dist": dist,
@@ -708,19 +716,75 @@ class DocumentRetriever:
             log.error(f"[RAG] get_raw_chunks failed: {e}")
             return []
 
+    @staticmethod
+    def _keyword_preview(text: str, keywords: set[str],
+                         window: int = 200) -> str:
+        """Build a preview centered on the first keyword match.
+
+        If `text` contains any keyword (case-insensitive substring), return
+        a `window`-char snippet starting a bit before the first match so
+        the matched term is clearly visible. Falls back to the leading
+        `window` chars when no keyword is found, which is the previous
+        behavior.
+
+        This makes "the agent picks the right chunk" much more reliable —
+        instead of seeing first-paragraph text that may not mention the
+        target term, the agent sees an excerpt around where the term
+        actually appears.
+        """
+        if not text:
+            return ""
+        clean = text.replace("\n", " ").strip()
+        if not keywords:
+            return (clean[:window] + ("..." if len(clean) > window else ""))
+
+        lower = clean.lower()
+        # Prefer LONGER/more-specific keywords first. "manabolt" (concat
+        # variant) is more distinctive than "mana" or "bolt", so its match
+        # position should drive the preview window over a generic substring
+        # match elsewhere in the chunk.
+        sorted_keywords = sorted(
+            (k for k in keywords if k),
+            key=lambda k: -len(k),
+        )
+        best_pos = -1
+        for kw in sorted_keywords:
+            i = lower.find(kw.lower())
+            if i >= 0:
+                best_pos = i
+                break
+        if best_pos < 0:
+            return (clean[:window] + ("..." if len(clean) > window else ""))
+
+        # Window starts ~50 chars before the match so the matched term sits
+        # near the front of the preview but with a tiny bit of lead-in.
+        start = max(0, best_pos - 50)
+        end = min(len(clean), start + window)
+        prefix = "..." if start > 0 else ""
+        suffix = "..." if end < len(clean) else ""
+        return f"{prefix}{clean[start:end]}{suffix}"
+
+    # Cap on how many sub-chunks we'll concatenate when read_page resolves
+    # to a long page or EPUB chapter. Each sub-chunk is ~400 words; 10 caps
+    # the joined text at ~4000 words which fits comfortably in the agent's
+    # answer-generation context window.
+    _MAX_SUBCHUNKS_PER_READ = 10
+
     def get_chunk_by_id(self, chunk_id: str) -> dict | None:
-        """Fetch a specific chunk by its {filename}::{p|ch}{N}::s{sub} id.
+        """Fetch a chunk by its {filename}::{p|ch}{N}::s{sub} id.
 
         Routes to either page_number (PDFs) or chapter (EPUBs) metadata
-        depending on the chunk_id's position_type.
-
-        Returns the full (untruncated) chunk text so the agent can read
-        a page in detail after seeing its preview in a search result.
+        depending on the chunk_id's position_type. Returns ALL sub-chunks
+        for the page or chapter joined in order — the sub_chunk number
+        embedded in the chunk_id is treated as a hint, not a filter, so
+        the agent gets the full page even if a specific sub-chunk number
+        was returned by search. Embeddings are sub-chunk-scoped for
+        retrieval precision; reading should always return the whole page.
         """
         parsed = self._parse_chunk_id(chunk_id)
         if not parsed:
             return None
-        filename, position_type, position, sub = parsed
+        filename, position_type, position, _sub_hint = parsed
         try:
             where_clauses = [{"filename": filename}]
             if position is not None:
@@ -728,14 +792,12 @@ class DocumentRetriever:
                     where_clauses.append({"chapter": position})
                 else:
                     where_clauses.append({"page_number": position})
-            if sub is not None:
-                where_clauses.append({"sub_chunk": sub})
 
             where = (where_clauses[0] if len(where_clauses) == 1
                      else {"$and": where_clauses})
             results = self._docs.get(
                 where=where,
-                limit=5,  # multiple sub-chunks possible
+                limit=self._MAX_SUBCHUNKS_PER_READ,
                 include=["documents", "metadatas"],
             )
             docs = results.get("documents", [])
@@ -743,22 +805,29 @@ class DocumentRetriever:
             if not docs:
                 return None
 
-            # Pick the longest match (best content for the page)
-            best_idx = 0
-            for i, d in enumerate(docs):
-                if len(d) > len(docs[best_idx]):
-                    best_idx = i
-            doc = docs[best_idx]
-            meta = metas[best_idx]
+            # Sort by sub_chunk so concatenation reflects original order
+            ordered = sorted(
+                zip(docs, metas),
+                key=lambda dm: dm[1].get("sub_chunk", 0),
+            )
 
-            # Strip VISION section for display
+            # Strip VISION block per chunk and join RAW TEXT in order. The
+            # 50-word overlap between sub-chunks shows up as repeated text
+            # at boundaries; we accept that to keep the join simple.
             raw_marker = "\nRAW TEXT:\n"
-            display_text = doc
-            if raw_marker in doc:
-                raw_part = doc.split(raw_marker, 1)[1]
-                if len(raw_part.strip()) > 50:
-                    display_text = raw_part
+            parts: list[str] = []
+            for d, _m in ordered:
+                text = d
+                if raw_marker in d:
+                    raw_part = d.split(raw_marker, 1)[1]
+                    if len(raw_part.strip()) > 50:
+                        text = raw_part
+                parts.append(text.strip())
+            joined = "\n\n".join(p for p in parts if p)
 
+            # Use first chunk's metadata for the return shape; all sub-chunks
+            # share filename/page_number/chapter.
+            meta = ordered[0][1]
             page_disp = None
             if meta.get("page_number") is not None:
                 page_disp = meta.get("page_number") + 1
@@ -768,7 +837,8 @@ class DocumentRetriever:
                 "source": meta.get("filename", "?"),
                 "page": page_disp,
                 "chapter": meta.get("chapter"),
-                "text": display_text,
+                "text": joined,
+                "sub_chunks_joined": len(parts),
             }
         except Exception as e:
             log.error(f"[RAG] get_chunk_by_id failed for {chunk_id}: {e}")
