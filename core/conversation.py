@@ -300,7 +300,9 @@ class ConversationEngine:
             prompt = (
                 f"{command}\n\n"
                 f"Answer from the document excerpts only. "
-                f"List stats, powers, requirements, weaknesses, costs. "
+                f"Quote specific names, values, and details verbatim "
+                f"as they appear in the source. Do not expand abbreviations "
+                f"unless the excerpt itself defines them. "
                 f"Cite filename and page."
             )
         else:
@@ -344,7 +346,9 @@ class ConversationEngine:
             prompt = (
                 f"{command}\n\n"
                 f"Answer from the document excerpts only. "
-                f"List stats, powers, requirements, weaknesses, costs. "
+                f"Quote specific names, values, and details verbatim "
+                f"as they appear in the source. Do not expand abbreviations "
+                f"unless the excerpt itself defines them. "
                 f"Cite filename and page."
             )
 
