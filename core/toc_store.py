@@ -273,3 +273,36 @@ class TocStore:
                 "SELECT filename FROM book_metadata WHERE has_toc = 1"
             ).fetchall()
             return [r["filename"] for r in rows]
+
+    def entries_for_book(self, filename: str) -> list[dict]:
+        """Return all TOC entries for a book, sorted by position.
+
+        For PDFs, position is page_pdf (0-based PDF page index).
+        For EPUBs, position is chapter_idx.
+
+        Each entry: {title, page_printed, page_pdf, chapter_idx, level, position}
+        where `position` is whichever of page_pdf/chapter_idx is set.
+        """
+        with self._conn() as c:
+            rows = c.execute(
+                "SELECT title, page_printed, page_pdf, chapter_idx, level "
+                "FROM book_toc WHERE filename = ?",
+                (filename,),
+            ).fetchall()
+        out: list[dict] = []
+        for r in rows:
+            position = (r["chapter_idx"] if r["chapter_idx"] is not None
+                        else (r["page_pdf"] if r["page_pdf"] >= 0 else None))
+            if position is None:
+                continue
+            out.append({
+                "title": r["title"],
+                "page_printed": r["page_printed"]
+                                if r["page_printed"] else None,
+                "page_pdf": r["page_pdf"] if r["page_pdf"] >= 0 else None,
+                "chapter_idx": r["chapter_idx"],
+                "level": r["level"],
+                "position": position,
+            })
+        out.sort(key=lambda e: e["position"])
+        return out

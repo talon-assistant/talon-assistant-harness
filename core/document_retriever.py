@@ -472,6 +472,168 @@ class DocumentRetriever:
         meta = store.get_metadata(filename)
         return bool(meta and meta.get("has_toc"))
 
+    # Cap on how many pages a single read_section call can join, so a
+    # 100-page chapter doesn't blow up the agent's context budget.
+    _MAX_SECTION_PAGES = 8
+
+    def _find_section_for_position(
+        self, filename: str, position: int, position_type: str
+    ) -> tuple[dict, dict | None] | None:
+        """Find the TOC entry containing `position` and the next entry.
+
+        Returns (current_entry, next_entry_or_None) or None if no TOC
+        section covers the position.
+        """
+        store = self._get_toc_store()
+        if store is None:
+            return None
+        try:
+            entries = store.entries_for_book(filename)
+        except Exception:
+            return None
+        if not entries:
+            return None
+
+        # Filter to entries of the matching position_type. PDF entries
+        # have page_pdf set; EPUB entries have chapter_idx set.
+        if position_type == "chapter":
+            candidates = [e for e in entries if e["chapter_idx"] is not None]
+        else:
+            candidates = [e for e in entries if e["page_pdf"] is not None]
+        if not candidates:
+            return None
+
+        # Find the latest entry whose position is <= target position.
+        # That entry is the "section" containing the target.
+        current = None
+        current_idx = -1
+        for i, e in enumerate(candidates):
+            if e["position"] <= position:
+                current = e
+                current_idx = i
+            else:
+                break
+        if current is None:
+            return None
+
+        next_entry = (candidates[current_idx + 1]
+                      if current_idx + 1 < len(candidates) else None)
+        return (current, next_entry)
+
+    def read_section(self, chunk_id: str) -> dict | None:
+        """Read the entire TOC section that `chunk_id` belongs to.
+
+        Mirrors how a human navigates by structure: "give me the whole
+        chapter on Combat Spells" rather than "give me page 134."
+        Section boundaries come from the TOC: section starts at its
+        TOC entry's page, ends one page before the next entry. For
+        EPUBs the section is the single chapter (already atomic).
+
+        Capped at _MAX_SECTION_PAGES pages joined to protect context.
+        """
+        parsed = self._parse_chunk_id(chunk_id)
+        if not parsed:
+            return None
+        filename, position_type, position, _sub = parsed
+        if position is None:
+            return None
+
+        # EPUB: chapter is the section. Just return the chapter chunk.
+        if position_type == "chapter":
+            return self.get_chunk_by_id(chunk_id)
+
+        section_info = self._find_section_for_position(
+            filename, position, position_type)
+        if not section_info:
+            return None
+        current, next_entry = section_info
+
+        start = current["position"]
+        # End: page before next section, or +5 pages if no next entry
+        if next_entry is not None:
+            end = next_entry["position"] - 1
+        else:
+            end = start + 5
+        # Cap section length
+        end = min(end, start + self._MAX_SECTION_PAGES - 1)
+        if end < start:
+            end = start
+
+        # Join all pages in [start, end]
+        parts: list[tuple[int, dict]] = []
+        for pg in range(start, end + 1):
+            cid = self._build_chunk_id(filename, pg, 0,
+                                       position_type=position_type)
+            chunk = self.get_chunk_by_id(cid)
+            if chunk:
+                parts.append((pg, chunk))
+        if not parts:
+            return None
+
+        lines: list[str] = [f"[Section: {current['title']!r}]\n"]
+        pages_included: list[int] = []
+        for pg, chunk in parts:
+            lines.append(f"\n[• page {pg + 1}]\n{chunk.get('text', '')}")
+            pages_included.append(pg + 1)
+        if next_entry and end == start + self._MAX_SECTION_PAGES - 1 \
+                and end < next_entry["position"] - 1:
+            lines.append(
+                f"\n[Section continues to page {next_entry['position']} — "
+                f"truncated at {self._MAX_SECTION_PAGES} pages. Call "
+                f"read_nearby for more.]"
+            )
+
+        return {
+            "chunk_id": chunk_id,
+            "source": filename,
+            "page": position + 1,
+            "section_title": current["title"],
+            "section_page_start": start + 1,
+            "section_page_end": end + 1,
+            "next_section_title": next_entry["title"] if next_entry else None,
+            "pages_included": pages_included,
+            "text": "".join(lines).strip(),
+            "spans": len(parts),
+        }
+
+    def next_section(self, chunk_id: str) -> dict | None:
+        """Jump to the start of the section after `chunk_id`'s section.
+
+        Reads the first page (PDF) or chapter chunk (EPUB) of the next
+        TOC entry. The agent uses this for "what comes after this part?"
+        questions and for forward navigation through structured docs.
+        """
+        parsed = self._parse_chunk_id(chunk_id)
+        if not parsed:
+            return None
+        filename, position_type, position, _sub = parsed
+        if position is None:
+            return None
+
+        section_info = self._find_section_for_position(
+            filename, position, position_type)
+        if not section_info:
+            return None
+        _current, next_entry = section_info
+        if next_entry is None:
+            return None
+
+        next_pos = next_entry["position"]
+        next_cid = self._build_chunk_id(filename, next_pos, 0,
+                                        position_type=position_type)
+        chunk = self.get_chunk_by_id(next_cid)
+        if not chunk:
+            return None
+
+        return {
+            "chunk_id": next_cid,
+            "source": filename,
+            "page": next_pos + 1 if position_type == "page" else None,
+            "chapter": next_pos if position_type == "chapter" else None,
+            "section_title": next_entry["title"],
+            "text": chunk.get("text", ""),
+        }
+
     def get_neighboring_chunks(self, chunk_id: str,
                                before: int = 1, after: int = 1) -> dict | None:
         """Read pages adjacent to `chunk_id` and return them joined.

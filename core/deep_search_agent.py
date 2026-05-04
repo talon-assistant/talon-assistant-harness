@@ -65,8 +65,22 @@ You have these tools. Respond with ONE JSON object per turn — nothing else.
    in a book from a known anchor. Default before=1, after=1.
    Example: {"tool": "read_nearby", "args": {"chunk_id": "Berlin.pdf::p134::s0", "after": 1}}
 
-8. done(answer_ready)
-   Declare you have enough content. Exits the loop.
+7. read_section(chunk_id)
+   Read the entire TOC section containing `chunk_id`. Use for topical
+   questions where the answer spans multiple pages of one section
+   (e.g. "explain how Combat Spells work", "what's covered under
+   Adept Powers"). Section boundaries come from the book's TOC;
+   capped at 8 pages joined for context budget.
+   Example: {"tool": "read_section", "args": {"chunk_id": "Berlin.pdf::p134::s0"}}
+
+8. next_section(chunk_id)
+   Jump to the start of the section AFTER `chunk_id`'s section.
+   Use for "what comes after X" questions and for forward navigation
+   through structured docs.
+   Example: {"tool": "next_section", "args": {"chunk_id": "Berlin.pdf::p134::s0"}}
+
+10. done(answer_ready)
+    Declare you have enough content. Exits the loop.
    Example: {"tool": "done", "args": {"answer_ready": true}}
 
 STRATEGY (IMPORTANT — read carefully and pick the right branch):
@@ -101,6 +115,14 @@ C) ALWAYS, REGARDLESS OF BRANCH:
      Overview only → search for the missing detail or lookup_in_toc
      with a more specific term.
    - Do NOT blindly read every result. Read → evaluate → decide.
+
+D) PICKING THE RIGHT READ TOOL:
+   - read_page: specific entity/term ("what are Manabolt's stats?")
+   - read_nearby: spillover suspected ("description continues to next page")
+   - read_section: topical question covering a whole section
+     ("explain how Combat Spells work", "what's covered under
+     Adept Powers")
+   - next_section: forward navigation ("what comes after X?")
 
 RULES:
 - Call done as soon as you have specific stats/numbers/rules that answer
@@ -297,6 +319,47 @@ class DeepSearchAgent:
                                    f"call done.")
                     else:
                         summary = f"Chunk {cid} not found."
+            elif tool == "read_section":
+                cid = args.get("chunk_id", "")
+                result = self._tool_read_section(cid)
+                if result:
+                    read_chunks[cid] = result
+                    title = result.get("section_title", "?")
+                    pages = result.get("pages_included") or []
+                    page_range = (
+                        f"pages {pages[0]}-{pages[-1]}"
+                        if len(pages) > 1
+                        else (f"page {pages[0]}" if pages else "?")
+                    )
+                    next_title = result.get("next_section_title")
+                    next_note = (f" Next section is '{next_title}'."
+                                 if next_title else "")
+                    summary = (
+                        f"Read section '{title}' covering {page_range} "
+                        f"({len(result.get('text', ''))} chars). "
+                        f"You now have {len(read_chunks)} full page(s)."
+                        f"{next_note}"
+                    )
+                else:
+                    summary = (f"Could not resolve a section for {cid}. "
+                               f"The chunk may be outside the parsed TOC "
+                               f"range.")
+            elif tool == "next_section":
+                cid = args.get("chunk_id", "")
+                result = self._tool_next_section(cid)
+                if result:
+                    next_cid = result["chunk_id"]
+                    read_chunks[next_cid] = result
+                    title = result.get("section_title", "?")
+                    summary = (
+                        f"Jumped to next section '{title}' (chunk_id: "
+                        f"{next_cid}). {len(result.get('text', ''))} chars "
+                        f"of content. You now have {len(read_chunks)} "
+                        f"full page(s)."
+                    )
+                else:
+                    summary = (f"No next section found for {cid}. May be "
+                               f"the last section in the book.")
             elif tool == "read_nearby":
                 cid = args.get("chunk_id", "")
                 before = int(args.get("before", 1))
@@ -438,6 +501,12 @@ class DeepSearchAgent:
                           before: int = 1, after: int = 1) -> dict | None:
         return self._retriever.get_neighboring_chunks(
             chunk_id, before=before, after=after)
+
+    def _tool_read_section(self, chunk_id: str) -> dict | None:
+        return self._retriever.read_section(chunk_id)
+
+    def _tool_next_section(self, chunk_id: str) -> dict | None:
+        return self._retriever.next_section(chunk_id)
 
     # ── LLM interaction ───────────────────────────────────────────────────
 
