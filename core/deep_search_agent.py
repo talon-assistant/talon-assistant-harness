@@ -96,11 +96,17 @@ A) USER NAMES A SPECIFIC BOOK (e.g. "in Shadowrun Berlin Edition", "in
       book to look in.
 
 B) USER DOES NOT NAME A SPECIFIC BOOK (e.g. "what is a Shadowrun mana
-   bolt", "what is steganography"):
+   bolt", "what is steganography", "what does Angela Marafino say"):
    1. Call search FIRST (global, across all books). The chunk_ids in
       the result reveal which book(s) have content for the query.
       Pick the book with the highest kw_score (keyword match).
-   2. THEN filter_source or lookup_in_toc on that book to drill in.
+   2. THEN drill in. STRONGLY prefer lookup_in_toc over filter_source
+      whenever the query names a specific entity — a person, a spell,
+      a control name, a protocol, etc. Anthologies and reference works
+      typically have a direct TOC entry for that entity, and the
+      lookup is one tool call away from the answer. filter_source is
+      a fallback for topical questions where no single TOC entry will
+      cover the answer.
    3. Do NOT guess a book from list_sources without seeing search
       results — your guess will often be wrong (e.g. picking a
       critter book for a spell-rules question).
