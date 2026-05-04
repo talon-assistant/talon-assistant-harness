@@ -806,23 +806,90 @@ class DocumentRetriever:
             if not hits:
                 return []
 
-            # Optional reranking
-            if apply_reranker and len(hits) > 1:
-                # Wider reranker pool when filtering by source (small doc).
-                rerank_pool_size = 40 if source_filter else 20
+            # Reranking — but only when we don't have strong keyword
+            # evidence already. Cross-encoders are great when query
+            # vocabulary differs from document vocabulary, and bad on
+            # pages where the answer term is one entry among many (the
+            # multi-spell page case): the page's overall embedding
+            # doesn't smell like the query, so the reranker drops it
+            # below chunks that are more topically focused but don't
+            # actually contain the answer.
+            n_kw = len(keywords) if keywords else 0
+            rerank_pool_size = 40 if source_filter else 20
+            # Strong-signal check runs over the FULL hits list, not just
+            # the rerank pool — $contains-only matches (like "Manabolt"
+            # found by "Bolt" substring) are appended after the semantic
+            # union and can be past position 40.
+            has_strong_kw_signal = (
+                n_kw > 0
+                and any(
+                    sum(1 for k in keywords if k in (txt or "").lower())
+                    >= n_kw
+                    for _fn, txt, _d, _p in hits
+                )
+            )
+
+            if apply_reranker and len(hits) > 1 and not has_strong_kw_signal:
                 try:
+                    rerank_top = max(top_k * 2, top_k + 8)
                     reranked = _reranker.rerank(
                         query, hits[:rerank_pool_size], self._reranker_model,
-                        top_k=top_k, min_score=-1.0,
+                        top_k=rerank_top, min_score=-1.0,
                         keywords=keywords, kw_boost=0.5,
                     )
                     hits = reranked
                 except Exception as e:
                     log.warning(f"[RAG] Reranker failed in agentic mode: {e}")
                     hits.sort(key=lambda x: x[2])
-                    hits = hits[:top_k]
+                    hits = hits[:rerank_pool_size]
             else:
-                hits.sort(key=lambda x: x[2])
+                # Strong keyword signal — keep ALL hits (incl. tail $contains
+                # matches that may sit beyond the cross-encoder's pool) and
+                # let the quality-scoring pass below choose the winner.
+                pass
+
+            # ── Post-rerank: search-engine-style scoring pass ──────────
+            # IDF weighting, heading boost, phrase bonus. The reranker is
+            # great at semantic relevance but can be fooled by chunks
+            # whose embedding is diluted (e.g., a spell-catalog page where
+            # one entry is the answer but five other entries crowd out the
+            # signal). These signals reward chunks that look like real
+            # answers regardless of embedding density.
+            if hits and len(hits) > 1 and keywords:
+                try:
+                    idf = self._compute_idf_weights(keywords)
+                except Exception as e:
+                    log.warning(f"[RAG] IDF computation failed: {e}")
+                    idf = {}
+                phrase = query.lower().strip()
+                has_phrase = (
+                    len(phrase.split()) >= 2
+                    and not phrase.startswith(("what ", "who ", "where ",
+                                               "when ", "why ", "how ",
+                                               "which ", "tell ", "explain "))
+                )
+
+                def quality(hit: tuple) -> float:
+                    _fn, txt, _dist, _pg = hit
+                    text_lower = txt.lower()
+                    score = 0.0
+                    # IDF-weighted keyword presence — rare term hits dominate
+                    for kw in keywords:
+                        if kw in text_lower:
+                            score += idf.get(kw, 1.0)
+                    # Heading hit: keyword in an ALL-CAPS or short title line
+                    if self._has_keyword_in_heading(txt, keywords):
+                        score += 4.0
+                    # Phrase match: exact multi-word query in chunk
+                    if has_phrase and phrase in text_lower:
+                        score += 5.0
+                    return score
+
+                # Re-sort by quality DESC, breaking ties with original order
+                indexed = list(enumerate(hits))
+                indexed.sort(key=lambda i_h: (-quality(i_h[1]), i_h[0]))
+                hits = [h for _, h in indexed[:top_k]]
+            else:
                 hits = hits[:top_k]
 
             # Convert to dict format with chunk_id
@@ -862,6 +929,102 @@ class DocumentRetriever:
         except Exception as e:
             log.error(f"[RAG] get_raw_chunks failed: {e}")
             return []
+
+    # ── Search-engine-style scoring helpers ──────────────────────────────
+    #
+    # Borrowed from how Google ranks results: rare terms carry more signal
+    # than common ones (IDF weighting), terms in headings outrank terms in
+    # body text (field-aware boost), and exact phrase matches outrank
+    # scattered-word matches (phrase bonus). Applied as a post-reranker
+    # re-ordering pass.
+
+    def _compute_idf_weights(
+        self, keywords: set[str], total_chunks: int | None = None
+    ) -> dict[str, float]:
+        """For each keyword, compute log(N / df) — rare terms score high.
+
+        df = number of chunks containing the term (capped at 5000 for cost).
+        Falls back to weight 1.0 on any error.
+        """
+        if not keywords:
+            return {}
+        if total_chunks is None:
+            try:
+                total_chunks = max(1, self._docs.count())
+            except Exception:
+                total_chunks = 35000  # rough library size fallback
+        import math
+        weights: dict[str, float] = {}
+        for kw in keywords:
+            try:
+                res = self._docs.get(
+                    where_document={"$contains": kw},
+                    limit=5000,
+                    include=[],
+                )
+                df = max(1, len(res.get("ids", [])))
+            except Exception:
+                df = 1
+            weights[kw] = max(0.1, math.log(total_chunks / df))
+        return weights
+
+    @staticmethod
+    def _has_keyword_in_heading(text: str, keywords: set[str]) -> bool:
+        """Detect a query keyword sitting in a section-heading line.
+
+        Heading detection is harder than it looks: visually-all-caps
+        headings in PDFs ("MANABOLT") often get extracted in mixed case
+        ("Manabolt") because the font renders small-caps over lowercase
+        glyphs. We use three signals to compensate:
+
+          1. ALL CAPS short line containing the keyword (best signal).
+          2. Short line where the keyword is among the first few tokens
+             AND the line isn't an index entry ("Term, 133" pattern).
+          3. Keyword followed by a parenthetical descriptor on a short
+             line ("Manabolt (Direct Combat)") — common spell/entity
+             format in reference books.
+        """
+        if not text or not keywords:
+            return False
+
+        kw_lower = {k.lower() for k in keywords if k}
+
+        # Pattern that matches an index-style "Term, 133" line — we
+        # reject those so the index page doesn't get a heading bonus.
+        index_line_re = re.compile(r"\b\w+\s*,\s*\d{1,4}\b")
+
+        for raw in text.split("\n"):
+            line = raw.strip()
+            if not line or len(line) > 80:
+                continue
+            line_lower = line.lower()
+            if not any(kw in line_lower for kw in kw_lower):
+                continue
+            if index_line_re.search(line):
+                # Looks like an index entry, not a section heading
+                continue
+
+            alpha_chars = [c for c in line if c.isalpha()]
+            if len(alpha_chars) < 3:
+                continue
+            upper_ratio = sum(1 for c in alpha_chars
+                              if c.isupper()) / len(alpha_chars)
+
+            # Signal 1: real ALL CAPS line
+            if upper_ratio >= 0.7:
+                return True
+            # Signal 2: keyword in first ~3 tokens of a short line
+            first_tokens = " ".join(line_lower.split()[:3])
+            if any(kw in first_tokens for kw in kw_lower):
+                return True
+            # Signal 3: keyword followed by " (" pattern (spell-entry style)
+            for kw in kw_lower:
+                paren_idx = line_lower.find(kw + " (")
+                if paren_idx == -1:
+                    paren_idx = line_lower.find(kw + "(")
+                if paren_idx >= 0:
+                    return True
+        return False
 
     @staticmethod
     def _keyword_preview(text: str, keywords: set[str],
