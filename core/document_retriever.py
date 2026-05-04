@@ -1039,9 +1039,25 @@ class DocumentRetriever:
                     for kw in keywords:
                         if kw in text_lower:
                             score += idf.get(kw, 1.0)
-                    # Heading hit: keyword in an ALL-CAPS or short title line
-                    if self._has_keyword_in_heading(txt, keywords):
-                        score += 4.0
+                    # Structure signals: heading and stat-block.
+                    has_heading = self._has_keyword_in_heading(txt, keywords)
+                    has_stat_block = self._has_stat_block_near_keyword(
+                        txt, keywords)
+                    # AND-gate: heading + stat-block together indicates a
+                    # formal definition entry (e.g., "Manabolt (Direct
+                    # Combat) RANGE TYPE DURATION DV DAMAGE..."). Strong
+                    # boost — this is the canonical right answer shape
+                    # for "what is X" queries.
+                    if has_heading and has_stat_block:
+                        score += 8.0
+                    elif has_heading:
+                        # Heading alone: section-header-like presence,
+                        # weaker but still positive signal.
+                        score += 3.0
+                    # Stat-block alone gets NO boost — it false-fires on
+                    # in-chapter TOCs and bibliographies where consecutive
+                    # caps appear without caption-style headings near the
+                    # keyword. The AND-gate is the safe combination.
                     # Phrase match: exact multi-word query in chunk
                     if has_phrase and phrase in text_lower:
                         score += 5.0
@@ -1129,6 +1145,52 @@ class DocumentRetriever:
                 df = 1
             weights[kw] = max(0.1, math.log(total_chunks / df))
         return weights
+
+    # Consecutive ALL-CAPS run: 3+ short uppercase tokens separated by
+    # whitespace only. Filters out cybersecurity prose where acronyms
+    # appear with commas/lowercase between them (e.g., "CISA, NIST, and
+    # CIS recommend" — won't match because of the commas/lowercase).
+    _STAT_BLOCK_RE = re.compile(r"\b[A-Z]{2,10}(?:\s+[A-Z]{2,10}){2,}\b")
+
+    @staticmethod
+    def _has_stat_block_near_keyword(text: str, keywords: set[str]) -> bool:
+        """Detect a structured stat/rule table near the query keyword.
+
+        Stat blocks have a recognizable shape across domains: a run of
+        consecutive short uppercase tokens with only whitespace between
+        them, sitting near the entity name. Examples:
+          - RPG spells:     "Manabolt (Direct Combat) RANGE TYPE DURATION DV DAMAGE"
+          - Network protos: "FIELD LENGTH DESCRIPTION"
+          - Security ctrls: "CONTROL ID FAMILY PRIORITY"
+
+        Why "consecutive" matters: cybersecurity / crypto prose is
+        acronym-dense ("RSA encryption with PKCS padding uses SHA-256"),
+        but commas, lowercase words, and punctuation break the run. A
+        true stat block has the caps tokens flowing as table headers
+        with whitespace-only separators.
+
+        Note: this is necessary but not sufficient. Use in conjunction
+        with _has_keyword_in_heading (AND-gate) to filter remaining
+        false positives like in-chapter TOC pages where chapter section
+        titles are caps-sequenced but no caption-style heading sits
+        near the keyword.
+        """
+        if not text or not keywords:
+            return False
+        text_lower = text.lower()
+        for kw in keywords:
+            if not kw:
+                continue
+            idx = 0
+            while True:
+                pos = text_lower.find(kw, idx)
+                if pos < 0:
+                    break
+                window = text[pos:pos + 250]
+                if DocumentRetriever._STAT_BLOCK_RE.search(window):
+                    return True
+                idx = pos + 1
+        return False
 
     @staticmethod
     def _has_keyword_in_heading(text: str, keywords: set[str]) -> bool:
