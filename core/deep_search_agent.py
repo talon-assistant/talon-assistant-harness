@@ -207,6 +207,38 @@ class DeepSearchAgent:
                 else:
                     result = self._tool_read_page(cid)
                     if result:
+                        # Index auto-follow: when the chunk is a back-of-book
+                        # index, look up the user's query in it and fetch the
+                        # referenced page so the agent gets actual content
+                        # rather than just a page reference.
+                        from core.document_index import detect_index_chunk
+                        followup_note = ""
+                        if detect_index_chunk(result.get("text", "")):
+                            filename = cid.split("::")[0]
+                            followups = self._retriever.follow_index_reference(
+                                filename, query, result["text"])
+                            for fu in followups:
+                                # Append followed page text to the result
+                                result["text"] += (
+                                    f"\n\n[AUTO-FOLLOWED INDEX REFERENCE → "
+                                    f"page {fu['printed_page']} "
+                                    f"(chunk {fu['chunk_id']})]\n"
+                                    f"{fu['text']}"
+                                )
+                                # Mark followed chunk as read too
+                                read_chunks[fu['chunk_id']] = {
+                                    "chunk_id": fu['chunk_id'],
+                                    "source": filename,
+                                    "page": fu['pdf_idx'] + 1,
+                                    "text": fu['text'],
+                                }
+                            if followups:
+                                pages_joined = ", ".join(
+                                    str(f['printed_page']) for f in followups)
+                                followup_note = (
+                                    f" Index detected — auto-followed to "
+                                    f"page(s) {pages_joined}.")
+
                         read_chunks[cid] = result
                         joined = result.get("sub_chunks_joined", 1)
                         joined_note = (f", joined {joined} sub-chunks"
@@ -214,7 +246,7 @@ class DeepSearchAgent:
                         summary = (f"Full text of {cid} "
                                    f"({len(result.get('text', ''))} chars"
                                    f"{joined_note}) "
-                                   f"appended to accumulated chunks. "
+                                   f"appended to accumulated chunks.{followup_note} "
                                    f"You now have {len(read_chunks)} full "
                                    f"page(s). If this is enough to answer, "
                                    f"call done.")

@@ -241,6 +241,62 @@ def resolve_pdf_pages(entries: list[TocEntry], offset: int) -> list[TocEntry]:
 
 
 # ---------------------------------------------------------------------------
+# Back-of-book index detection + reference extraction
+#
+# Used by the DeepSearchAgent to recognize when read_page returns the
+# back-of-book index ("Manabolt, 133  Manaball, 133  Manchuria, 32 ...")
+# rather than actual content, so it can follow the referenced page
+# automatically without burning another agent iteration.
+# ---------------------------------------------------------------------------
+
+# Matches patterns like "Term, 42" or "Term 42" where Term is a word.
+_INDEX_REF_RE = re.compile(r"\b[A-Za-z][\w'-]*\s*,?\s+\d{1,4}\b")
+
+
+def detect_index_chunk(text: str, min_refs: int = 15) -> bool:
+    """Heuristic: is this chunk a back-of-book-index page?
+
+    Counts term-page reference patterns. A real index page has many such
+    pairs in close succession; prose pages cite a number occasionally
+    but not at this density.
+    """
+    if not text or len(text) < 200:
+        return False
+    refs = _INDEX_REF_RE.findall(text)
+    return len(refs) >= min_refs
+
+
+def extract_index_pages(text: str, query_terms: list[str]) -> list[int]:
+    """Find page numbers the index references for any of query_terms.
+
+    Returns a sorted, deduplicated list. Each term is matched as a
+    word-boundary substring (case-insensitive); the FIRST integer that
+    follows within a few characters is taken as the page reference. Sub-
+    terms or follow-on entries get their own match.
+    """
+    pages: list[int] = []
+    seen: set[int] = set()
+    for term in query_terms:
+        if not term or len(term) < 3:
+            continue
+        pattern = re.compile(
+            # term, then up to 8 non-letter chars (commas, whitespace,
+            # dashes), then a 1-4 digit page number.
+            rf"\b{re.escape(term)}\b[^A-Za-z\n]{{0,8}}?(\d{{1,4}})",
+            re.IGNORECASE,
+        )
+        for m in pattern.finditer(text):
+            try:
+                page = int(m.group(1))
+            except ValueError:
+                continue
+            if 1 <= page <= 9999 and page not in seen:
+                pages.append(page)
+                seen.add(page)
+    return pages
+
+
+# ---------------------------------------------------------------------------
 # EPUB TOC extraction (uses ebooklib's structured toc + spine)
 # ---------------------------------------------------------------------------
 

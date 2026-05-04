@@ -472,6 +472,83 @@ class DocumentRetriever:
         meta = store.get_metadata(filename)
         return bool(meta and meta.get("has_toc"))
 
+    def follow_index_reference(self, filename: str, query: str,
+                               index_text: str,
+                               max_followups: int = 2) -> list[dict]:
+        """When `index_text` is a back-of-book index, follow page refs.
+
+        Extracts the meaningful subject words from the user's query
+        (stripping question prefixes like "in book X what is..."), looks
+        them up in the index, applies the book's stored page_offset, and
+        fetches the resolved chunks. Returns a list (possibly empty) of
+        followed chunks with their printed/pdf page numbers.
+        """
+        from core.document_index import extract_index_pages
+
+        # ── Strip question-style filler so the index lookup uses just
+        # the subject. The user typically says something like
+        # "in shadowrun berlin edition what is a mana bolt" — only
+        # "mana bolt" should drive the index lookup.
+        _FILLER_WORDS = {
+            "what", "who", "where", "when", "why", "how", "which",
+            "the", "a", "an", "is", "are", "was", "were", "be", "been",
+            "of", "in", "on", "at", "to", "for", "with", "from", "by",
+            "and", "or", "but", "as", "if", "do", "does", "did",
+            "tell", "me", "about", "explain", "describe", "show",
+            "i", "you", "he", "she", "it", "we", "they",
+            "edition", "book", "chapter", "section", "page",
+            # Common book/series tokens that shouldn't drive index lookup
+            "shadowrun", "applied", "cryptography", "berlin",
+        }
+        cleaned_words = [
+            w for w in re.findall(r"[a-zA-Z][\w'-]*", query.lower())
+            if len(w) >= 3 and w not in _FILLER_WORDS
+        ]
+        if not cleaned_words:
+            return []
+
+        # Build the term list. Prefer multi-word phrases first (more
+        # specific), then individual words, then a concat variant for
+        # compound nouns the author might have indexed as one word.
+        terms: list[str] = []
+        if 2 <= len(cleaned_words) <= 4:
+            phrase = " ".join(cleaned_words)
+            terms.append(phrase)
+            concat = "".join(cleaned_words)
+            if concat and concat != phrase:
+                terms.insert(0, concat)  # try concat first
+        terms.extend(cleaned_words)
+
+        printed_pages = extract_index_pages(index_text, terms)
+        if not printed_pages:
+            return []
+
+        # Look up the book's printed→pdf offset from the TOC store
+        store = self._get_toc_store()
+        offset = 0
+        if store is not None:
+            meta = store.get_metadata(filename)
+            if meta:
+                offset = meta.get("page_offset", 0) or 0
+
+        results: list[dict] = []
+        seen_chunks: set[str] = set()
+        for printed_page in printed_pages[:max_followups]:
+            pdf_idx = printed_page + offset
+            chunk_id = self._build_chunk_id(filename, pdf_idx, 0)
+            if chunk_id in seen_chunks:
+                continue
+            seen_chunks.add(chunk_id)
+            chunk = self.get_chunk_by_id(chunk_id)
+            if chunk and chunk.get("text"):
+                results.append({
+                    "chunk_id": chunk_id,
+                    "printed_page": printed_page,
+                    "pdf_idx": pdf_idx,
+                    "text": chunk["text"],
+                })
+        return results
+
     def list_sources(self) -> list[dict]:
         """Return a list of all source files with chunk counts.
 
