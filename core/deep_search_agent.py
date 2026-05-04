@@ -403,8 +403,21 @@ class DeepSearchAgent:
             log.info(f"[Agent] Filtered out {dropped} chunk(s) with no "
                      f"keyword overlap (likely tangential)")
 
+        # Detect whether the agent expressed scoped intent — if it called
+        # filter_source or lookup_in_toc on specific books, the user's
+        # query was likely about those books and cross-source previews
+        # would be noise. If the agent only used global search, the
+        # query was general and multi-source previews are valuable.
+        scope_sources: set[str] = set()
+        for entry in history:
+            if entry.get("tool") in ("filter_source", "lookup_in_toc"):
+                fn = entry.get("args", {}).get("filename")
+                if fn:
+                    scope_sources.add(fn)
+
         # Format accumulated chunks for final RAG injection
-        formatted = self._format_final_context(filtered_read, seen_previews)
+        formatted = self._format_final_context(
+            filtered_read, seen_previews, scope_sources)
         return formatted, history
 
     @staticmethod
@@ -624,6 +637,7 @@ class DeepSearchAgent:
     def _format_final_context(
         read_chunks: dict[str, dict],
         seen_previews: dict[str, dict],
+        scope_sources: set[str] | None = None,
     ) -> str:
         """Build the formatted context string for the final LLM answer.
 
@@ -653,17 +667,24 @@ class DeepSearchAgent:
             lines.append(f"- From {_src_label(chunk)}: {chunk.get('text', '')}")
 
         # Previews for chunks the agent saw but didn't read in full.
-        # Filter to only those from the SAME source(s) the agent actually
-        # read. Previews from other books cause cross-source pollution —
-        # the LLM treats them as authoritative and fabricates synthesized
-        # answers attributing claims to books the agent never opened.
-        read_sources = {c.get("source") for c in read_chunks.values()
-                        if c.get("source")}
-        preview_only = [
-            (cid, c) for cid, c in seen_previews.items()
-            if cid not in read_chunks
-            and (not read_sources or c.get("source") in read_sources)
-        ]
+        # Filter conditional on scope: if the agent expressed scoped
+        # intent (called filter_source/lookup_in_toc on specific books),
+        # restrict previews to those scope sources — cross-source
+        # previews on a scoped query like "what does Schneier say"
+        # invite the LLM to fabricate citations from books it never
+        # opened. If the agent only used global search, the query was
+        # general and multi-source previews are valuable signal.
+        if scope_sources:
+            preview_only = [
+                (cid, c) for cid, c in seen_previews.items()
+                if cid not in read_chunks
+                and c.get("source") in scope_sources
+            ]
+        else:
+            preview_only = [
+                (cid, c) for cid, c in seen_previews.items()
+                if cid not in read_chunks
+            ]
         if preview_only and len(read_chunks) < 4:
             # Only include if we don't already have enough full chunks
             for cid, c in preview_only[:4]:
