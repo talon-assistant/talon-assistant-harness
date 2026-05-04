@@ -652,11 +652,17 @@ class DeepSearchAgent:
         for chunk_id, chunk in read_chunks.items():
             lines.append(f"- From {_src_label(chunk)}: {chunk.get('text', '')}")
 
-        # Previews for chunks the agent saw but didn't read in full
-        # (limit to avoid bloat)
+        # Previews for chunks the agent saw but didn't read in full.
+        # Filter to only those from the SAME source(s) the agent actually
+        # read. Previews from other books cause cross-source pollution —
+        # the LLM treats them as authoritative and fabricates synthesized
+        # answers attributing claims to books the agent never opened.
+        read_sources = {c.get("source") for c in read_chunks.values()
+                        if c.get("source")}
         preview_only = [
             (cid, c) for cid, c in seen_previews.items()
             if cid not in read_chunks
+            and (not read_sources or c.get("source") in read_sources)
         ]
         if preview_only and len(read_chunks) < 4:
             # Only include if we don't already have enough full chunks
