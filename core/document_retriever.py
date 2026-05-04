@@ -472,6 +472,76 @@ class DocumentRetriever:
         meta = store.get_metadata(filename)
         return bool(meta and meta.get("has_toc"))
 
+    def get_neighboring_chunks(self, chunk_id: str,
+                               before: int = 1, after: int = 1) -> dict | None:
+        """Read pages adjacent to `chunk_id` and return them joined.
+
+        Mirrors how a human flips forward/back from a known location.
+        Walks position_type-aware: ±N pages for PDFs, ±N chapters for
+        EPUBs. Skips out-of-range positions. Joins each page's text in
+        natural order with section markers.
+
+        Returns:
+            {chunk_id, source, text, pages_included: [...], ...} or None
+            if the chunk_id is malformed or yields no chunks.
+        """
+        parsed = self._parse_chunk_id(chunk_id)
+        if not parsed:
+            return None
+        filename, position_type, position, _sub = parsed
+        if position is None:
+            return None
+
+        # Clamp the range so we don't ask for negative pages
+        before = max(0, int(before))
+        after = max(0, int(after))
+        if before == 0 and after == 0:
+            return self.get_chunk_by_id(chunk_id)
+
+        parts: list[tuple[int, dict]] = []
+        for offset in range(-before, after + 1):
+            target_pos = position + offset
+            if target_pos < 0:
+                continue
+            target_id = self._build_chunk_id(
+                filename, target_pos, 0, position_type=position_type)
+            chunk = self.get_chunk_by_id(target_id)
+            if chunk:
+                parts.append((offset, chunk))
+
+        if not parts:
+            return None
+
+        # Build joined text with explicit page markers so the agent can
+        # tell where one page ends and the next begins.
+        lines: list[str] = []
+        pages_included: list[int] = []
+        chapters_included: list[int] = []
+        for offset, chunk in parts:
+            tag = "←" if offset < 0 else ("→" if offset > 0 else "•")
+            if position_type == "chapter":
+                label = f"{tag} chapter {position + offset}"
+                chapters_included.append(position + offset)
+            else:
+                label = f"{tag} page {position + offset + 1}"
+                pages_included.append(position + offset + 1)
+            lines.append(f"\n[{label}]\n{chunk.get('text', '')}")
+        joined = "".join(lines).strip()
+
+        # Use the centerpoint chunk's metadata as the canonical source
+        center = next((c for off, c in parts if off == 0),
+                      parts[0][1])
+        return {
+            "chunk_id": chunk_id,
+            "source": center.get("source", filename),
+            "page": center.get("page"),
+            "chapter": center.get("chapter"),
+            "text": joined,
+            "pages_included": pages_included,
+            "chapters_included": chapters_included,
+            "spans": len(parts),
+        }
+
     def follow_index_reference(self, filename: str, query: str,
                                index_text: str,
                                max_followups: int = 2) -> list[dict]:

@@ -57,7 +57,15 @@ You have these tools. Respond with ONE JSON object per turn — nothing else.
    Fetch the FULL text of a specific chunk (not just the preview). Use this to zoom in on the most promising hit.
    Example: {"tool": "read_page", "args": {"chunk_id": "E-CAT28801S_Bestial_Nature.pdf::p13::s0"}}
 
-6. done(answer_ready)
+6. read_nearby(chunk_id, before=N, after=N)
+   Read pages adjacent to a known location. Use when you've found a
+   chunk that contains your keyword but you suspect the description
+   continues on the next or previous page (spell tables, multi-page
+   stat blocks, sections that span pages). Like flipping forward/back
+   in a book from a known anchor. Default before=1, after=1.
+   Example: {"tool": "read_nearby", "args": {"chunk_id": "Berlin.pdf::p134::s0", "after": 1}}
+
+8. done(answer_ready)
    Declare you have enough content. Exits the loop.
    Example: {"tool": "done", "args": {"answer_ready": true}}
 
@@ -223,7 +231,8 @@ class DeepSearchAgent:
                         # rather than just a page reference.
                         from core.document_index import detect_index_chunk
                         followup_note = ""
-                        if detect_index_chunk(result.get("text", "")):
+                        is_index_page = detect_index_chunk(result.get("text", ""))
+                        if is_index_page:
                             filename = cid.split("::")[0]
                             followups = self._retriever.follow_index_reference(
                                 filename, query, result["text"])
@@ -248,6 +257,32 @@ class DeepSearchAgent:
                                 followup_note = (
                                     f" Index detected — auto-followed to "
                                     f"page(s) {pages_joined}.")
+                        elif self._keyword_near_end_of_chunk(
+                                result.get("text", ""), query):
+                            # Auto-extend on near-miss: the user's keyword
+                            # sits in the last 400 chars of the chunk, which
+                            # usually means the description continues onto
+                            # the next page (multi-page spell entries, etc).
+                            # Fetch +1 and append it like a turned page.
+                            extended = self._retriever.get_neighboring_chunks(
+                                cid, before=0, after=1)
+                            if extended and extended.get("spans", 0) > 1:
+                                # Strip the leading "[• page N]" marker and
+                                # the original page's content; keep just the
+                                # next-page section so we don't duplicate.
+                                ext_text = extended.get("text", "")
+                                next_marker_idx = ext_text.find("[→ page")
+                                if next_marker_idx >= 0:
+                                    extra = ext_text[next_marker_idx:]
+                                    result["text"] += (
+                                        f"\n\n[AUTO-EXTENDED — keyword near "
+                                        f"page boundary, continuing]\n{extra}"
+                                    )
+                                    pages = extended.get("pages_included") or []
+                                    if len(pages) >= 2:
+                                        followup_note = (
+                                            f" Auto-extended to page "
+                                            f"{pages[-1]}.")
 
                         read_chunks[cid] = result
                         joined = result.get("sub_chunks_joined", 1)
@@ -262,6 +297,30 @@ class DeepSearchAgent:
                                    f"call done.")
                     else:
                         summary = f"Chunk {cid} not found."
+            elif tool == "read_nearby":
+                cid = args.get("chunk_id", "")
+                before = int(args.get("before", 1))
+                after = int(args.get("after", 1))
+                # Same dedup logic as read_page — page-prefix based
+                page_prefix = cid.rsplit("::s", 1)[0] if "::s" in cid else cid
+                result = self._tool_read_nearby(cid, before=before, after=after)
+                if result:
+                    read_chunks[cid] = result
+                    pages = result.get("pages_included") or []
+                    chapters = result.get("chapters_included") or []
+                    span_label = (
+                        f"pages {pages[0]}-{pages[-1]}" if len(pages) > 1
+                        else (f"chapters {chapters[0]}-{chapters[-1]}"
+                              if len(chapters) > 1 else page_prefix)
+                    )
+                    summary = (
+                        f"Read {result.get('spans', 0)} adjacent chunk(s) "
+                        f"({len(result.get('text', ''))} chars covering "
+                        f"{span_label}) appended to accumulated chunks. "
+                        f"You now have {len(read_chunks)} full page(s)."
+                    )
+                else:
+                    summary = f"Could not resolve {cid} for read_nearby."
             else:
                 summary = f"Unknown tool: {tool}"
 
@@ -284,6 +343,33 @@ class DeepSearchAgent:
         # Format accumulated chunks for final RAG injection
         formatted = self._format_final_context(filtered_read, seen_previews)
         return formatted, history
+
+    @staticmethod
+    def _keyword_near_end_of_chunk(text: str, query: str,
+                                   window: int = 400) -> bool:
+        """Is a query keyword sitting in the last `window` chars of `text`?
+
+        When a relevant heading or term appears at the end of an extracted
+        chunk, the description usually continues onto the next page. This
+        triggers the auto-extend behavior so the agent doesn't have to
+        realize "the answer was cut off" and ask for the next page itself.
+        """
+        if not text or not query:
+            return False
+        _STOP = {"what", "when", "where", "which", "who", "how", "why",
+                 "the", "a", "an", "is", "are", "was", "were",
+                 "of", "in", "on", "at", "to", "for", "with",
+                 "and", "or", "but", "as", "if",
+                 "tell", "about", "explain", "describe", "show"}
+        words = re.findall(r"[a-zA-Z][\w'-]*", query.lower())
+        keywords = [w for w in words if len(w) >= 4 and w not in _STOP]
+        if not keywords:
+            return False
+        # Also include compound concat for 2-3 word queries
+        if 2 <= len(keywords) <= 3:
+            keywords.append("".join(keywords))
+        end = text[-window:].lower()
+        return any(kw in end for kw in keywords)
 
     @staticmethod
     def _filter_by_keywords(query: str, chunks: dict[str, dict]) -> dict[str, dict]:
@@ -347,6 +433,11 @@ class DeepSearchAgent:
 
     def _tool_read_page(self, chunk_id: str) -> dict | None:
         return self._retriever.get_chunk_by_id(chunk_id)
+
+    def _tool_read_nearby(self, chunk_id: str,
+                          before: int = 1, after: int = 1) -> dict | None:
+        return self._retriever.get_neighboring_chunks(
+            chunk_id, before=before, after=after)
 
     # ── LLM interaction ───────────────────────────────────────────────────
 
