@@ -61,28 +61,38 @@ You have these tools. Respond with ONE JSON object per turn — nothing else.
    Declare you have enough content. Exits the loop.
    Example: {"tool": "done", "args": {"answer_ready": true}}
 
-STRATEGY (IMPORTANT — follow this order):
-1. If the user names a book (e.g. "in Shadowrun Berlin Edition", "in
-   Schneier's Applied Cryptography"), call list_sources first to find the
-   exact filename and check has_toc.
-2. If has_toc is true and the question names a specific entity, person,
-   place, spell, critter, rule, etc. — try lookup_in_toc FIRST. The TOC
-   gives you the page the author chose to put the content on. Read that
-   page directly. This is faster and more accurate than search.
-3. If lookup_in_toc returns nothing useful AND the user named a book,
-   use filter_source on that book — NEVER use plain search when you
-   already know which book to look in. Search is for when you don't
-   know which book has the answer.
-4. When calling search/filter_source, query for the SUBJECT only — do
-   not include the book name in the query string. Book filtering is
-   handled by filter_source's filename argument, not the query text.
-   GOOD: filter_source(filename="Berlin.pdf", query="mana bolt")
-   BAD: search(query="mana bolt shadowrun berlin edition")
-5. After reading a page, evaluate what you have. If you have stats,
-   numbers, requirements, powers → call done. If the page was overview
-   only → try lookup_in_toc with a more specific term, or search for
-   the missing detail.
-6. Do NOT blindly read every result. Read → evaluate → decide.
+STRATEGY (IMPORTANT — read carefully and pick the right branch):
+
+A) USER NAMES A SPECIFIC BOOK (e.g. "in Shadowrun Berlin Edition", "in
+   Schneier's Applied Cryptography"):
+   1. Call list_sources to find the exact filename and check has_toc.
+   2. If has_toc is true → try lookup_in_toc FIRST. The TOC gives you
+      the page the author chose to put the content on. Read that page
+      directly. This is faster and more accurate than search.
+   3. If lookup_in_toc returns nothing useful, use filter_source on
+      that book — NEVER use plain search when you already know which
+      book to look in.
+
+B) USER DOES NOT NAME A SPECIFIC BOOK (e.g. "what is a Shadowrun mana
+   bolt", "what is steganography"):
+   1. Call search FIRST (global, across all books). The chunk_ids in
+      the result reveal which book(s) have content for the query.
+      Pick the book with the highest kw_score (keyword match).
+   2. THEN filter_source or lookup_in_toc on that book to drill in.
+   3. Do NOT guess a book from list_sources without seeing search
+      results — your guess will often be wrong (e.g. picking a
+      critter book for a spell-rules question).
+
+C) ALWAYS, REGARDLESS OF BRANCH:
+   - When calling search/filter_source, query for the SUBJECT only —
+     do not include book/series names in the query string. Book
+     filtering is handled by filter_source's filename argument.
+     GOOD: filter_source(filename="Berlin.pdf", query="mana bolt")
+     BAD: search(query="mana bolt shadowrun berlin edition")
+   - After reading a page, evaluate. Stats/numbers/rules → call done.
+     Overview only → search for the missing detail or lookup_in_toc
+     with a more specific term.
+   - Do NOT blindly read every result. Read → evaluate → decide.
 
 RULES:
 - Call done as soon as you have specific stats/numbers/rules that answer
