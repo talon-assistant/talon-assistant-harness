@@ -726,7 +726,7 @@ class JobSearchTalent(BaseTalent):
             )
 
         # Read resume
-        resume_path = Path.home() / "OneDrive" / "Documents" / "resume_master.md"
+        resume_path = Path.home() / "OneDrive" / "Documents" / "resume_bullet_library.md"
         try:
             resume_text = resume_path.read_text(encoding="utf-8")
         except Exception as e:
@@ -2969,7 +2969,7 @@ class JobSearchTalent(BaseTalent):
         persists it back to the DB so downstream steps (prepare materials,
         cover letter) can reuse it without another Chrome launch.
         """
-        resume_path = Path.home() / "OneDrive" / "Documents" / "resume_master.md"
+        resume_path = Path.home() / "OneDrive" / "Documents" / "resume_bullet_library.md"
 
         # Read resume content directly so Claude doesn't need file access
         try:
