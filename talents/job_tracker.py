@@ -180,6 +180,20 @@ class _DB:
                     "ALTER TABLE applications "
                     "ADD COLUMN connections_at_co TEXT DEFAULT ''"
                 )
+            if "archived_at" not in cols:
+                conn.execute(
+                    "ALTER TABLE applications "
+                    "ADD COLUMN archived_at TEXT"
+                )
+                # Grace backfill: any rows that were already archived
+                # before this column existed get stamped NOW so they
+                # have a fresh 30-day clock instead of being instantly
+                # eligible for expiry.
+                conn.execute(
+                    "UPDATE applications "
+                    "SET archived_at = datetime('now') "
+                    "WHERE archived = 1 AND archived_at IS NULL"
+                )
 
     # -- applications --
 
@@ -330,9 +344,99 @@ class _DB:
     def archive(self, app_id: int) -> bool:
         with self._connect() as conn:
             cur = conn.execute(
-                "UPDATE applications SET archived = 1 WHERE id = ?", (app_id,)
+                "UPDATE applications "
+                "SET archived = 1, archived_at = datetime('now') "
+                "WHERE id = ?",
+                (app_id,)
             )
             return cur.rowcount > 0
+
+    def unarchive(self, app_id: int) -> bool:
+        """Restore an archived application (clears archived_at)."""
+        with self._connect() as conn:
+            cur = conn.execute(
+                "UPDATE applications "
+                "SET archived = 0, archived_at = NULL "
+                "WHERE id = ?",
+                (app_id,)
+            )
+            return cur.rowcount > 0
+
+    def expire_old_archives(
+        self, days: int = 30,
+        audit_log_path: str | None = None,
+    ) -> dict:
+        """Hard-delete archived applications older than `days`.
+
+        Args:
+            days:           Age threshold. Rows with archived_at older
+                            than this are removed.
+            audit_log_path: If set, append a CSV row per deleted entry
+                            so the user can recover company/position
+                            info if they ever wonder what was purged.
+
+        Returns:
+            {expired: int, audit_path: str | None}
+        """
+        if days <= 0:
+            return {"expired": 0, "audit_path": None}
+
+        with self._connect() as conn:
+            # Fetch the rows we're about to delete so we can audit-log
+            # and clean up follow-ups in the same transaction.
+            rows = conn.execute(
+                "SELECT id, company, position, source, date_found, "
+                "       date_applied, archived_at "
+                "FROM applications "
+                "WHERE archived = 1 "
+                "  AND archived_at IS NOT NULL "
+                "  AND archived_at < datetime('now', ?)",
+                (f"-{int(days)} days",),
+            ).fetchall()
+            if not rows:
+                return {"expired": 0, "audit_path": None}
+
+            ids = [r["id"] for r in rows]
+            placeholders = ",".join("?" * len(ids))
+            conn.execute(
+                f"DELETE FROM follow_ups WHERE application_id IN ({placeholders})",
+                ids,
+            )
+            conn.execute(
+                f"DELETE FROM applications WHERE id IN ({placeholders})",
+                ids,
+            )
+
+        # Audit log written outside the DB transaction so a write failure
+        # doesn't roll back the cleanup itself.
+        if audit_log_path and rows:
+            try:
+                import csv
+                from datetime import datetime as _dt
+                exists = os.path.exists(audit_log_path)
+                with open(audit_log_path, "a", newline="",
+                          encoding="utf-8") as f:
+                    w = csv.writer(f)
+                    if not exists:
+                        w.writerow([
+                            "expired_at", "id", "company", "position",
+                            "source", "date_found", "date_applied",
+                            "archived_at",
+                        ])
+                    now_iso = _dt.now().isoformat(timespec="seconds")
+                    for r in rows:
+                        w.writerow([
+                            now_iso, r["id"], r["company"], r["position"],
+                            r["source"] or "", r["date_found"] or "",
+                            r["date_applied"] or "", r["archived_at"],
+                        ])
+            except Exception as exc:
+                log.warning(
+                    f"[JobTracker] Audit log write failed "
+                    f"({audit_log_path}): {exc}"
+                )
+
+        return {"expired": len(rows), "audit_path": audit_log_path}
 
     def hard_delete(self, app_id: int) -> bool:
         """Permanently delete an application row and its follow-ups."""
@@ -480,6 +584,27 @@ class JobTrackerTalent(BaseTalent):
         except Exception as e:
             log.error(f"[JobTracker] Failed to open database: {e}")
             self._db = None
+            return
+
+        # Auto-expire archived applications older than the configured
+        # retention window. Keeps the inbox table small so the UI stays
+        # snappy at scale. 0 disables; default 30 days.
+        retention_days = int(self.talent_config.get(
+            "archive_retention_days", 30))
+        if retention_days > 0:
+            audit_path = os.path.join(
+                os.path.dirname(db_path), "job_archive_purge.csv")
+            try:
+                result = self._db.expire_old_archives(
+                    days=retention_days, audit_log_path=audit_path)
+                if result.get("expired", 0) > 0:
+                    log.info(
+                        f"[JobTracker] Auto-expired {result['expired']} "
+                        f"archived application(s) older than "
+                        f"{retention_days} days. Audit: {audit_path}"
+                    )
+            except Exception as exc:
+                log.warning(f"[JobTracker] Archive cleanup failed: {exc}")
 
     @property
     def routing_available(self) -> bool:
@@ -495,6 +620,18 @@ class JobTrackerTalent(BaseTalent):
                     "label": "Database Path",
                     "type": "string",
                     "default": os.path.join(_data_dir(), "job_tracker.db"),
+                },
+                {
+                    "key": "archive_retention_days",
+                    "label": "Archive Retention (days)",
+                    "type": "int",
+                    "default": 30,
+                    "help": (
+                        "Auto-purge archived applications older than this "
+                        "many days on Talon startup. 0 disables. Removed "
+                        "rows are appended to job_archive_purge.csv next "
+                        "to the database file for audit/recovery."
+                    ),
                 },
             ]
         }

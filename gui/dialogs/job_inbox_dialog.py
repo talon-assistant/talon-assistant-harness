@@ -250,12 +250,21 @@ class JobInboxDialog(QDialog):
         refresh_btn = QPushButton("Refresh")
         refresh_btn.clicked.connect(self.refresh)
 
+        cleanup_btn = QPushButton("Cleanup")
+        cleanup_btn.setToolTip(
+            "Hard-delete archived applications older than the configured "
+            "retention window. Removed rows are appended to "
+            "job_archive_purge.csv next to the database for recovery."
+        )
+        cleanup_btn.clicked.connect(self._on_cleanup_clicked)
+
         filter_box.addWidget(self._search_input, stretch=2)
         filter_box.addWidget(self._status_filter)
         filter_box.addWidget(self._source_filter)
         filter_box.addWidget(self._min_fit)
         filter_box.addWidget(self._show_archived)
         filter_box.addWidget(refresh_btn)
+        filter_box.addWidget(cleanup_btn)
         layout.addLayout(filter_box)
 
         # ── Table ────────────────────────────────────────────────────
@@ -565,12 +574,78 @@ class JobInboxDialog(QDialog):
         self._detail.setPlainText("\n".join(parts) if parts else
                                   "(No fit analysis or JD stored yet.)")
 
+    def _on_cleanup_clicked(self) -> None:
+        """Manually run archive expiry, with confirmation + count feedback."""
+        # Pull the configured retention window from the live talent if
+        # available, falling back to 30 days otherwise.
+        retention_days = 30
+        try:
+            talent = self._job_search_talent()
+            tracker = next(
+                (t for t in (getattr(self._assistant, "talents", None) or [])
+                 if getattr(t, "name", "") == "job_tracker"),
+                None,
+            )
+            if tracker is not None:
+                retention_days = int(tracker.talent_config.get(
+                    "archive_retention_days", 30))
+        except Exception:
+            pass
+        if retention_days <= 0:
+            QMessageBox.information(
+                self, "Cleanup",
+                "Archive retention is disabled (set to 0). "
+                "Configure a positive day count to use cleanup."
+            )
+            return
+
+        resp = QMessageBox.question(
+            self, "Run cleanup?",
+            f"Permanently delete archived applications older than "
+            f"{retention_days} days?\n\n"
+            f"Removed rows will be appended to job_archive_purge.csv "
+            f"in the data directory for recovery.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if resp != QMessageBox.StandardButton.Yes:
+            return
+
+        try:
+            db = self._db()
+            audit_path = os.path.join(
+                os.path.dirname(db.db_path), "job_archive_purge.csv")
+            result = db.expire_old_archives(
+                days=retention_days, audit_log_path=audit_path)
+        except Exception as exc:
+            QMessageBox.critical(
+                self, "Cleanup failed", f"Could not run cleanup:\n\n{exc}"
+            )
+            return
+
+        n = int(result.get("expired", 0))
+        if n == 0:
+            QMessageBox.information(
+                self, "Cleanup", "No archived rows were old enough to purge."
+            )
+        else:
+            QMessageBox.information(
+                self, "Cleanup",
+                f"Purged {n} archived application(s).\n\n"
+                f"Audit log: {audit_path}"
+            )
+            self.refresh()
+
     def _on_status_changed(self, app_id: int, new_status: str) -> None:
         try:
             db = self._db()
             if new_status == "archived":
                 db.archive(app_id)
             else:
+                # If the row is currently archived, restore it first —
+                # update_application has a WHERE archived=0 guard so it
+                # silently skips archived rows.
+                db.unarchive(app_id)
                 fields: dict[str, Any] = {"status": new_status}
                 if new_status == "applied":
                     fields["date_applied"] = date.today().isoformat()
