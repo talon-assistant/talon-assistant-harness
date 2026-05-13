@@ -1394,8 +1394,27 @@ class JobTrackerTalent(BaseTalent):
             finally:
                 driver.quit()
         except Exception as e:
-            log.warning(f"[JobTracker] LinkedIn 'I'm Interested' failed "
-                       f"for {company}: {e}")
+            # Selenium's WebDriverException stringifies with the whole
+            # native stack trace — usually 20+ lines of chromedriver
+            # symbol addresses that are useless for a best-effort
+            # background action. Trim to the first line and special-
+            # case the common session-startup failure so the log stays
+            # readable.
+            err_text = str(e)
+            short = err_text.split("\n", 1)[0].split(";", 1)[0].strip()
+            if "session not created" in err_text.lower():
+                log.warning(
+                    f"[JobTracker] LinkedIn 'I'm Interested' skipped "
+                    f"for {company} — Chrome session failed to start "
+                    f"(profile conflict, version mismatch, or memory "
+                    f"pressure). Status update succeeded; only the "
+                    f"auto-click was skipped."
+                )
+            else:
+                log.warning(
+                    f"[JobTracker] LinkedIn 'I'm Interested' failed "
+                    f"for {company}: {short}"
+                )
         finally:
             JobTrackerTalent._linkedin_lock.release()
 
