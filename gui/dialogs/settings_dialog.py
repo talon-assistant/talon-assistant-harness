@@ -816,6 +816,15 @@ class SettingsDialog(QDialog):
         self._add_line("documents.directory", form, "Documents Directory",
                        docs.get("directory", "documents"))
 
+        resume = self._original.get("resume", {})
+        self._add_line(
+            "resume.bullet_library_path", form, "Resume Bullet Library",
+            resume.get(
+                "bullet_library_path",
+                "~/OneDrive/Documents/resume_bullet_library.md",
+            ),
+        )
+
         note = QLabel("Changes to memory/embedding settings require an app restart.")
         note.setObjectName("restart_warning")
         form.addRow(note)
