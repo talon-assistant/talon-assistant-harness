@@ -2830,8 +2830,11 @@ class JobSearchTalent(BaseTalent):
     def _parse_simplyhired_card_context(link_el, title: str) -> tuple[str, str]:
         """Walk up from a job link to find company and location text.
 
-        SimplyHired cards have company as a link to /browse-jobs/companies/
-        and location as text containing a comma (city, state pattern).
+        SimplyHired's HTML structure has changed over time. We try
+        several known company-element patterns in order, then fall
+        back to positional text extraction (company is typically the
+        line right after the title on the card, before the location).
+        Location is the line containing a city/state comma or "remote".
         """
         from selenium.webdriver.common.by import By
 
@@ -2846,27 +2849,64 @@ class JobSearchTalent(BaseTalent):
                 if card.tag_name.lower() == "li":
                     break
 
-            # Company: look for link to /browse-jobs/companies/
-            try:
-                company_el = card.find_element(
-                    By.CSS_SELECTOR, 'a[href*="/browse-jobs/companies/"]')
-                company = company_el.text.strip()
-            except Exception:
-                pass
+            # Try a series of selectors for company in order. Whichever
+            # matches first wins. Order from most-specific to least.
+            company_selectors = (
+                'a[href*="/browse-jobs/companies/"]',  # legacy link form
+                '[data-testid="company-name"]',         # current testid
+                '[data-testid="companyName"]',          # alt testid casing
+                'span[data-testid*="company"]',
+                'a[href*="/c/"]',                       # alt company link path
+                '.companyName',                         # class-based legacy
+                '[class*="ompanyName"]',                # case-insensitive
+            )
+            for sel in company_selectors:
+                try:
+                    el = card.find_element(By.CSS_SELECTOR, sel)
+                    text = (el.text or "").strip()
+                    if text and text != title:
+                        company = text
+                        break
+                except Exception:
+                    continue
 
-            # Location: find text with city, state pattern in the card
-            # Exclude the title and company from the search
+            # Card text — used for location and for fallback company.
             card_text = card.text or ""
-            for line in card_text.split("\n"):
-                line = line.strip()
-                if not line or line == title or line == company:
+            lines = [
+                ln.strip() for ln in card_text.split("\n") if ln.strip()
+            ]
+
+            # Location: city/state comma pattern or "remote"
+            for line in lines:
+                if line == title or line == company:
                     continue
                 if line.startswith("$"):
                     continue
-                # City, ST pattern or "Remote"
                 if ("," in line and len(line) < 40) or "remote" in line.lower():
                     location = line
                     break
+
+            # Fallback for company: take the line immediately after the
+            # title, skipping price/salary lines. This catches the case
+            # where SimplyHired renders the company as plain text rather
+            # than a link. Skip if it looks like a location.
+            if not company:
+                title_idx = None
+                for i, line in enumerate(lines):
+                    if line == title:
+                        title_idx = i
+                        break
+                if title_idx is not None:
+                    for j in range(title_idx + 1, min(title_idx + 5, len(lines))):
+                        candidate = lines[j]
+                        if (candidate.startswith("$")
+                                or candidate == location
+                                or "remote" in candidate.lower()
+                                or ("," in candidate and len(candidate) < 40)):
+                            continue
+                        if 1 < len(candidate) < 80:
+                            company = candidate
+                            break
         except Exception:
             pass
 
