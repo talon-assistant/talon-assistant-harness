@@ -193,8 +193,12 @@ class ResumeLibrary:
                 in_bullets = False
                 continue
 
-            # Hyphen bullet
-            m = re.match(r"^-\s+(.*)$", line)
+            # Bullet line — accepts hyphen ("- foo"), numbered ("1. foo"),
+            # or parenthesized ("1) foo") prefixes. The capture group is the
+            # text only; downstream renderers (markdown preview and DOCX)
+            # add their own formatting (markdown "- " prefix or Word bullet
+            # style), so the bullet text is stored without any prefix.
+            m = re.match(r"^(?:-|\d+[.)])\s+(.*)$", line)
             if m:
                 in_bullets = True
                 text = m.group(1).strip()
