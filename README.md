@@ -210,7 +210,7 @@ Each scraper uses a desktop user-agent and standard Selenium WebDriver settings 
 
 ### Flow
 
-1. **Scrape and score:** `job_search` runs every configured search URL, deduplicates by job URL, and calls the LLM to compute a fit score (0–100) against the bullet library at `~/OneDrive/Documents/resume_bullet_library.md`.
+1. **Scrape and score:** `job_search` runs every configured search URL, deduplicates by job URL, and calls the LLM to compute a fit score (0–100) against the bullet library.
 2. **Inbox UI:** the **Job Inbox** dialog shows all postings with fit score, source, status, and per-row actions. Filter by status, source, minimum fit, or full-text search across company / position / location.
 3. **Pipelines per row:** one-click buttons run the "tailored resume" / "cover letter" / "full prep" pipelines, each generating output into a per-application folder `jobappmaterials/{company}_{position}_{date}/`.
 4. **Recon:** for LinkedIn postings, a "Recon" button uses the persistent Chrome profile to find the company's recruiter and first-degree connections, stored as inbox metadata.
@@ -219,7 +219,7 @@ Each scraper uses a desktop user-agent and standard Selenium WebDriver settings 
 
 ### Bullet library format
 
-The bullet library at `resume_bullet_library.md` is a structured markdown file organized by role (chronological), with numbered bullets that the resume/cover-letter generators can pull selectively based on JD match. A "Corrections Ledger" section at the top establishes global facts (titles, dates, metrics) so the LLM doesn't drift across documents.
+The bullet libraryis a structured markdown file organized by role (chronological), with numbered bullets that the resume/cover-letter generators can pull selectively based on JD match. A "Corrections Ledger" section at the top establishes global facts (titles, dates, metrics) so the LLM doesn't drift across documents.
 
 ## Training Pair Harvesting
 
