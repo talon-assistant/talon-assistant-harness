@@ -62,6 +62,50 @@ def _detect_site(url: str) -> str:
     return "unknown"
 
 
+# Tracking / referrer params that don't identify the job. Stripped
+# during canonicalization so dedup doesn't treat the same posting
+# linked from two different campaigns as two different jobs.
+_TRACKING_PARAMS = frozenset({
+    "utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content",
+    "gh_src", "ref", "refid", "ref_src", "source", "referrer",
+    "fbclid", "gclid", "mc_cid", "mc_eid",
+    "trk", "trkcampaign",
+    "lipi", "li_fat_id",
+    "origin", "originalsubdomain",
+})
+
+
+def _canonical_url(url: str) -> str:
+    """Canonical form of a posting URL for dedup.
+
+    Strips known tracking parameters but preserves job-identifying
+    query params (Greenhouse `?for=...&token=...`, Lever, Workday,
+    etc., which put the actual job id in the query string). Lowercases
+    scheme and host, removes trailing slash from path. Empty / invalid
+    URLs round-trip unchanged.
+    """
+    if not url or not url.startswith("http"):
+        return url or ""
+    try:
+        from urllib.parse import urlparse as _urlparse, parse_qsl, urlencode, urlunparse
+        p = _urlparse(url)
+        kept = [
+            (k, v) for k, v in parse_qsl(p.query, keep_blank_values=True)
+            if k.lower() not in _TRACKING_PARAMS
+        ]
+        path = p.path.rstrip("/") or "/"
+        return urlunparse((
+            p.scheme.lower(),
+            p.netloc.lower(),
+            path,
+            "",
+            urlencode(kept),
+            "",
+        ))
+    except Exception:
+        return url
+
+
 def _clean_search_url(url: str) -> str:
     """Strip ephemeral/session params from a search URL."""
     site = _detect_site(url)
@@ -989,12 +1033,17 @@ class JobSearchTalent(BaseTalent):
             "simplyhired": "SimplyHired",
         }.get(site, "Manual")
 
-        # Dedup by bare URL before spinning up Chrome
+        # Dedup by canonical URL before spinning up Chrome.
+        # Naive split("?")[0] collapses ATS systems that put the job
+        # identifier in the query string (Greenhouse embed, Lever,
+        # Workday, etc.) — every posting from the same ATS would dedup
+        # against the first one stored. _canonical_url strips only
+        # known tracking parameters and keeps the rest.
         db_path = os.path.join(tracker_data_dir(), "job_tracker.db")
         db = _DB(db_path)
-        bare_url = url.split("?")[0]
+        canon_url = _canonical_url(url)
         for existing in db.list_all(include_archived=True):
-            if (existing.get("job_url") or "").split("?")[0] == bare_url:
+            if _canonical_url(existing.get("job_url") or "") == canon_url:
                 return {
                     "success": True,
                     "duplicate": True,
