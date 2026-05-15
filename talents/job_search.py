@@ -725,8 +725,9 @@ class JobSearchTalent(BaseTalent):
                 "or 'write a cover letter for OEC'."
             )
 
-        # Read resume
-        resume_path = Path.home() / "OneDrive" / "Documents" / "resume_bullet_library.md"
+        # Read resume — single source of truth via resume_builder helper
+        from core.resume_builder import get_bullet_library_path
+        resume_path = get_bullet_library_path()
         try:
             resume_text = resume_path.read_text(encoding="utf-8")
         except Exception as e:
@@ -2969,7 +2970,8 @@ class JobSearchTalent(BaseTalent):
         persists it back to the DB so downstream steps (prepare materials,
         cover letter) can reuse it without another Chrome launch.
         """
-        resume_path = Path.home() / "OneDrive" / "Documents" / "resume_bullet_library.md"
+        from core.resume_builder import get_bullet_library_path
+        resume_path = get_bullet_library_path()
 
         # Read resume content directly so Claude doesn't need file access
         try:

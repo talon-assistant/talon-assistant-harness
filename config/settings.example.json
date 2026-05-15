@@ -59,6 +59,11 @@
   "documents": {
     "directory": "documents"
   },
+
+  "resume": {
+    "_note": "Source-of-truth bullet library for resume + cover letter generation. ~ expands to the user home directory. Used by both the structured DOCX pipeline (core/resume_builder.py) and the inline-text LLM-context readers in the job_search and job_tracker talents.",
+    "bullet_library_path": "~/OneDrive/Documents/resume_bullet_library.md"
+  },
   "desktop": {
     "pyautogui_pause": 0.5,
     "pyautogui_failsafe": true,

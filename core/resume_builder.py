@@ -26,14 +26,45 @@ from typing import Any
 log = logging.getLogger(__name__)
 
 
-# Default library path (PII, outside repo). Must match the path read by
-# talents/job_search.py and talents/job_tracker.py — the structured
-# parser here and the inline-text reader there both need to be looking
-# at the same source-of-truth bullet library, otherwise resume DOCX
-# generation drifts away from cover-letter / LLM-context generation.
-DEFAULT_LIBRARY_PATH = (
+# Fallback path used when settings.json has no override.
+_FALLBACK_LIBRARY_PATH = (
     Path.home() / "OneDrive" / "Documents" / "resume_bullet_library.md"
 )
+
+
+def get_bullet_library_path() -> Path:
+    """Resolve the bullet library path from config, with fallback.
+
+    Reads `resume.bullet_library_path` from config/settings.json.
+    Supports `~` expansion for home directory references. Falls back
+    to the hardcoded default if config is missing, malformed, or the
+    key isn't set.
+
+    This is the single source of truth. The structured DOCX pipeline
+    (this module's ResumeLibrary) and the inline-text cover-letter
+    readers in talents/job_search.py and talents/job_tracker.py should
+    all call this function so they stay in sync.
+    """
+    import json
+    try:
+        config_path = Path("config/settings.json")
+        if config_path.exists():
+            with open(config_path, encoding="utf-8") as f:
+                cfg = json.load(f)
+            override = cfg.get("resume", {}).get("bullet_library_path")
+            if override:
+                return Path(override).expanduser()
+    except Exception:
+        # Any config-read failure falls back silently — we never want
+        # path resolution to crash the resume pipeline.
+        pass
+    return _FALLBACK_LIBRARY_PATH
+
+
+# Computed at import time. Stays as a module-level constant so existing
+# imports like `from core.resume_builder import DEFAULT_LIBRARY_PATH`
+# still work without each caller having to invoke the function.
+DEFAULT_LIBRARY_PATH = get_bullet_library_path()
 
 # Per-section bullet caps for a 2-page resume targeting leadership roles.
 DEFAULT_CAPS: dict[str, int] = {

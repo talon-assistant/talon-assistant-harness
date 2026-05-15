@@ -1091,8 +1091,9 @@ class JobTrackerTalent(BaseTalent):
                 "or 'write a cover letter for Affirm'"
             )
 
-        # Read resume inline
-        resume_path = Path.home() / "OneDrive" / "Documents" / "resume_bullet_library.md"
+        # Read resume inline — single source of truth via resume_builder helper
+        from core.resume_builder import get_bullet_library_path
+        resume_path = get_bullet_library_path()
         try:
             resume_text = resume_path.read_text(encoding="utf-8")
         except Exception as e:
@@ -2259,13 +2260,14 @@ class JobTrackerTalent(BaseTalent):
         if not app:
             return None
 
+        from core.resume_builder import get_bullet_library_path
         task_id = self.send_to_cowork("resume_tailor", {
             "application_id": app_id,
             "company": app["company"],
             "position": app["position"],
             "job_url": app.get("job_url", ""),
             "job_description": job_description[:5000],
-            "resume_path": "~/OneDrive/Documents/resume_bullet_library.md",
+            "resume_path": str(get_bullet_library_path()),
             "instructions": (
                 "Read the user's master resume from the resume_path. "
                 "Tailor it for this position. Also draft a cover letter. "
