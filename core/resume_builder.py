@@ -3,7 +3,7 @@
 Fabrication-proof design:
     - Bullets are NEVER generated. Only picked by index from the library.
     - Claude CLI returns JSON with selected indices per section.
-    - Library at ~/OneDrive/Desktop/talon-assistant/docs/resumelibrary.md is
+    - Library at ~/OneDrive/Documents/resume_bullet_library.md is
       the single source of truth for content. Read fresh every call.
     - Phase 1 output: markdown preview only. DOCX/PDF come in Phase 2.
 
@@ -26,9 +26,13 @@ from typing import Any
 log = logging.getLogger(__name__)
 
 
-# Default library path (PII, outside repo)
+# Default library path (PII, outside repo). Must match the path read by
+# talents/job_search.py and talents/job_tracker.py — the structured
+# parser here and the inline-text reader there both need to be looking
+# at the same source-of-truth bullet library, otherwise resume DOCX
+# generation drifts away from cover-letter / LLM-context generation.
 DEFAULT_LIBRARY_PATH = (
-    Path.home() / "OneDrive" / "Desktop" / "talon-assistant" / "docs" / "resumelibrary.md"
+    Path.home() / "OneDrive" / "Documents" / "resume_bullet_library.md"
 )
 
 # Per-section bullet caps for a 2-page resume targeting leadership roles.
