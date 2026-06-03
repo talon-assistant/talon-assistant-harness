@@ -26,7 +26,7 @@ log = logging.getLogger(__name__)
 def _load_config():
     config_path = Path("config/settings.json")
     if config_path.exists():
-        with open(config_path) as f:
+        with open(config_path, encoding="utf-8") as f:
             config = json.load(f)
         chroma_path = config.get("memory", {}).get("chroma_path", "data/chroma_db")
     else:

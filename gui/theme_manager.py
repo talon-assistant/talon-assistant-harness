@@ -37,7 +37,7 @@ class ThemeManager(QObject):
         """Read appearance section from settings.json if present."""
         config_path = os.path.join(self._config_dir, "settings.json")
         try:
-            with open(config_path, 'r') as f:
+            with open(config_path, 'r', encoding="utf-8") as f:
                 cfg = json.load(f)
             appearance = cfg.get("appearance", {})
             self._current_theme = appearance.get("theme", "dark")
@@ -71,7 +71,7 @@ class ThemeManager(QObject):
         if not os.path.exists(qss_path):
             return
 
-        with open(qss_path, 'r') as f:
+        with open(qss_path, 'r', encoding="utf-8") as f:
             qss = f.read()
 
         # Scale font-size declarations relative to base

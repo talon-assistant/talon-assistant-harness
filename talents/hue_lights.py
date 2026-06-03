@@ -62,13 +62,13 @@ class HueLightsTalent(BaseTalent):
     def _load_hue_config(self):
         """Load hue_config.json"""
         config_path = os.path.join("config", "hue_config.json")
-        with open(config_path, 'r') as f:
+        with open(config_path, 'r', encoding="utf-8") as f:
             return json.load(f)
 
     def _save_hue_config(self, hue_config):
         """Save hue_config.json"""
         config_path = os.path.join("config", "hue_config.json")
-        with open(config_path, 'w') as f:
+        with open(config_path, 'w', encoding="utf-8") as f:
             json.dump(hue_config, f, indent=2)
 
     @property

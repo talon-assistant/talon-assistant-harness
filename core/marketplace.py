@@ -231,7 +231,7 @@ class MarketplaceClient:
         try:
             if not os.path.exists(self._cache_path):
                 return None
-            with open(self._cache_path, 'r') as f:
+            with open(self._cache_path, 'r', encoding="utf-8") as f:
                 cached = json.load(f)
             cached_at = cached.get("cached_at", 0)
             if not ignore_ttl and (time.time() - cached_at) > CACHE_TTL:
@@ -243,7 +243,7 @@ class MarketplaceClient:
     def _save_disk_cache(self, talents):
         """Save catalog to disk cache."""
         try:
-            with open(self._cache_path, 'w') as f:
+            with open(self._cache_path, 'w', encoding="utf-8") as f:
                 json.dump({"cached_at": time.time(), "talents": talents}, f)
         except Exception as e:
             log.error(f"[Marketplace] Cache save error: {e}")

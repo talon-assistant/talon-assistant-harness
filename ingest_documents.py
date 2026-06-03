@@ -124,7 +124,7 @@ class DocumentIngester:
         config_path = Path("config/settings.json")
         embed_model = "BAAI/bge-base-en-v1.5"
         if config_path.exists():
-            with open(config_path) as f:
+            with open(config_path, encoding="utf-8") as f:
                 config = json.load(f)
             documents_dir = documents_dir or config.get("documents", {}).get("directory", "documents")
             chroma_path = chroma_path or config.get("memory", {}).get("chroma_path", "data/chroma_db")
@@ -1114,7 +1114,7 @@ if __name__ == "__main__":
 
             cfg_path = Path("config/settings.json")
             if cfg_path.exists():
-                with open(cfg_path) as f:
+                with open(cfg_path, encoding="utf-8") as f:
                     cfg = json.load(f)
             else:
                 # Sensible defaults if settings.json is missing

@@ -321,7 +321,7 @@ class AssistantBridge(QObject):
         # Persist to config/talents.json
         config_path = os.path.join(self.config_dir, "talents.json")
         try:
-            with open(config_path, 'r') as f:
+            with open(config_path, 'r', encoding="utf-8") as f:
                 talents_cfg = json.load(f)
         except (FileNotFoundError, json.JSONDecodeError):
             talents_cfg = {}
@@ -330,7 +330,7 @@ class AssistantBridge(QObject):
             talents_cfg[talent_name] = {}
         talents_cfg[talent_name]["enabled"] = enabled
 
-        with open(config_path, 'w') as f:
+        with open(config_path, 'w', encoding="utf-8") as f:
             json.dump(talents_cfg, f, indent=2)
 
         self.talent_toggled.emit(talent_name, enabled)
@@ -425,12 +425,12 @@ class AssistantBridge(QObject):
                 # Persist to talents.json
                 config_path = os.path.join(self.config_dir, "talents.json")
                 try:
-                    with open(config_path, 'r') as f:
+                    with open(config_path, 'r', encoding="utf-8") as f:
                         talents_cfg = json.load(f)
                 except (FileNotFoundError, json.JSONDecodeError):
                     talents_cfg = {}
                 talents_cfg[instance.name] = {"enabled": True}
-                with open(config_path, 'w') as f:
+                with open(config_path, 'w', encoding="utf-8") as f:
                     json.dump(talents_cfg, f, indent=2)
 
                 self._emit_full_talent_list()
@@ -491,7 +491,7 @@ class AssistantBridge(QObject):
         # Persist sanitised config to config/talents.json
         config_path = os.path.join(self.config_dir, "talents.json")
         try:
-            with open(config_path, 'r') as f:
+            with open(config_path, 'r', encoding="utf-8") as f:
                 talents_cfg = json.load(f)
         except (FileNotFoundError, json.JSONDecodeError):
             talents_cfg = {}
@@ -500,7 +500,7 @@ class AssistantBridge(QObject):
             talents_cfg[talent_name] = {}
         talents_cfg[talent_name]["config"] = disk_config
 
-        with open(config_path, 'w') as f:
+        with open(config_path, 'w', encoding="utf-8") as f:
             json.dump(talents_cfg, f, indent=2)
 
     def uninstall_talent(self, talent_name):
@@ -520,14 +520,14 @@ class AssistantBridge(QObject):
         # Remove from talents.json
         config_path = os.path.join(self.config_dir, "talents.json")
         try:
-            with open(config_path, 'r') as f:
+            with open(config_path, 'r', encoding="utf-8") as f:
                 talents_cfg = json.load(f)
         except (FileNotFoundError, json.JSONDecodeError):
             talents_cfg = {}
 
         if talent_name in talents_cfg:
             del talents_cfg[talent_name]
-            with open(config_path, 'w') as f:
+            with open(config_path, 'w', encoding="utf-8") as f:
                 json.dump(talents_cfg, f, indent=2)
 
         # Refresh sidebar

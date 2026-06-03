@@ -424,7 +424,7 @@ class ReminderTalent(BaseTalent):
         """Load persisted reminders from disk and re-arm those still in the future."""
         try:
             if os.path.exists(self._REMINDERS_FILE):
-                with open(self._REMINDERS_FILE, 'r') as f:
+                with open(self._REMINDERS_FILE, 'r', encoding="utf-8") as f:
                     saved = json.load(f)
 
                 now = datetime.now()
@@ -453,7 +453,7 @@ class ReminderTalent(BaseTalent):
     def _save_reminders(self):
         """Persist active reminders to disk (call while holding self._lock)."""
         try:
-            with open(self._REMINDERS_FILE, 'w') as f:
+            with open(self._REMINDERS_FILE, 'w', encoding="utf-8") as f:
                 json.dump(self._reminders, f, indent=2)
         except Exception as e:
             log.error(f"[Reminder] Error saving reminders: {e}")

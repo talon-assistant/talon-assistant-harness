@@ -327,7 +327,7 @@ class TalonAssistant:
         defaults = {}
         example_path = os.path.join(config_dir, "settings.example.json")
         try:
-            with open(example_path, 'r') as f:
+            with open(example_path, 'r', encoding="utf-8") as f:
                 defaults = json.load(f)
         except (FileNotFoundError, json.JSONDecodeError):
             pass
@@ -336,7 +336,7 @@ class TalonAssistant:
         user_settings = {}
         config_path = os.path.join(config_dir, "settings.json")
         try:
-            with open(config_path, 'r') as f:
+            with open(config_path, 'r', encoding="utf-8") as f:
                 user_settings = json.load(f)
         except (FileNotFoundError, json.JSONDecodeError):
             pass
@@ -346,7 +346,7 @@ class TalonAssistant:
         # news_digest.json — dedicated feed config; overrides any inline section
         nd_path = os.path.join(config_dir, "news_digest.json")
         if os.path.exists(nd_path):
-            with open(nd_path, 'r') as f:
+            with open(nd_path, 'r', encoding="utf-8") as f:
                 config["news_digest"] = json.load(f)
 
         return config
@@ -355,7 +355,7 @@ class TalonAssistant:
         """Load talents.json"""
         config_path = os.path.join(config_dir, "talents.json")
         try:
-            with open(config_path, 'r') as f:
+            with open(config_path, 'r', encoding="utf-8") as f:
                 return json.load(f)
         except FileNotFoundError:
             return {}
@@ -449,7 +449,7 @@ class TalonAssistant:
 
                     # Apply any per-talent config already in talents.json
                     try:
-                        with open(os.path.join("config", "talents.json")) as _f:
+                        with open(os.path.join("config", "talents.json"), encoding="utf-8") as _f:
                             _tcfg = json.load(_f)
                     except (FileNotFoundError, json.JSONDecodeError):
                         _tcfg = {}
@@ -464,13 +464,13 @@ class TalonAssistant:
                     # Persist enabled state to talents.json
                     config_path = os.path.join("config", "talents.json")
                     try:
-                        with open(config_path) as _f:
+                        with open(config_path, encoding="utf-8") as _f:
                             talents_cfg = json.load(_f)
                     except (FileNotFoundError, json.JSONDecodeError):
                         talents_cfg = {}
                     if instance.name not in talents_cfg:
                         talents_cfg[instance.name] = {"enabled": True}
-                    with open(config_path, "w") as _f:
+                    with open(config_path, "w", encoding="utf-8") as _f:
                         json.dump(talents_cfg, _f, indent=2)
 
                     log.info(f"[TalentBuilder] Loaded: {instance.name} "
@@ -531,7 +531,7 @@ class TalonAssistant:
 
         config_path = os.path.join(config_dir, "talents.json")
         try:
-            with open(config_path, 'r') as f:
+            with open(config_path, 'r', encoding="utf-8") as f:
                 talents_cfg = json.load(f)
         except (FileNotFoundError, json.JSONDecodeError):
             return
@@ -562,7 +562,7 @@ class TalonAssistant:
                               f"keeping plaintext for {talent.name}.{key}")
 
         if dirty:
-            with open(config_path, 'w') as f:
+            with open(config_path, 'w', encoding="utf-8") as f:
                 json.dump(talents_cfg, f, indent=2)
 
     def _migrate_legacy_credentials(self):

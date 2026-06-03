@@ -34,12 +34,12 @@ BATCH = 500   # documents per ChromaDB batch
 
 def load_settings() -> dict:
     if SETTINGS_PATH.exists():
-        with open(SETTINGS_PATH) as f:
+        with open(SETTINGS_PATH, encoding="utf-8") as f:
             return json.load(f)
     # Fall back to example config for defaults only
     ex = Path("config/settings.example.json")
     if ex.exists():
-        with open(ex) as f:
+        with open(ex, encoding="utf-8") as f:
             return json.load(f)
     return {}
 

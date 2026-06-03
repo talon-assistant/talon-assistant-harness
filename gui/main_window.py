@@ -416,13 +416,13 @@ class MainWindow(QMainWindow):
         # which previously caused those values to be clobbered on save.
         defaults = {}
         try:
-            with open(example_path, 'r') as f:
+            with open(example_path, 'r', encoding="utf-8") as f:
                 defaults = json.load(f)
         except (FileNotFoundError, json.JSONDecodeError):
             pass
 
         try:
-            with open(config_path, 'r') as f:
+            with open(config_path, 'r', encoding="utf-8") as f:
                 user = json.load(f)
         except (FileNotFoundError, json.JSONDecodeError):
             user = {}
@@ -441,7 +441,7 @@ class MainWindow(QMainWindow):
 
         config_path = os.path.join(self.config_dir, "settings.json")
         try:
-            with open(config_path, 'r') as f:
+            with open(config_path, 'r', encoding="utf-8") as f:
                 full_settings = json.load(f)
         except (FileNotFoundError, json.JSONDecodeError):
             full_settings = {}
@@ -911,7 +911,7 @@ class MainWindow(QMainWindow):
         """Start the global hotkey listener for Task Assist."""
         try:
             config_path = os.path.join(self.config_dir, "settings.json")
-            with open(config_path, 'r') as f:
+            with open(config_path, 'r', encoding="utf-8") as f:
                 settings = json.load(f)
         except Exception:
             settings = {}

@@ -45,7 +45,7 @@ def _acquire_lock(data_dir="data"):
 
     try:
         # On Windows, opening a file exclusively prevents other processes
-        _lock_file = open(lock_path, 'w')
+        _lock_file = open(lock_path, 'w', encoding="utf-8")
         if sys.platform == 'win32':
             import msvcrt
             msvcrt.locking(_lock_file.fileno(), msvcrt.LK_NBLCK, 1)
@@ -82,7 +82,7 @@ def _load_settings(config_dir="config"):
     defaults = {}
     example_path = os.path.join(config_dir, "settings.example.json")
     try:
-        with open(example_path, 'r') as f:
+        with open(example_path, 'r', encoding="utf-8") as f:
             defaults = json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
         pass
@@ -91,7 +91,7 @@ def _load_settings(config_dir="config"):
     user_settings = {}
     config_path = os.path.join(config_dir, "settings.json")
     try:
-        with open(config_path, 'r') as f:
+        with open(config_path, 'r', encoding="utf-8") as f:
             raw = f.read()
         user_settings = json.loads(raw)
         # Write a dated backup so the pre-merge original is always recoverable
