@@ -24,6 +24,22 @@ import logging
 log = logging.getLogger(__name__)
 
 
+def _safe_extract_zip(zf: zipfile.ZipFile, dest: Path) -> None:
+    """Extract a zip, rejecting any member that escapes ``dest`` (zip-slip).
+
+    Modern CPython's extractall already strips leading slashes and ``..``,
+    but we validate explicitly so a crafted or tampered archive can never
+    write outside the target directory regardless of interpreter version.
+    """
+    dest = dest.resolve()
+    prefix = str(dest) + os.sep
+    for member in zf.namelist():
+        target = (dest / member).resolve()
+        if target != dest and not str(target).startswith(prefix):
+            raise RuntimeError(f"Unsafe path in archive blocked: {member!r}")
+    zf.extractall(dest)
+
+
 class LLMServerManager:
     """Manages the lifecycle of a local llama-server process.
 
@@ -61,6 +77,8 @@ class LLMServerManager:
         self.lora_path = config.get("lora_path", "")
 
         self._process: subprocess.Popen | None = None
+        self._log_file = None            # open write handle for server stdout/stderr
+        self._log_path: Path | None = None
         self._status = "stopped"  # stopped | starting | running | error
         self._status_lock = threading.Lock()
         self._health_thread: threading.Thread | None = None
@@ -212,7 +230,7 @@ class LLMServerManager:
         # 4. Extract and find llama-server.exe
         try:
             with zipfile.ZipFile(zip_path, "r") as zf:
-                zf.extractall(bin_dir)
+                _safe_extract_zip(zf, bin_dir)
         except Exception as e:
             zip_path.unlink(missing_ok=True)
             raise RuntimeError(f"Extraction failed: {e}")
@@ -344,7 +362,7 @@ class LLMServerManager:
                             progress_cb(downloaded, total)
 
             with zipfile.ZipFile(zip_path, "r") as zf:
-                zf.extractall(bin_dir)
+                _safe_extract_zip(zf, bin_dir)
 
             # Flatten nested folder if present
             for root, dirs, files in os.walk(bin_dir):
@@ -414,6 +432,20 @@ class LLMServerManager:
         if sys.platform == "win32":
             env["PATH"] = bin_abs + os.pathsep + env.get("PATH", "")
 
+        # Route stdout+stderr to a log file rather than PIPE. llama-server is
+        # long-running and chatty; with PIPE and no reader draining it, the OS
+        # pipe buffer (~64KB) fills and the server blocks on write — a hang.
+        # A log file never backpressures and gives us the tail to report on a
+        # crash.
+        try:
+            log_path = Path(self.bin_path) / "llama-server.log"
+            self._log_path = log_path
+            self._log_file = open(log_path, "wb")
+        except Exception as e:
+            log.warning(f"[LLMServer] Could not open server log file: {e}")
+            self._log_file = None
+            self._log_path = None
+
         try:
             creation_flags = 0
             if sys.platform == "win32":
@@ -421,12 +453,13 @@ class LLMServerManager:
 
             self._process = subprocess.Popen(
                 cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                stdout=(self._log_file or subprocess.DEVNULL),
+                stderr=subprocess.STDOUT,
                 env=env,
                 creationflags=creation_flags,
             )
         except Exception as e:
+            self._close_log_file()
             self.status = "error"
             if self.on_error:
                 self.on_error(f"Failed to start server: {e}")
@@ -437,9 +470,29 @@ class LLMServerManager:
             target=self._poll_health, daemon=True)
         self._health_thread.start()
 
+    def _close_log_file(self) -> None:
+        """Close the server log write handle, if open."""
+        if self._log_file is not None:
+            try:
+                self._log_file.close()
+            except Exception:
+                pass
+            self._log_file = None
+
+    def _read_log_tail(self, limit: int = 1500) -> str:
+        """Return the tail of the server log for crash diagnostics."""
+        if not self._log_path:
+            return ""
+        try:
+            data = Path(self._log_path).read_bytes()
+            return data[-limit:].decode(errors="replace")
+        except Exception:
+            return ""
+
     def stop(self):
         """Stop the llama-server subprocess."""
         if self._process is None:
+            self._close_log_file()
             self.status = "stopped"
             return
 
@@ -455,6 +508,7 @@ class LLMServerManager:
             log.error(f"[LLMServer] Error stopping: {e}")
         finally:
             self._process = None
+            self._close_log_file()
             self.status = "stopped"
 
     def is_running(self) -> bool:
@@ -477,13 +531,8 @@ class LLMServerManager:
         while time.time() < deadline:
             # Check if process died
             if self._process is None or self._process.poll() is not None:
-                stderr_out = ""
-                if self._process and self._process.stderr:
-                    try:
-                        stderr_out = self._process.stderr.read().decode(
-                            errors="replace")[-500:]
-                    except Exception:
-                        pass
+                self._close_log_file()
+                stderr_out = self._read_log_tail(500)
                 self.status = "error"
                 if self.on_error:
                     self.on_error(
@@ -524,6 +573,8 @@ class LLMServerManager:
         self.threads = config.get("threads", self.threads)
         self.bin_path = config.get("bin_path", self.bin_path)
         self.extra_args = config.get("extra_args", self.extra_args)
+        self.mmproj_path = config.get("mmproj_path", self.mmproj_path)
+        self.lora_path = config.get("lora_path", self.lora_path)
 
     def to_dict(self) -> dict:
         """Serialize current config for saving to settings.json."""
