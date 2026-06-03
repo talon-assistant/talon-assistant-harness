@@ -45,6 +45,8 @@ class LLMSetupDialog(QDialog):
         self._config_path = config_path
         self._download_worker = None
         self._start_worker = None
+        self._conn_test_worker = None
+        self._active_workers = set()
 
         layout = QVBoxLayout(self)
 
@@ -392,51 +394,61 @@ class LLMSetupDialog(QDialog):
         self._update_server_status()
 
     def _test_connection(self):
-        """Test external server connection in a lightweight way."""
-        import requests as req
+        """Test external server connection off the GUI thread.
 
+        The probe uses blocking requests with timeouts up to 10s, so it runs in
+        a worker to keep the dialog responsive.
+        """
         endpoint = self._endpoint_edit.text().strip()
         api_format = self._format_combo.currentText()
 
         if not endpoint:
             self._external_status.setText("Status: No endpoint configured")
             return
+        if self._conn_test_worker and self._conn_test_worker.isRunning():
+            return
 
         self._external_status.setText("Status: Testing...")
         self._test_btn.setEnabled(False)
 
-        try:
-            if api_format == "llamacpp":
-                base = endpoint.rsplit("/completion", 1)[0]
-                resp = req.get(f"{base}/health", timeout=5)
-                ok = (resp.status_code == 200
-                      and resp.json().get("status") == "ok")
-            elif api_format == "openai":
-                base = endpoint.rsplit("/v1/", 1)[0]
-                resp = req.get(f"{base}/v1/models", timeout=5)
-                ok = resp.status_code == 200
-            else:
-                # KoboldCpp — try a minimal generate
-                resp = req.post(endpoint, json={
-                    "prompt": "<|im_start|>user\nHi<|im_end|>\n<|im_start|>assistant\n",
-                    "max_length": 1,
-                    "stop_sequence": ["<|im_end|>"]
-                }, timeout=10)
-                ok = resp.status_code == 200
+        from gui.workers import ConnectionTestWorker
+        self._conn_test_worker = ConnectionTestWorker(endpoint, api_format)
+        self._conn_test_worker.result.connect(self._on_conn_test_result)
+        self._conn_test_worker.error.connect(self._on_conn_test_error)
+        self._retain(self._conn_test_worker)
+        self._conn_test_worker.start()
 
-            if ok:
-                self._external_status.setText("Status: Connected!")
-                self._external_status.setObjectName("llm_status_dot_running")
-            else:
-                self._external_status.setText(
-                    f"Status: Failed (HTTP {resp.status_code})")
-                self._external_status.setObjectName("llm_status_dot_error")
-        except Exception as e:
-            self._external_status.setText(f"Status: Error - {e}")
+    def _on_conn_test_result(self, ok, detail):
+        if ok:
+            self._external_status.setText("Status: Connected!")
+            self._external_status.setObjectName("llm_status_dot_running")
+        else:
+            self._external_status.setText(f"Status: Failed ({detail})")
             self._external_status.setObjectName("llm_status_dot_error")
-
         self._external_status.setStyleSheet(self._external_status.styleSheet())
         self._test_btn.setEnabled(True)
+
+    def _on_conn_test_error(self, error_msg):
+        self._external_status.setText(f"Status: Error - {error_msg}")
+        self._external_status.setObjectName("llm_status_dot_error")
+        self._external_status.setStyleSheet(self._external_status.styleSheet())
+        self._test_btn.setEnabled(True)
+
+    def _retain(self, worker):
+        """Hold a reference to a running QThread until QThread.finished fires.
+
+        Prevents the GC from destroying a worker mid-run when its attribute is
+        reassigned ("QThread: Destroyed while thread is still running"). The
+        receiver is a bound method, so the cross-thread connection is queued and
+        the reference is dropped on the GUI thread after the worker terminates.
+        """
+        self._active_workers.add(worker)
+        worker.finished.connect(self._discard_worker)
+
+    def _discard_worker(self):
+        worker = self.sender()
+        if worker is not None:
+            self._active_workers.discard(worker)
 
     def _update_server_status(self):
         """Update the built-in tab status display based on server manager state."""

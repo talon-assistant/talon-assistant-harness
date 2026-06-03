@@ -28,6 +28,8 @@ class TalentManagerDialog(QDialog):
         self._assistant = assistant
         self._bridge = bridge
         self._current_file = None
+        self._test_worker = None
+        self._active_workers = set()
         self._user_dir = os.path.join(
             os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
             "talents", "user",
@@ -325,6 +327,11 @@ class TalentManagerDialog(QDialog):
         if not command:
             return
 
+        # Enter in the input fires this too, so guard against a second run while
+        # one is in flight (the button is disabled, the input is not).
+        if self._test_worker and self._test_worker.isRunning():
+            return
+
         current = self._talent_list.currentItem()
         if not current:
             return
@@ -352,20 +359,49 @@ class TalentManagerDialog(QDialog):
             )
             return
 
-        # Execute the talent directly
-        try:
-            context = {
-                "llm": self._assistant.llm,
-                "memory": self._assistant.memory,
-                "vision": getattr(self._assistant, "vision", None),
-                "voice": getattr(self._assistant, "voice", None),
-                "config": self._assistant.config,
-                "assistant": self._assistant,
-                "speak_response": False,
-                "command_source": "test",
-            }
-            result = talent.execute(command, context)
-            self._test_output.append(f"Success: {result.get('success')}")
-            self._test_output.append(f"Response:\n{result.get('response', '')}")
-        except Exception as e:
-            self._test_output.append(f"EXCEPTION: {e}")
+        # Execute the talent off the GUI thread — execute() may call the LLM,
+        # hit the network, or drive a browser, any of which would freeze the
+        # window if run inline.
+        context = {
+            "llm": self._assistant.llm,
+            "memory": self._assistant.memory,
+            "vision": getattr(self._assistant, "vision", None),
+            "voice": getattr(self._assistant, "voice", None),
+            "config": self._assistant.config,
+            "assistant": self._assistant,
+            "speak_response": False,
+            "command_source": "test",
+        }
+        from gui.workers import TalentTestWorker
+        self._test_btn.setEnabled(False)
+        self._test_output.append("Running...")
+        self._test_worker = TalentTestWorker(talent, command, context)
+        self._test_worker.done.connect(self._on_test_done)
+        self._test_worker.error.connect(self._on_test_error)
+        self._retain(self._test_worker)
+        self._test_worker.start()
+
+    def _on_test_done(self, success, response):
+        self._test_output.append(f"Success: {success}")
+        self._test_output.append(f"Response:\n{response}")
+        self._test_btn.setEnabled(True)
+
+    def _on_test_error(self, error_msg):
+        self._test_output.append(f"EXCEPTION: {error_msg}")
+        self._test_btn.setEnabled(True)
+
+    def _retain(self, worker):
+        """Hold a reference to a running QThread until QThread.finished fires.
+
+        Prevents the GC from destroying a worker mid-run when its attribute is
+        reassigned ("QThread: Destroyed while thread is still running"). The
+        receiver is a bound method, so the cross-thread connection is queued and
+        the reference is dropped on the GUI thread after the worker terminates.
+        """
+        self._active_workers.add(worker)
+        worker.finished.connect(self._discard_worker)
+
+    def _discard_worker(self):
+        worker = self.sender()
+        if worker is not None:
+            self._active_workers.discard(worker)

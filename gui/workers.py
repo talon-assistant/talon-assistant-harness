@@ -481,3 +481,82 @@ class EmailSendWorker(QThread):
             self.sent.emit(to_addr, subject)
         except Exception as e:
             self.error.emit(str(e))
+
+
+class TalentTestWorker(QThread):
+    """Runs a single talent.execute() off the GUI thread for the Talent Manager.
+
+    A talent's execute() can call the LLM, hit the network, or drive a browser,
+    so running it inline freezes the manager window. This is also the harness
+    for testing in-development talents, so a malformed (non-dict) return is
+    reported rather than assumed away.
+    """
+
+    done  = pyqtSignal(bool, str)   # success, response
+    error = pyqtSignal(str)
+
+    def __init__(self, talent, command, context):
+        super().__init__()
+        self._talent = talent
+        self._command = command
+        self._context = context
+
+    def run(self):
+        try:
+            result = self._talent.execute(self._command, self._context)
+            if not isinstance(result, dict):
+                self.done.emit(
+                    False,
+                    f"Talent returned {type(result).__name__}, expected a dict.",
+                )
+                return
+            self.done.emit(
+                bool(result.get("success")),
+                result.get("response", ""),
+            )
+        except Exception as e:
+            self.error.emit(str(e))
+
+
+class ConnectionTestWorker(QThread):
+    """Probes an external LLM endpoint off the GUI thread.
+
+    The probe uses blocking requests with timeouts up to 10s; running it inline
+    freezes the setup dialog while the request is in flight.
+    """
+
+    result = pyqtSignal(bool, str)   # ok, detail (HTTP status / empty)
+    error  = pyqtSignal(str)
+
+    def __init__(self, endpoint, api_format):
+        super().__init__()
+        self._endpoint = endpoint
+        self._api_format = api_format
+
+    def run(self):
+        import requests as req
+        try:
+            if self._api_format == "llamacpp":
+                base = self._endpoint.rsplit("/completion", 1)[0]
+                resp = req.get(f"{base}/health", timeout=5)
+                ok = (resp.status_code == 200
+                      and resp.json().get("status") == "ok")
+            elif self._api_format == "openai":
+                base = self._endpoint.rsplit("/v1/", 1)[0]
+                resp = req.get(f"{base}/v1/models", timeout=5)
+                ok = resp.status_code == 200
+            else:
+                # KoboldCpp — try a minimal generate
+                resp = req.post(self._endpoint, json={
+                    "prompt": "<|im_start|>user\nHi<|im_end|>\n<|im_start|>assistant\n",
+                    "max_length": 1,
+                    "stop_sequence": ["<|im_end|>"],
+                }, timeout=10)
+                ok = resp.status_code == 200
+
+            if ok:
+                self.result.emit(True, "")
+            else:
+                self.result.emit(False, f"HTTP {resp.status_code}")
+        except Exception as e:
+            self.error.emit(str(e))

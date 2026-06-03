@@ -61,6 +61,29 @@ class InstallWorker(QThread):
             self.error.emit(str(e))
 
 
+class UninstallWorker(QThread):
+    """Remove a talent file in a background thread.
+
+    uninstall_talent() scans and AST-parses every file in talents/user/ before
+    deleting the match; running it inline would stall the dialog on a large
+    user-talent directory. Kept symmetric with InstallWorker.
+    """
+    uninstall_done = pyqtSignal(dict)  # result dict from uninstall_talent
+    error = pyqtSignal(str)
+
+    def __init__(self, marketplace_client, talent_name):
+        super().__init__()
+        self.client = marketplace_client
+        self.talent_name = talent_name
+
+    def run(self):
+        try:
+            result = self.client.uninstall_talent(self.talent_name)
+            self.uninstall_done.emit(result)
+        except Exception as e:
+            self.error.emit(str(e))
+
+
 class TalentReviewDialog(QDialog):
     """Show downloaded talent source + integrity/danger findings for approval.
 
@@ -267,6 +290,8 @@ class MarketplaceDialog(QDialog):
         self._cards = {}  # name -> TalentCard
         self._worker = None
         self._install_worker = None
+        self._uninstall_worker = None
+        self._active_workers = set()
 
         self.setWindowTitle("Talent Marketplace")
         self.setMinimumSize(700, 500)
@@ -501,7 +526,16 @@ class MarketplaceDialog(QDialog):
                 self._cards[talent_name].reset_button()
             return
 
-        result = self.client.uninstall_talent(talent_name)
+        self.status_label.setText(f"Removing {talent_name}...")
+        self._uninstall_worker = UninstallWorker(self.client, talent_name)
+        self._uninstall_worker.uninstall_done.connect(
+            lambda result, n=talent_name: self._on_uninstall_done(n, result))
+        self._uninstall_worker.error.connect(
+            lambda err, n=talent_name: self._on_uninstall_error(n, err))
+        self._retain(self._uninstall_worker)
+        self._uninstall_worker.start()
+
+    def _on_uninstall_done(self, talent_name, result):
         if result.get("success"):
             self._installed.discard(talent_name)
             if talent_name in self._cards:
@@ -514,3 +548,24 @@ class MarketplaceDialog(QDialog):
             if talent_name in self._cards:
                 self._cards[talent_name].reset_button()
             self.status_label.setText(f"Remove failed: {error}")
+
+    def _on_uninstall_error(self, talent_name, error):
+        if talent_name in self._cards:
+            self._cards[talent_name].reset_button()
+        self.status_label.setText(f"Remove error: {error}")
+
+    def _retain(self, worker):
+        """Hold a reference to a running QThread until QThread.finished fires.
+
+        Prevents the GC from destroying a worker mid-run when its attribute is
+        reassigned ("QThread: Destroyed while thread is still running"). The
+        receiver is a bound method, so the cross-thread connection is queued and
+        the reference is dropped on the GUI thread after the worker terminates.
+        """
+        self._active_workers.add(worker)
+        worker.finished.connect(self._discard_worker)
+
+    def _discard_worker(self):
+        worker = self.sender()
+        if worker is not None:
+            self._active_workers.discard(worker)
