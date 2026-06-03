@@ -207,18 +207,17 @@ def _handle_browser_fetch(task_id: str, payload: dict) -> None:
                     log.warning(f"[CoworkBridge] Selector '{wait_for}' not found, "
                           "continuing with available content")
 
-            # Run optional JS snippet before text extraction
-            js_result = None
-            js_snippet = payload.get("js_snippet")
-            if js_snippet:
-                try:
-                    js_result = page.evaluate(js_snippet)
-                    log.info(f"[CoworkBridge] js_snippet returned "
-                          f"{type(js_result).__name__}: "
-                          f"{str(js_result)[:200]}")
-                except Exception as js_exc:
-                    log.error(f"[CoworkBridge] js_snippet error: {js_exc}")
+            # Named, parameterized extraction ONLY. Arbitrary caller-supplied
+            # JavaScript is never evaluated: task JSON arrives via a synced
+            # folder, so running its JS in this authenticated browser context
+            # would let anything able to drop a file execute code as the
+            # logged-in user. Callers that need a specific value should use
+            # extract="query" with a CSS selector (+ optional attribute).
+            if payload.get("js_snippet"):
+                log.warning("[CoworkBridge] Ignoring js_snippet — arbitrary JS "
+                            "is disabled; use extract='query' with a selector")
 
+            query_result = None
             if extract == "html":
                 content = page.content()
             elif extract == "links":
@@ -227,6 +226,23 @@ def _handle_browser_fetch(task_id: str, payload: dict) -> None:
                     "els => els.map(e => ({text: e.innerText.trim(), href: e.href}))"
                 )
                 content = json.dumps(links, indent=2)
+            elif extract == "query":
+                selector = payload.get("selector", "")
+                if not selector:
+                    browser.close()
+                    _write_result(task_id, "error", None,
+                                  "extract='query' requires a 'selector'")
+                    return
+                # The page function is a fixed constant; `attribute` is passed
+                # as a JS *argument* (data), not interpolated into code.
+                attribute = payload.get("attribute")
+                query_result = page.eval_on_selector_all(
+                    selector,
+                    "(els, attr) => els.map(e => attr ? "
+                    "e.getAttribute(attr) : e.innerText.trim())",
+                    attribute,
+                )
+                content = json.dumps(query_result, indent=2)
             else:
                 content = page.inner_text("body")
 
@@ -234,8 +250,8 @@ def _handle_browser_fetch(task_id: str, payload: dict) -> None:
 
             if content:
                 data = {"content": content[:MAX_CHARS], "url": url}
-                if js_result is not None:
-                    data["js_result"] = js_result
+                if query_result is not None:
+                    data["query_result"] = query_result
                 _write_result(task_id, "success", data, None)
             else:
                 _write_result(task_id, "error", None,
@@ -266,13 +282,21 @@ def _notify_cowork(completed_ids: list[str], error_ids: list[str],
     if not completed_ids and not error_ids:
         return
 
+    # Task ids originate from caller-supplied JSON dropped in a synced folder.
+    # They are echoed into the prompt handed to the Claude CLI, so strip them
+    # to a safe charset first — otherwise a crafted id could carry injected
+    # instructions into that prompt.
+    def _safe_ids(ids: list[str]) -> str:
+        cleaned = [re.sub(r'[^A-Za-z0-9_.-]', '', str(tid))[:64] for tid in ids]
+        return ', '.join(c for c in cleaned if c)
+
     # Build a concise notification message
     parts = []
     if completed_ids:
         parts.append(f"{len(completed_ids)} task(s) completed successfully: "
-                     f"{', '.join(completed_ids)}")
+                     f"{_safe_ids(completed_ids)}")
     if error_ids:
-        parts.append(f"{len(error_ids)} task(s) failed: {', '.join(error_ids)}")
+        parts.append(f"{len(error_ids)} task(s) failed: {_safe_ids(error_ids)}")
 
     message = (
         f"Talon bridge results are ready. {' '.join(parts)}. "
@@ -329,6 +353,13 @@ class CoworkBridgeTalent(BaseTalent):
     def get_config_schema(self) -> dict:
         return {
             "fields": [
+                {"key": "enable_cli_notify", "label": "Notify Cowork via Claude CLI",
+                 "type": "bool", "default": False,
+                 "description": "Run the Claude CLI after each bridge poll to notify "
+                                "Cowork that results are ready. Off by default — the "
+                                "bridge processes tasks from a synced folder, so leaving "
+                                "this on lets anything able to drop a file trigger a "
+                                "local CLI invocation."},
                 {"key": "cli_project", "label": "Claude CLI Project",
                  "type": "string", "default": "",
                  "description": "Optional --project name for Claude CLI notifications"},
@@ -395,8 +426,11 @@ class CoworkBridgeTalent(BaseTalent):
 
             _archive_task(task_path)
 
-        # Notify Cowork via Claude CLI that results are ready
-        if completed_ids or error_ids:
+        # Notify Cowork via Claude CLI that results are ready.
+        # Opt-in only: task JSON arrives via a synced folder, so auto-running
+        # the Claude CLI on every drop would let anything able to write a file
+        # trigger a local CLI invocation.
+        if (completed_ids or error_ids) and self._config.get("enable_cli_notify", False):
             cli_project = self._config.get("cli_project", "")
             _notify_cowork(completed_ids, error_ids, project=cli_project)
 
