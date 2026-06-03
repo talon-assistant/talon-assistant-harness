@@ -267,7 +267,15 @@ class SignalRemoteTalent(BaseTalent):
         if not text and not incoming_attachments:
             return
 
-        # Only process Note-to-Self: destination matches sender
+        # Authorization boundary: Note-to-Self only.
+        # We deliberately do not keep an allowlist of authorized contacts. An
+        # allowlist would *widen* access by letting other numbers drive the
+        # assistant. Instead we require the message to be a sync of one the
+        # account sent to itself, which the destination==sender check below
+        # establishes: a syncMessage.sentMessage only reaches a linked device
+        # when the account's own primary device sent it, and we further demand
+        # its destination be that same account. So the sole party who can issue
+        # commands is whoever holds the linked Signal account — the owner.
         if not sync_dest or sync_dest != sender:
             return
 
@@ -428,14 +436,6 @@ class SignalRemoteTalent(BaseTalent):
             return False
 
         return True
-
-    def _get_authorized_numbers(self) -> list[str]:
-        raw = self.talent_config.get("authorized_numbers", [])
-        if isinstance(raw, list):
-            return [n.strip() for n in raw if str(n).strip()]
-        if isinstance(raw, str):
-            return [n.strip() for n in raw.splitlines() if n.strip()]
-        return []
 
     # ── Execute (status / manual poll) ────────────────────────────
 

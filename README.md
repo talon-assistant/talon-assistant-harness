@@ -520,10 +520,12 @@ The file handler uses a rotating strategy: 5 MB max per file, 3 backups retained
 This project is provided as-is, without warranty of any kind. Use at your own risk.
 
 Talon can control your desktop (keyboard, mouse, screenshots), manage smart home
-devices, and accept remote commands via Signal. Misconfiguration — particularly of
-the Signal remote feature — could allow unintended access to your machine. You are
-solely responsible for securing your setup, including keeping `authorized_numbers`
-accurate and your signal-cli config directory private.
+devices, and accept remote commands via Signal. Misconfiguration of the Signal
+remote feature could allow unintended access to your machine. The feature only
+acts on Note-to-Self messages, so the security boundary is your Signal account
+itself: anyone who can send to your linked account's Note-to-Self can drive
+Talon. You are solely responsible for securing your setup, including protecting
+that account and keeping your signal-cli config directory private.
 
 AI-generated responses may be inaccurate, incomplete, or inappropriate. Do not rely
 on them for anything safety-critical. Document RAG responses are only as accurate as
