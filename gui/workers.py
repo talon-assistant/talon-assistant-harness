@@ -447,8 +447,8 @@ class EmailSendWorker(QThread):
     EmailComposeDialog and dispatches it using the email talent's SMTP methods.
     """
 
-    finished = pyqtSignal(str, str)   # to_addr, subject
-    error    = pyqtSignal(str)
+    sent  = pyqtSignal(str, str)   # to_addr, subject
+    error = pyqtSignal(str)
 
     def __init__(self, bridge, draft: dict):
         super().__init__()
@@ -478,6 +478,6 @@ class EmailSendWorker(QThread):
                     subject=subject,
                     body=body,
                 )
-            self.finished.emit(to_addr, subject)
+            self.sent.emit(to_addr, subject)
         except Exception as e:
             self.error.emit(str(e))

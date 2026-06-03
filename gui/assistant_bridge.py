@@ -80,6 +80,13 @@ class AssistantBridge(QObject):
         self._command_worker = None
         self._tts_worker = None
         self._voice_worker = None
+        self._email_send_worker = None
+        # Keep-alive set for transient workers. Reassigning the single attribute
+        # that holds a running QThread drops its last reference; the GC then
+        # destroys it mid-run ("QThread: Destroyed while thread is still
+        # running"). Holding a reference here until QThread.finished fires keeps
+        # every started worker alive for its whole lifetime.
+        self._active_workers = set()
         self._tts_enabled = True
         self._pending_attachments = []  # stashed for main_window chat bubble
         self.credential_store = CredentialStore()
@@ -129,6 +136,27 @@ class AssistantBridge(QObject):
         """Relay server status changes to the GUI."""
         self.server_status.emit(status)
 
+    def _retain(self, worker):
+        """Hold a reference to a running QThread until it finishes.
+
+        Reassigning the single attribute that holds a worker (self._tts_worker,
+        etc.) drops the only reference to the previous one while it may still be
+        running; the GC then destroys it mid-flight ("QThread: Destroyed while
+        thread is still running"). Keeping it in this set until QThread.finished
+        fires prevents that. The receiver is a bound method of this QObject, so
+        the connection is queued across threads and the reference is dropped on
+        the GUI thread after the worker has fully terminated, never from inside
+        the worker's own finishing context.
+        """
+        self._active_workers.add(worker)
+        worker.finished.connect(self._discard_worker)
+
+    def _discard_worker(self):
+        """Drop a finished worker from the keep-alive set (GUI thread)."""
+        worker = self.sender()
+        if worker is not None:
+            self._active_workers.discard(worker)
+
     @pyqtSlot(str, list)
     def submit_command(self, command, attachments=None):
         """Submit a command for processing in a background thread.
@@ -157,6 +185,7 @@ class AssistantBridge(QObject):
             self.assistant, command, attachments=self._pending_attachments)
         self._command_worker.response_ready.connect(self._on_command_done)
         self._command_worker.error.connect(self._on_command_error)
+        self._retain(self._command_worker)
         self._command_worker.start()
 
     def _on_command_done(self, command, response, talent_name, success, result):
@@ -201,8 +230,9 @@ class AssistantBridge(QObject):
     def send_pending_email(self, draft: dict):
         """Dispatch an approved email draft via SMTP in a background worker."""
         self._email_send_worker = EmailSendWorker(self, draft)
-        self._email_send_worker.finished.connect(self._on_email_send_done)
+        self._email_send_worker.sent.connect(self._on_email_send_done)
         self._email_send_worker.error.connect(self._on_email_send_error)
+        self._retain(self._email_send_worker)
         self._email_send_worker.start()
 
     def _on_email_send_done(self, to_addr, subject):
@@ -224,6 +254,7 @@ class AssistantBridge(QObject):
         self._tts_worker.finished_speaking.connect(self._on_tts_done)
         self._tts_worker.stopped_early.connect(self._on_tts_stopped)
         self._tts_worker.error.connect(lambda e: print(f"TTS Error: {e}"))
+        self._retain(self._tts_worker)
         self.activity.emit("speaking")
         self._tts_worker.start()
 
@@ -257,6 +288,7 @@ class AssistantBridge(QObject):
                 lambda t: print(f"   [Voice] Heard: {t}"))
             self._voice_worker.error.connect(
                 lambda e: print(f"   [Voice] Error: {e}"))
+            self._retain(self._voice_worker)
             self._voice_worker.start()
         else:
             if self._voice_worker:
@@ -579,6 +611,14 @@ class AssistantBridge(QObject):
                 if not self._tts_worker.wait(3000):
                     self._tts_worker.terminate()
                     self._tts_worker.wait(1000)
+        except RuntimeError:
+            pass
+
+        try:
+            if self._email_send_worker and self._email_send_worker.isRunning():
+                if not self._email_send_worker.wait(3000):
+                    self._email_send_worker.terminate()
+                    self._email_send_worker.wait(1000)
         except RuntimeError:
             pass
 

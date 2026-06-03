@@ -27,6 +27,7 @@ class TaskAssistPreDialog(QDialog):
         self._screenshot_b64 = screenshot_b64
         self._llm = llm_client
         self._hint_worker = None
+        self._active_workers = set()
         self.setWindowTitle("Talon Task Assist")
         self.setObjectName("task_assist_pre_dialog")
         self.setMinimumWidth(480)
@@ -106,10 +107,27 @@ class TaskAssistPreDialog(QDialog):
 
         self._task_input.setFocus()
 
+    def _retain(self, worker):
+        """Hold a reference to a running QThread until QThread.finished fires.
+
+        Prevents the GC from destroying the worker mid-run if its attribute is
+        reassigned ("QThread: Destroyed while thread is still running"). The
+        receiver is a bound method, so the cross-thread connection is queued and
+        the reference is dropped on the GUI thread after the worker terminates.
+        """
+        self._active_workers.add(worker)
+        worker.finished.connect(self._discard_worker)
+
+    def _discard_worker(self):
+        worker = self.sender()
+        if worker is not None:
+            self._active_workers.discard(worker)
+
     def _start_hint_worker(self):
         from gui.workers import ContextHintWorker
         self._hint_worker = ContextHintWorker(self._llm, self._screenshot_b64)
         self._hint_worker.hint.connect(self._on_hint)
+        self._retain(self._hint_worker)
         self._hint_worker.start()
 
     def _on_hint(self, hint: str):
@@ -341,6 +359,7 @@ class TaskAssistDialog(QDialog):
         self._llm = llm_client
         self._step_results = step_results
         self._worker = None
+        self._active_workers = set()
         self.setWindowTitle("Talon Task Assist")
         self.setObjectName("task_assist_dialog")
         self.setMinimumSize(620, 520)
@@ -432,6 +451,23 @@ class TaskAssistDialog(QDialog):
 
     # ── slots ─────────────────────────────────────────────────────────────────
 
+    def _retain(self, worker):
+        """Hold a reference to a running QThread until QThread.finished fires.
+
+        Each revise/apply/attach action reassigns self._worker. Without keeping
+        the previous worker referenced until it finishes, the GC can destroy it
+        mid-run ("QThread: Destroyed while thread is still running"). The
+        receiver is a bound method, so the cross-thread connection is queued and
+        the reference is dropped on the GUI thread after the worker terminates.
+        """
+        self._active_workers.add(worker)
+        worker.finished.connect(self._discard_worker)
+
+    def _discard_worker(self):
+        worker = self.sender()
+        if worker is not None:
+            self._active_workers.discard(worker)
+
     def _on_accept(self):
         import pyperclip
         text = self._draft_edit.toPlainText()
@@ -463,6 +499,7 @@ class TaskAssistDialog(QDialog):
         )
         self._worker.revised.connect(self._on_revised)
         self._worker.error.connect(self._on_revise_error)
+        self._retain(self._worker)
         self._worker.start()
 
     def _on_apply(self):
@@ -487,6 +524,7 @@ class TaskAssistDialog(QDialog):
         )
         self._worker.revised.connect(self._on_revised)
         self._worker.error.connect(self._on_revise_error)
+        self._retain(self._worker)
         self._worker.start()
 
     def _on_revised(self, new_draft: str):
@@ -529,6 +567,7 @@ class TaskAssistDialog(QDialog):
         )
         self._worker.revised.connect(self._on_revised)
         self._worker.error.connect(self._on_revise_error)
+        self._retain(self._worker)
         self._worker.start()
 
     def _read_file(self, path: str) -> str:
