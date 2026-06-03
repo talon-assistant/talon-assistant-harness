@@ -22,6 +22,7 @@ import pyperclip
 
 from talents.base import BaseTalent
 from core.llm_client import LLMError
+from core.security import get_security_filter
 
 
 class ClipboardTransformTalent(BaseTalent):
@@ -97,6 +98,29 @@ class ClipboardTransformTalent(BaseTalent):
         if len(text) > self._MAX_CHARS:
             text = text[:self._MAX_CHARS]
             truncated = True
+
+        # ── Screen for injection before sending to the LLM ────────────────────
+        # Clipboard contents are untrusted external text — copied from a web
+        # page, a document, an email, anything. Run the same semantic injection
+        # check that email/web inputs use before the text reaches the model.
+        # "web" is the closest trained classifier category for untrusted
+        # external text. Fails open when the filter/classifier is unavailable.
+        # wrap_external() is deliberately NOT used here: it rewrites [ and ] to
+        # ( and ), which would corrupt the transformed text the user pastes
+        # back (code, markdown, citations). The semantic check is the defense.
+        sf = get_security_filter()
+        if sf:
+            blocked, _alert = sf.check_semantic_input(text, "web")
+            if blocked:
+                return {
+                    "success": False,
+                    "response": (
+                        "That clipboard content was flagged by the security "
+                        "filter as a possible injection attempt, so I didn't "
+                        "transform it."
+                    ),
+                    "actions_taken": [],
+                }
 
         # ── Transform ─────────────────────────────────────────────────────────
         # Pass the raw command as the instruction — the LLM handles any phrasing

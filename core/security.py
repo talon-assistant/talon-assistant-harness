@@ -17,6 +17,7 @@ from __future__ import annotations
 import re
 import time
 import sqlite3
+import threading
 from dataclasses import dataclass, field
 from typing import Optional, TYPE_CHECKING
 
@@ -193,6 +194,13 @@ class SecurityFilter:
         self._db_path = db_path
         self._request_times: list[float] = []
         self._recent_alerts: list[SecurityAlert] = []
+        # The filter is reached concurrently from the UI thread plus several
+        # background workers (reflection, deep search, scheduler), so the
+        # shared mutable state below needs guarding. Separate locks keep the
+        # critical sections small and avoid one path blocking another.
+        self._rate_lock = threading.Lock()        # guards _request_times
+        self._alert_lock = threading.Lock()       # guards _recent_alerts
+        self._classifier_lock = threading.Lock()  # guards lazy classifier init
         # Key phrases extracted from the assistant system prompt for leak detection.
         # Populated by the assistant via set_system_prompt_phrases().
         self._system_prompt_phrases: list[str] = []
@@ -211,7 +219,8 @@ class SecurityFilter:
         so a burst of rapid config changes doesn't lock out the user.
         """
         self._config = config
-        self._request_times.clear()
+        with self._rate_lock:
+            self._request_times.clear()
         self._compile_input_patterns()
         log.info("[Security] Config reloaded")
 
@@ -371,14 +380,16 @@ class SecurityFilter:
         now = time.time()
         window = 60.0
 
-        self._request_times = [t for t in self._request_times if now - t < window]
-        self._request_times.append(now)
+        with self._rate_lock:
+            self._request_times = [t for t in self._request_times if now - t < window]
+            self._request_times.append(now)
+            count = len(self._request_times)
 
-        if len(self._request_times) > rpm:
+        if count > rpm:
             alert = self._make_alert(
                 "rate_limit", "rpm_exceeded",
                 "Rate limit exceeded",
-                f"{len(self._request_times)} requests in 60s (limit: {rpm})",
+                f"{count} requests in 60s (limit: {rpm})",
                 action,
             )
             self._record_alert(alert)
@@ -415,17 +426,20 @@ class SecurityFilter:
         action = cfg.get("action", "log")
         threshold = float(cfg.get("threshold", 0.5))
 
-        # Lazy-init classifier
+        # Lazy-init classifier (double-checked locking — reachable from
+        # several worker threads at once; without the guard the first callers
+        # would each build a classifier or observe a half-assigned field).
         if self._classifier is None:
-            try:
-                from core.security_classifier import get_classifier
-                self._classifier = get_classifier(threshold=threshold)
-            except Exception as exc:
-                log.warning(f"[Security] Semantic classifier unavailable: {exc}")
-                return False, None
-        else:
-            # Allow threshold to be updated via config hot-reload
-            self._classifier.threshold = threshold
+            with self._classifier_lock:
+                if self._classifier is None:
+                    try:
+                        from core.security_classifier import get_classifier
+                        self._classifier = get_classifier(threshold=threshold)
+                    except Exception as exc:
+                        log.warning(f"[Security] Semantic classifier unavailable: {exc}")
+                        return False, None
+        # Allow threshold to be updated via config hot-reload
+        self._classifier.threshold = threshold
 
         result = self._classifier.classify(text, artifact_type)
 
@@ -485,9 +499,10 @@ class SecurityFilter:
 
     def _record_alert(self, alert: SecurityAlert) -> None:
         """Buffer alert in memory and persist to SQLite audit log."""
-        self._recent_alerts.append(alert)
-        if len(self._recent_alerts) > 500:
-            self._recent_alerts = self._recent_alerts[-500:]
+        with self._alert_lock:
+            self._recent_alerts.append(alert)
+            if len(self._recent_alerts) > 500:
+                self._recent_alerts = self._recent_alerts[-500:]
 
         log.debug(f"[Security] {alert.control}/{alert.pattern_id} "
             f"- {alert.label} -> {alert.action_taken} | "
@@ -566,7 +581,8 @@ class SecurityFilter:
     @property
     def recent_alerts(self) -> list[SecurityAlert]:
         """Last 100 alerts (in-memory, current session only)."""
-        return list(self._recent_alerts[-100:])
+        with self._alert_lock:
+            return list(self._recent_alerts[-100:])
 
     def get_recent_alerts_dicts(self) -> list[dict]:
         """Serialisable alert list for GUI display."""

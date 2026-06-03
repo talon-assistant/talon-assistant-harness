@@ -970,15 +970,33 @@ class TalonAssistant:
             log.error(f"[Session] Reflection LLM error: {e}")
             summary = "Session reflection could not be generated."
 
+        # Reflection inputs are derived from the raw session command log,
+        # which can include pasted external text. Run the same write-path
+        # semantic check used for preferences (above) and rules before
+        # persisting any LLM-extracted artifact, so an injected instruction
+        # can't be laundered into a stored preference/hint and re-injected
+        # into a later prompt. Fails open when the classifier is disabled.
+        def _passes_screen(text: str, kind: str) -> bool:
+            blocked, _alert = self.security.check_semantic(text, kind)
+            if blocked:
+                log.info(f"[Session] Reflection {kind} blocked by semantic "
+                         f"classifier: {text[:80]}")
+            return not blocked
+
         # Persist extracted preferences into long-term memory
+        screened_prefs: list[str] = []
         for pref in preferences:
-            if pref.strip():
-                self.memory.store_preference(pref.strip())
+            pref = pref.strip()
+            if pref and _passes_screen(pref, "hint"):
+                self.memory.store_preference(pref)
+                screened_prefs.append(pref)
+        preferences = screened_prefs
 
         # Store shortcut suggestions as individual soft hints.
         # These are semantically retrieved at query time and injected as
         # advisory nudges — they influence but do not mandate behaviour,
         # unlike hard rules in talon_rules.
+        screened_shortcuts: list[str] = []
         for shortcut in shortcuts:
             shortcut = shortcut.strip()
             if not shortcut:
@@ -986,9 +1004,16 @@ class TalonAssistant:
             # Reframe as past-experience advice rather than a directive.
             if not shortcut.lower().startswith("in past"):
                 shortcut = f"In past sessions: {shortcut}"
-            self.memory.store_soft_hint(shortcut)
+            if _passes_screen(shortcut, "hint"):
+                self.memory.store_soft_hint(shortcut)
+                screened_shortcuts.append(shortcut)
+        shortcuts = screened_shortcuts
 
-        # Store the full reflection
+        # Withhold a summary the classifier flags before it is stored or shown.
+        if summary and not _passes_screen(summary, "summary"):
+            summary = "Session reflection withheld (failed security screen)."
+
+        # Store the full reflection (screened artifacts only)
         self.memory.store_session_reflection(summary, preferences, failures, shortcuts)
 
         # Build human-readable output
