@@ -566,7 +566,7 @@ class JobTrackerTalent(BaseTalent):
         "how many applications this week",
         "export my job tracker",
     ]
-    priority = 55
+    priority = 54
 
     def __init__(self) -> None:
         super().__init__()

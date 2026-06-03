@@ -34,7 +34,7 @@ class WeatherTalent(BaseTalent):
         "how cold is it outside",
         "what's the temperature right now",
     ]
-    priority = 75  # above web_search (60), below news (80)
+    priority = 74  # above web_search (60), below news (80)
 
     _WEATHER_PHRASES = [
         "weather", "temperature", "forecast", "how hot", "how cold",

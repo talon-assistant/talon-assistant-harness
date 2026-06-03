@@ -40,7 +40,7 @@ class LoraTrainTalent(BaseTalent):
         "retrain from corrections",
         "run LoRA fine-tuning",
     ]
-    priority = 60
+    priority = 59
 
     def get_config_schema(self) -> dict:
         return {

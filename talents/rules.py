@@ -33,7 +33,7 @@ class RulesTalent(BaseTalent):
         "delete rule number 3",
         "remove the goodnight rule",
     ]
-    priority = 42  # Below notes (45), above desktop (40)
+    priority = 41  # Below notes (45), above desktop (40)
 
     _LIST_PHRASES = [
         "list", "show", "view", "what are",

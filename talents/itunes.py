@@ -46,7 +46,7 @@ class ITunesTalent(BaseTalent):
         "stop the music",
         "resume",
     ]
-    priority = 60
+    priority = 57
 
     # Intent labels the LLM will pick from
     _INTENTS = [

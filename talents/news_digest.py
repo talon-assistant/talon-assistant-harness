@@ -154,7 +154,7 @@ class NewsDigestTalent(BaseTalent):
         "generate my daily briefing",
         "today's news summary",
     ]
-    priority = 55   # above web_browser (47), below planner (85)
+    priority = 56   # above web_browser (47), below planner (85)
 
     # ── lifecycle ─────────────────────────────────────────────────────────────
 

@@ -54,7 +54,7 @@ class SchedulerTalent(BaseTalent):
         "every 2 hours summarize the news",
         "delete all scheduled tasks",
     ]
-    priority = 60   # Below ReminderTalent (65) — reminder handles one-off alerts
+    priority = 58   # Below ReminderTalent (65) — reminder handles one-off alerts
 
     # ── Extraction prompt ─────────────────────────────────────────────────────
 
