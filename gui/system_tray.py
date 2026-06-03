@@ -160,6 +160,11 @@ class SystemTrayManager(QObject):
                 WM_QUIT = 0x0012
                 self._kernel32.PostThreadMessageW(
                     self._hotkey_thread_id, WM_QUIT, 0, 0)
+                # Wait for the loop to exit (and UnregisterHotKey in its finally)
+                # so the global hotkey is actually released before we return.
+                t = getattr(self, "_hotkey_thread", None)
+                if t is not None and t is not threading.current_thread():
+                    t.join(timeout=2.0)
             except Exception:
                 pass
         self.tray_icon.hide()

@@ -281,6 +281,24 @@ class SecurityClassifier:
         # 3. Concatenate → feature vector
         features = emb + one_hot  # list concat
 
+        # Reconcile against the dimension the loaded model actually expects.
+        # A checkpoint trained with a different artifact_types list (or an old
+        # one that fell back to the inferred input_dim) leaves len(features) at
+        # odds with the first Linear layer's in_features, which would crash the
+        # matmul. Pad or trim the one-hot tail to fit, warning once so the drift
+        # stays visible without flooding the log.
+        if len(features) != self._input_dim:
+            if not getattr(self, "_dim_warned", False):
+                log.warning(
+                    f"[SecurityClassifier] Feature dim {len(features)} != model "
+                    f"input_dim {self._input_dim}; padding/trimming to fit."
+                )
+                self._dim_warned = True
+            if len(features) < self._input_dim:
+                features = features + [0.0] * (self._input_dim - len(features))
+            else:
+                features = features[:self._input_dim]
+
         # 4. Run model
         x = torch.tensor([features], dtype=torch.float32)
         with torch.no_grad():

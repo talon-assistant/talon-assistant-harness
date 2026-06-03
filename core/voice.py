@@ -76,17 +76,22 @@ class VoiceSystem:
 
     def transcribe_audio(self, audio):
         """Convert audio to text using Whisper"""
-        temp_file = tempfile.mktemp(suffix=".wav")
-        with wave.open(temp_file, 'wb') as wf:
-            wf.setnchannels(1)
-            wf.setsampwidth(2)
-            wf.setframerate(self.sample_rate)
-            wf.writeframes(audio.tobytes())
+        fd, temp_file = tempfile.mkstemp(suffix=".wav")
+        os.close(fd)
+        try:
+            with wave.open(temp_file, 'wb') as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(self.sample_rate)
+                wf.writeframes(audio.tobytes())
 
-        segments, info = self.whisper_model.transcribe(temp_file, language="en")
-        text = " ".join([segment.text.strip() for segment in segments])
-
-        os.remove(temp_file)
+            segments, info = self.whisper_model.transcribe(temp_file, language="en")
+            text = " ".join([segment.text.strip() for segment in segments])
+        finally:
+            try:
+                os.remove(temp_file)
+            except OSError:
+                pass
         return text.lower().translate(str.maketrans('', '', string.punctuation))
 
     def speak(self, text):
@@ -122,7 +127,8 @@ class VoiceSystem:
 
         Returns True if completed normally, False if interrupted.
         """
-        temp_audio = tempfile.mktemp(suffix=".mp3")
+        fd, temp_audio = tempfile.mkstemp(suffix=".mp3")
+        os.close(fd)
 
         try:
             communicate = edge_tts.Communicate(text, self.tts_voice)
