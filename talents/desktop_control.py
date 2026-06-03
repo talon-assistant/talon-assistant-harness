@@ -67,24 +67,31 @@ class DesktopControlTalent(BaseTalent):
         r"\bwhat.{0,10}(?:answer|result|output|number|value)\b",
     ]
 
+    # Each value is an argv list launched WITHOUT a shell. Never build a
+    # shell command string from these — see _execute_single_action.
     APP_COMMANDS = {
-        "calculator": "calc.exe",
-        "notepad": "notepad.exe",
-        "chrome": r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-        "google chrome": r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-        "firefox": r"C:\Program Files\Mozilla Firefox\firefox.exe",
-        "edge": "start msedge",
-        "microsoft edge": "start msedge",
-        "explorer": "explorer.exe",
-        "paint": "mspaint.exe",
-        "word": "winword.exe",
-        "microsoft word": "winword.exe",
-        "excel": "excel.exe",
-        "microsoft excel": "excel.exe",
-        "powerpoint": "powerpnt.exe",
-        "microsoft powerpoint": "powerpnt.exe",
-        "outlook": "outlook.exe"
+        "calculator": ["calc.exe"],
+        "notepad": ["notepad.exe"],
+        "chrome": [r"C:\Program Files\Google\Chrome\Application\chrome.exe"],
+        "google chrome": [r"C:\Program Files\Google\Chrome\Application\chrome.exe"],
+        "firefox": [r"C:\Program Files\Mozilla Firefox\firefox.exe"],
+        "edge": ["msedge"],            # WindowsApps execution alias on PATH
+        "microsoft edge": ["msedge"],
+        "explorer": ["explorer.exe"],
+        "paint": ["mspaint.exe"],
+        "word": ["winword.exe"],
+        "microsoft word": ["winword.exe"],
+        "excel": ["excel.exe"],
+        "microsoft excel": ["excel.exe"],
+        "powerpoint": ["powerpnt.exe"],
+        "microsoft powerpoint": ["powerpnt.exe"],
+        "outlook": ["outlook.exe"],
     }
+
+    # A non-allowlisted app name may only be launched if it's a bare program
+    # name (no path separators, no shell metacharacters). Launched without a
+    # shell, so even this can't chain or redirect — it just resolves on PATH.
+    _SAFE_APP_NAME = re.compile(r'^[A-Za-z0-9 ._-]{1,64}$')
 
     _CONFIRM_WORDS = {"yes", "confirm", "do it", "go ahead", "proceed", "execute", "run it"}
     _CANCEL_WORDS  = {"no", "cancel", "stop", "abort", "never mind", "nevermind"}
@@ -514,11 +521,24 @@ Respond ONLY with valid JSON, no additional text."""
             action_type = action_data.get("action")
 
             if action_type == "open_application":
-                app_name = action_data.get("application")
+                app_name = (action_data.get("application") or "").strip()
                 log.debug(f"-> Opening {app_name}...")
 
-                cmd = self.APP_COMMANDS.get(app_name.lower(), app_name)
-                subprocess.Popen(cmd, shell=True)
+                argv = self.APP_COMMANDS.get(app_name.lower())
+                if argv is None:
+                    # Not allowlisted: permit only a strict bare program name,
+                    # launched without a shell so metacharacters can't be used
+                    # to chain or redirect commands.
+                    if not self._SAFE_APP_NAME.match(app_name):
+                        return (f"Won't open '{app_name}' — not a recognized "
+                                "app and the name isn't a safe program name.")
+                    argv = [app_name]
+                try:
+                    subprocess.Popen(argv)  # shell=False (default)
+                except FileNotFoundError:
+                    return f"Couldn't find an application called '{app_name}'."
+                except Exception as e:
+                    return f"Failed to open '{app_name}': {e}"
                 time.sleep(self.app_launch_delay)
                 return f"Opened {app_name}"
 
