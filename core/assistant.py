@@ -262,7 +262,17 @@ class TalonAssistant:
         self._skill_router = SkillRouter()
         self._skill_router.build(self.talents)
 
-        # 6. Thread safety  (RLock so rule-triggered recursive calls don't deadlock)
+        # 6. Thread safety. Serializes the whole of process_command() so the
+        # several entry points that can fire a command concurrently — the GUI
+        # CommandWorker, the scheduler thread, and the Signal remote — cannot
+        # interleave their multi-step conversation-buffer and memory writes or
+        # talk over each other's spoken output. The broad scope is deliberate:
+        # narrowing it to just the state mutations would let a second command
+        # start mid-pipeline. RLock so the rule/promise-interception recursive
+        # calls into process_command() re-enter on the same thread instead of
+        # deadlocking. Lock ordering: command_lock is acquired before
+        # memory._chroma_lock (never the reverse), so there is no cycle with the
+        # background reflection thread, which takes _chroma_lock alone.
         self.command_lock = threading.RLock()
 
         # 7. Conversation engine (buffer, session summary, RAG cache, etc.)
@@ -1571,7 +1581,7 @@ class TalonAssistant:
                 if not _executing_rule:
                     command_id = self.memory.log_command(
                         command,
-                        success=result["success"],
+                        success=result.get("success", True),
                         response=result.get("response", "")
                     )
                     for action_info in result.get("actions_taken", []):
@@ -1583,7 +1593,7 @@ class TalonAssistant:
                         )
 
                 # Step 5: Store successful pattern
-                if result["success"] and result.get("actions_taken"):
+                if result.get("success", True) and result.get("actions_taken"):
                     actions_list = [a.get("action", {}) for a in result["actions_taken"]]
                     self.memory.store_successful_pattern(command, actions_list)
 
