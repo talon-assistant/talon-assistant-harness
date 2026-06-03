@@ -16,7 +16,6 @@ from __future__ import annotations
 import json
 import os
 import threading
-import time
 import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -38,6 +37,20 @@ _TASKS_FILE = os.path.join("config", "scheduled_tasks.json")
 _POLL_INTERVAL = 15   # seconds
 
 
+def _to_local_naive(dt: datetime) -> datetime:
+    """Normalize a datetime to naive local time.
+
+    The scheduler compares everything against datetime.now(), which is naive
+    local wall-clock. A tz-aware 'at' value (e.g. '...T20:00:00+00:00') must be
+    converted to local time first; merely dropping tzinfo would read 20:00 UTC
+    as 20:00 local and fire at the wrong moment. Naive inputs are assumed to be
+    local already and pass through unchanged.
+    """
+    if dt.tzinfo is not None:
+        return dt.astimezone().replace(tzinfo=None)
+    return dt
+
+
 class Scheduler:
     """Persistent multi-type task scheduler wired to the assistant."""
 
@@ -46,6 +59,7 @@ class Scheduler:
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
         self._running = False
+        self._stop_event = threading.Event()
         self._assistant = None
         # Fired-key set prevents double-fire of legacy daily tasks
         self._legacy_fired: set[str] = set()
@@ -65,6 +79,7 @@ class Scheduler:
         self._import_legacy(legacy_schedule)
 
         self._running = True
+        self._stop_event.clear()
         self._thread = threading.Thread(
             target=self._loop, daemon=True, name="TalonScheduler"
         )
@@ -75,9 +90,18 @@ class Scheduler:
         cron_status = "croniter available" if _HAS_CRONITER else "croniter not installed — cron tasks disabled"
         log.info(f"[Scheduler] Started — {len(enabled)} active task(s) ({cron_status})")
 
-    def stop(self) -> None:
-        """Stop the background polling thread."""
+    def stop(self, timeout: float = _POLL_INTERVAL + 5) -> None:
+        """Stop the background polling thread and wait for it to exit.
+
+        Sets the stop event, which wakes the loop immediately from its
+        between-tick wait instead of leaving it to sleep out the remaining
+        poll interval, then joins so callers know polling has fully ceased.
+        """
         self._running = False
+        self._stop_event.set()
+        thread = self._thread
+        if thread is not None and thread.is_alive() and thread is not threading.current_thread():
+            thread.join(timeout=timeout)
 
     def create_task(
         self,
@@ -108,7 +132,7 @@ class Scheduler:
             except ValueError as exc:
                 raise ValueError(f"Invalid ISO datetime for 'at': {at!r}") from exc
             naive_now = datetime.now()
-            fire_naive = fire_dt.replace(tzinfo=None)
+            fire_naive = _to_local_naive(fire_dt)
             if fire_naive < naive_now:
                 raise ValueError(f"'at' datetime {at!r} is in the past")
 
@@ -192,12 +216,14 @@ class Scheduler:
     # ── Internal loop ─────────────────────────────────────────────────────────
 
     def _loop(self) -> None:
-        while self._running:
+        while not self._stop_event.is_set():
             try:
                 self._tick()
             except Exception as exc:
                 log.error(f"[Scheduler] Unexpected error in tick: {exc}")
-            time.sleep(_POLL_INTERVAL)
+            # Event.wait returns early (True) the moment stop() fires, so a
+            # shutdown does not have to wait out the rest of the poll interval.
+            self._stop_event.wait(_POLL_INTERVAL)
 
     def _tick(self) -> None:
         now = datetime.now()
@@ -220,7 +246,7 @@ class Scheduler:
                 if not at_str:
                     continue
                 try:
-                    fire_dt = datetime.fromisoformat(at_str).replace(tzinfo=None)
+                    fire_dt = _to_local_naive(datetime.fromisoformat(at_str))
                     if now >= fire_dt:
                         to_fire.append(task)
                         once_done_ids.append(task["id"])
@@ -264,7 +290,7 @@ class Scheduler:
                                     t["next_cron_run"] = itr.get_next(datetime).isoformat()
                                     t["last_run"] = now.isoformat()
                                     break
-                except (ValueError, Exception):
+                except Exception:
                     continue
 
             # ── legacy (settings.json daily-time tasks) ───────────────────
