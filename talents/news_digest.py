@@ -120,6 +120,20 @@ def _esc(s: str) -> str:
     return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
 
 
+def _safe_href(link: str) -> str:
+    """Return an attribute-safe href from untrusted feed data.
+
+    Story links come straight from RSS items, so a hostile feed could supply
+    ``javascript:...`` (XSS on click) or ``" onmouseover="...`` (attribute
+    breakout). Allow only absolute http(s) URLs; collapse anything else to
+    ``#``, then HTML-escape so quotes can't break out of the attribute.
+    """
+    link = (link or "").strip()
+    if link.lower().startswith(("http://", "https://")):
+        return _esc(link)
+    return "#"
+
+
 # ── talent ────────────────────────────────────────────────────────────────────
 
 class NewsDigestTalent(BaseTalent):
@@ -275,7 +289,7 @@ class NewsDigestTalent(BaseTalent):
                 html += f'    <div class="source-name">&#128225; {_esc(sg["source"])}</div>\n'
                 for story in sg["stories"]:
                     title   = _esc(story.get("title", ""))
-                    link    = story.get("link", "#")
+                    link    = _safe_href(story.get("link", "#"))
                     summary = _esc(story.get("summary", ""))
                     age     = _esc(story.get("age", ""))
                     html += f'    <div class="story">\n'

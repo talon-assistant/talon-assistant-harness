@@ -11,6 +11,9 @@ from __future__ import annotations
 
 import re
 import os
+import socket
+import ipaddress
+from urllib.parse import urlparse, urljoin
 from talents.base import BaseTalent
 from core.llm_client import LLMError
 
@@ -20,6 +23,50 @@ log = logging.getLogger(__name__)
 # ── constants ────────────────────────────────────────────────────────────────
 
 MAX_CHARS = 24_000   # ~6 000 tokens — leaves headroom for prompt + response
+
+
+# ── SSRF guard ─────────────────────────────────────────────────────────────
+# URLs reach _fetch_page from the user command, the LLM, and — most riskily —
+# URLs scraped out of earlier responses (web search results, page content).
+# A planted link like http://127.0.0.1:8080/ (Talon's own llama-server) or
+# http://169.254.169.254/ (cloud metadata) must never be fetched. We resolve
+# the host and reject any private/loopback/link-local/reserved address, and
+# re-check every redirect hop. (Residual: DNS rebinding between this check and
+# the socket connect is not fully closed; the realistic literal-internal-URL
+# attack is.)
+
+def _host_resolves_public(hostname: str) -> bool:
+    """True only if every resolved address for hostname is globally routable."""
+    try:
+        infos = socket.getaddrinfo(hostname, None)
+    except Exception:
+        return False
+    if not infos:
+        return False
+    for info in infos:
+        try:
+            addr = ipaddress.ip_address(info[4][0])
+        except ValueError:
+            return False
+        if (addr.is_private or addr.is_loopback or addr.is_link_local
+                or addr.is_reserved or addr.is_multicast
+                or addr.is_unspecified):
+            return False
+    return True
+
+
+def _is_safe_public_url(url: str) -> bool:
+    """Reject non-http(s) schemes and hosts that resolve to internal addresses."""
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return False
+    if parsed.scheme not in ("http", "https"):
+        return False
+    host = parsed.hostname
+    if not host:
+        return False
+    return _host_resolves_public(host)
 
 _HEADERS = {
     "User-Agent": (
@@ -245,10 +292,31 @@ class WebBrowserTalent(BaseTalent):
             return None
 
     def _fetch_page(self, url: str) -> str | None:
-        """Fetch arbitrary URL; try trafilatura first, fall back to BS4."""
+        """Fetch arbitrary URL; try trafilatura first, fall back to BS4.
+
+        SSRF-guarded: the target and every redirect hop must resolve to a
+        public address (see _is_safe_public_url).
+        """
         try:
             import requests
-            resp = requests.get(url, headers=_HEADERS, timeout=15)
+            current = url
+            resp = None
+            for _ in range(4):  # initial + up to 3 redirects
+                if not _is_safe_public_url(current):
+                    log.warning(f"[WebBrowser] Blocked non-public URL: {current}")
+                    return None
+                resp = requests.get(current, headers=_HEADERS, timeout=15,
+                                    allow_redirects=False)
+                if resp.is_redirect or resp.is_permanent_redirect:
+                    loc = resp.headers.get("Location")
+                    if not loc:
+                        break
+                    current = urljoin(current, loc)
+                    continue
+                break
+            else:
+                log.warning(f"[WebBrowser] Too many redirects for {url}")
+                return None
             resp.raise_for_status()
             html = resp.text
         except Exception as e:
