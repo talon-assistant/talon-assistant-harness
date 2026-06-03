@@ -15,6 +15,7 @@ from typing import Any
 
 from core.security import wrap_external as _wrap_external, INJECTION_DEFENSE_CLAUSE
 from core import document_extractor as _docext
+from core.llm_client import LLMError
 
 import logging
 log = logging.getLogger(__name__)
@@ -822,7 +823,7 @@ class ConversationEngine:
                     return
                 self._a.memory.store_preference(insight, category="insight")
                 log.info(f"[Buffer] Eviction insight: {insight[:80]}")
-        except Exception as e:
+        except LLMError as e:
             log.warning(f"[Buffer] LLM unavailable: {e}")
         except Exception as e:
             log.error(f"[Buffer] Consolidation error: {e}")
@@ -865,7 +866,7 @@ class ConversationEngine:
                     return
                 self._session_summary = summary
                 log.info(f"[Buffer] Session summary: {summary[:100]}")
-        except Exception as e:
+        except LLMError as e:
             log.warning(f"[Buffer] LLM unavailable: {e}")
         except Exception as e:
             log.error(f"[Buffer] Summarisation failed: {e}")
