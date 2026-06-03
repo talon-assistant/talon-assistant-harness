@@ -1,4 +1,3 @@
-import json
 import os
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QTabWidget,
                              QWidget, QFormLayout, QLineEdit, QSpinBox,
@@ -8,6 +7,8 @@ from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QTabWidget,
                              QTableWidgetItem, QHeaderView, QAbstractItemView,
                              QGroupBox)
 from PyQt6.QtCore import pyqtSignal, Qt
+
+from core.config import update_settings
 
 
 class ListEditor(QWidget):
@@ -1332,37 +1333,17 @@ class SettingsDialog(QDialog):
                 diff[key] = current[key]
         return diff
 
-    @staticmethod
-    def _deep_merge(base: dict, overlay: dict) -> dict:
-        """Recursively merge *overlay* onto *base*, returning a new dict.
-
-        Keys in *overlay* take precedence.  Keys in *base* that are absent
-        from *overlay* are preserved — this is critical for settings sections
-        (like ``llm``) that the dialog UI does not fully manage.
-        """
-        merged = dict(base)
-        for key, val in overlay.items():
-            if (key in merged
-                    and isinstance(merged[key], dict)
-                    and isinstance(val, dict)):
-                merged[key] = SettingsDialog._deep_merge(merged[key], val)
-            else:
-                merged[key] = val
-        return merged
-
     def _on_save(self):
         new_settings = self._collect_values()
 
-        # Preserve keys the dialog doesn't manage (e.g. llm.endpoint,
-        # llm.prompt_template, llm_server, etc.) by merging collected
-        # values ON TOP of the original file contents.  This way, fields
-        # the UI doesn't display survive the save untouched.
-        try:
-            with open(self._config_path, 'r') as f:
-                existing = json.load(f)
-        except (FileNotFoundError, json.JSONDecodeError):
-            existing = {}
-        merged_settings = self._deep_merge(existing, new_settings)
+        # Merge the collected values ON TOP of the freshest on-disk contents,
+        # atomically and under the shared settings lock. Merging rather than
+        # overwriting preserves keys the dialog doesn't manage (llm.endpoint,
+        # llm.prompt_template, memory, embedding, etc.); a full overwrite or a
+        # diff-against-defaults would silently drop them. Re-reading inside
+        # update_settings means a concurrent writer (e.g. the LoRA trainer
+        # updating llm_server.lora_path) isn't clobbered.
+        merged_settings = update_settings(self._config_path, new_settings)
 
         # Check for restart-required changes
         changed = self._changed_restart_keys(merged_settings)
@@ -1370,14 +1351,6 @@ class SettingsDialog(QDialog):
             self.restart_label.setText(
                 "Some changes require an app restart to take effect.")
             self.restart_label.setVisible(True)
-
-        # Write the full merged config — no delta.  The previous approach
-        # of diffing against example defaults caused repeated data loss:
-        # sections the UI didn't fully manage (llm.prompt_template, memory,
-        # embedding, etc.) were silently stripped when they matched defaults,
-        # then failed to reload because the app expected them in the file.
-        with open(self._config_path, 'w') as f:
-            json.dump(merged_settings, f, indent=2)
 
         # Emit the full merged settings for the running app
         self.settings_saved.emit(merged_settings)

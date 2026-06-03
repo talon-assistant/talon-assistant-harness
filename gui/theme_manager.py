@@ -3,6 +3,8 @@ import re
 import json
 from PyQt6.QtCore import QObject, pyqtSignal
 
+from core.config import update_settings
+
 
 class ThemeManager(QObject):
     """Manages theme switching and font size scaling.
@@ -88,19 +90,12 @@ class ThemeManager(QObject):
     def save_preference(self):
         """Persist current theme + font_size to settings.json."""
         config_path = os.path.join(self._config_dir, "settings.json")
-        try:
-            with open(config_path, 'r') as f:
-                cfg = json.load(f)
-        except (FileNotFoundError, json.JSONDecodeError):
-            cfg = {}
-
-        cfg["appearance"] = {
-            "theme": self._current_theme,
-            "font_size": self._font_size,
-        }
-
-        with open(config_path, 'w') as f:
-            json.dump(cfg, f, indent=2)
+        update_settings(config_path, {
+            "appearance": {
+                "theme": self._current_theme,
+                "font_size": self._font_size,
+            }
+        })
 
     @property
     def current_theme(self):

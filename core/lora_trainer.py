@@ -51,6 +51,8 @@ import traceback
 from datetime import datetime
 from pathlib import Path
 
+from core.config import update_settings
+
 import logging
 log = logging.getLogger(__name__)
 
@@ -718,16 +720,13 @@ class LoRATrainer:
     def _update_settings_lora_path(self, gguf_path: str) -> None:
         """Update settings.json to point llm_server.lora_path to the new adapter."""
         settings_path = os.path.join("config", "settings.json")
+        # Only touch an existing config — training shouldn't conjure a fresh
+        # settings.json. This runs on the trainer's worker thread, so the
+        # merge-and-write is serialized against the GUI writers by update_settings.
         if not os.path.exists(settings_path):
             return
         try:
-            with open(settings_path, "r", encoding="utf-8") as f:
-                settings = json.load(f)
-            if "llm_server" not in settings:
-                settings["llm_server"] = {}
-            settings["llm_server"]["lora_path"] = gguf_path
-            with open(settings_path, "w", encoding="utf-8") as f:
-                json.dump(settings, f, indent=2, ensure_ascii=False)
+            update_settings(settings_path, {"llm_server": {"lora_path": gguf_path}})
             log.info(f"[LoRA] Updated settings.json → llm_server.lora_path = {gguf_path}")
         except Exception as e:
             log.error(f"[LoRA] Could not update settings.json: {e}")

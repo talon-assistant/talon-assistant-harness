@@ -5,7 +5,6 @@ or an external LLM endpoint (KoboldCpp, llama.cpp, OpenAI-compatible).
 """
 
 import os
-import json
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QTabWidget, QWidget,
     QFormLayout, QLineEdit, QSpinBox, QComboBox, QLabel,
@@ -13,6 +12,8 @@ from PyQt6.QtWidgets import (
     QSlider, QSizePolicy
 )
 from PyQt6.QtCore import pyqtSignal, Qt
+
+from core.config import update_settings
 
 
 class LLMSetupDialog(QDialog):
@@ -504,18 +505,10 @@ class LLMSetupDialog(QDialog):
 
         combined = {"llm": llm_cfg, "llm_server": server_cfg}
 
-        # Persist to disk
-        try:
-            with open(self._config_path, 'r') as f:
-                full_settings = json.load(f)
-        except (FileNotFoundError, json.JSONDecodeError):
-            full_settings = {}
-
-        full_settings["llm"] = llm_cfg
-        full_settings["llm_server"] = server_cfg
-
-        with open(self._config_path, 'w') as f:
-            json.dump(full_settings, f, indent=2)
+        # Persist to disk — merge onto the freshest on-disk content, atomically
+        # and under the shared settings lock, so a concurrent write (e.g. the
+        # LoRA trainer updating llm_server.lora_path) can't be clobbered.
+        update_settings(self._config_path, combined)
 
         self.settings_saved.emit(combined)
         self.accept()
