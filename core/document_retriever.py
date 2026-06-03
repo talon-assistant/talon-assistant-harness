@@ -29,7 +29,6 @@ class DocumentRetriever:
 
     def get_document_context(self, query: str, explicit: bool = False,
                              alt_queries: list | None = None,
-                             multi_hop: bool = False,
                              synthesis: bool = False) -> str:
         """Retrieve document chunks for RAG injection into the conversation path.
 
@@ -42,10 +41,8 @@ class DocumentRetriever:
             alt_queries: Optional list of alternate queries (synonyms / related
                          terms) whose results are unioned with the primary query
                          and deduplicated. Explicit mode only.
-            multi_hop:   If True, fire a second retrieval pass using entity names
-                         extracted from the top chunks (explicit mode only).
-            synthesis:   If True, use explicit-grade retrieval (wide cap, RRF) but
-                         skip multi-hop. For compare/list-all queries.
+            synthesis:   If True, use explicit-grade retrieval (wide cap, RRF).
+                         For compare/list-all queries.
 
         Returns:
             Formatted string ready for injection, or "" if nothing qualifies.
@@ -56,10 +53,9 @@ class DocumentRetriever:
         use_explicit = explicit or synthesis
         n_results = 12 if use_explicit else 2
         max_distance = 1.8 if use_explicit else 0.55
-        meta_cache: dict[str, dict] = {}  # text[:100] → full ChromaDB metadata dict
 
         def _run_query(q: str) -> list[tuple]:
-            """Run one ChromaDB query; cache metadata; return (fn, text, dist, pg) tuples."""
+            """Run one ChromaDB query; return (fn, text, dist, pg) tuples."""
             try:
                 results = self._docs.query(
                     query_embeddings=_emb.embed_queries([q], self._embed_model),
@@ -75,7 +71,6 @@ class DocumentRetriever:
                     results["distances"][0],
                 ):
                     if dist <= max_distance:
-                        meta_cache[doc[:100]] = meta
                         hits.append((meta.get("filename", "unknown file"), doc, dist,
                                      meta.get("page_number")))
                 return hits
@@ -125,7 +120,6 @@ class DocumentRetriever:
                                 key = doc[:100]
                                 if key not in seen_txt:
                                     seen_txt.add(key)
-                                    meta_cache[key] = meta
                                     all_chunks.append(
                                         (meta.get("filename", "unknown file"), doc, 1.0,
                                          meta.get("page_number"))
@@ -1101,7 +1095,10 @@ class DocumentRetriever:
                     "text": display_text,
                     "preview": preview,
                     "dist": dist,
-                    "kw_score": _kw_score(txt),
+                    # Score the VISION-stripped text so an AI page description
+                    # can't inflate the count the deep-search agent uses to
+                    # pick which source to drill into.
+                    "kw_score": _kw_score(display_text),
                 })
             return out
         except Exception as e:
@@ -1562,102 +1559,3 @@ class DocumentRetriever:
                 accepted_by_file.setdefault(filename, []).append(word_set)
 
         return accepted
-
-    def _parse_entity_names_from_chunk(self, text: str, meta: dict) -> list[str]:
-        """Extract entity names from a chunk for multi-hop queries.
-
-        Prefers the 'entity_names' metadata field (written by --mdextraction).
-        Falls back to parsing [METADATA: {...}] embedded in chunk text.
-
-        Returns list of name strings, empty list on failure.
-        """
-        if meta.get("entity_names"):
-            return [n.strip() for n in meta["entity_names"].split(",") if n.strip()]
-
-        match = re.search(r'\[METADATA:\s*(\{.*?\})\]', text, re.DOTALL)
-        if match:
-            try:
-                parsed = json.loads(match.group(1))
-                return [e["name"] for e in parsed.get("entities", []) if e.get("name")]
-            except Exception:
-                pass
-        return []
-
-    def _second_hop_query(
-        self,
-        entity_names: list[str],
-        original_query: str,
-        seen_keys: set[str],
-        n_results: int = 2,
-    ) -> list[tuple]:
-        """Retrieve additional chunks referenced by named entities in top results.
-
-        For each entity, tries metadata-field lookup first (requires --mdextraction
-        ingest), then falls back to semantic search. Skips entities already present
-        in the original query (trivial re-fetch). Returns at most 4 new chunks.
-
-        Args:
-            entity_names:    Candidates from top chunk metadata/text.
-            original_query:  Skip entities that already appear in it.
-            seen_keys:       text[:100] keys already in result set; updated in-place.
-            n_results:       Max semantic fallback results per entity.
-        """
-        query_lower = original_query.lower()
-        hop_chunks: list[tuple] = []
-        entities_tried = 0
-
-        for entity in entity_names:
-            if entities_tried >= 3 or len(hop_chunks) >= 4:
-                break
-            if entity.lower() in query_lower:
-                continue
-
-            entities_tried += 1
-            new_chunks: list[tuple] = []
-
-            # Attempt 1: structured metadata lookup (only works for --mdextraction docs)
-            try:
-                hits = self._docs.get(
-                    where={"entity_names": {"$contains": entity}},
-                    limit=4,
-                    include=["documents", "metadatas"],
-                )
-                for doc, meta in zip(hits.get("documents", []), hits.get("metadatas", [])):
-                    key = doc[:100]
-                    if key not in seen_keys:
-                        seen_keys.add(key)
-                        new_chunks.append((
-                            meta.get("filename", "unknown file"),
-                            doc, 0.5, meta.get("page_number"),
-                        ))
-            except Exception:
-                pass
-
-            # Attempt 2: semantic fallback when no metadata hits
-            if not new_chunks:
-                try:
-                    results = self._docs.query(
-                        query_embeddings=_emb.embed_queries([entity], self._embed_model),
-                        n_results=n_results,
-                        include=["documents", "metadatas", "distances"],
-                    )
-                    if results["documents"] and results["documents"][0]:
-                        for doc, meta, dist in zip(
-                            results["documents"][0],
-                            results["metadatas"][0],
-                            results["distances"][0],
-                        ):
-                            if dist <= 1.4:
-                                key = doc[:100]
-                                if key not in seen_keys:
-                                    seen_keys.add(key)
-                                    new_chunks.append((
-                                        meta.get("filename", "unknown file"),
-                                        doc, dist, meta.get("page_number"),
-                                    ))
-                except Exception:
-                    pass
-
-            hop_chunks.extend(new_chunks)
-
-        return hop_chunks[:4]

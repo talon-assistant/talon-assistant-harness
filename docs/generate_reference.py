@@ -1201,15 +1201,6 @@ class LLMError(Exception):
         "source document. Word-set Jaccard similarity is computed between chunks sharing the "
         "same filename. Higher-ranked chunks (earlier in list) are always kept.", S)
 
-    story += section("Multi-Hop Entity Extraction", S)
-    story += body(
-        "When multi_hop=True, entity names are parsed from the top 3 chunks via "
-        "_parse_entity_names_from_chunk(). This checks for an 'entity_names' metadata "
-        "field first, then falls back to parsing [METADATA: {...}] blocks. A second-hop "
-        "query fires for each extracted entity (up to 6), using metadata field lookup "
-        "first and semantic search as fallback. Hop chunks are discounted by inflating "
-        "their distance before RRF fusion.", S)
-
     story += section("Explicit RAG Preamble", S)
     story += body(
         "In explicit mode, the preamble instructs the LLM to prioritize document content, "

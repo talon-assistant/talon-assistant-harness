@@ -337,7 +337,6 @@ class ConversationEngine:
         is_deep_search = intent == "deep_search"
         use_explicit_rag = (rag_explicit or is_deep_search
                             or intent in ("factual", "synthesis"))
-        do_multi_hop     = rag_explicit or intent == "factual"
 
         # Override the prompt for heuristic-detected factual/synthesis/deep queries.
         # When rag_explicit is True the prompt was already set above; this handles
@@ -407,7 +406,6 @@ class ConversationEngine:
                 rag_query,
                 explicit=True,
                 alt_queries=rag_alt_queries,
-                multi_hop=do_multi_hop,
                 synthesis=(intent == "synthesis"),
             )
         else:
