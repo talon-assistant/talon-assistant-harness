@@ -1355,6 +1355,10 @@ class JobSearchTalent(BaseTalent):
         all_jobs: list[dict] = []
         errors: list[str] = []
         sites_searched: set[str] = set()
+        # Per-site result counts, keyed by the sites that actually ran a
+        # scraper. Lets us tell "every source returned 0" (likely breakage)
+        # apart from "search worked, nothing matched" further down.
+        per_site_counts: dict[str, int] = {}
 
         for url in urls:
             site = _detect_site(url)
@@ -1369,6 +1373,7 @@ class JobSearchTalent(BaseTalent):
                 if scraper:
                     jobs = scraper(url)
                     all_jobs.extend(jobs)
+                    per_site_counts[site] = per_site_counts.get(site, 0) + len(jobs)
                 else:
                     log.warning(f"[JobSearch] Unknown site for URL: {url[:60]}")
             except Exception as e:
@@ -1386,6 +1391,21 @@ class JobSearchTalent(BaseTalent):
 
         sites_label = ", ".join(s.title() for s in sorted(sites_searched))
         if not all_jobs:
+            # Every scraper that ran returned 0 without raising. If two or
+            # more independent sites all came back empty, that is almost
+            # always a broken selector or a silent block page rather than a
+            # genuine absence of matching jobs \u2014 surface it so it is not
+            # mistaken for a successful "nothing matched" search.
+            if len(per_site_counts) >= 2:
+                return _ok(
+                    f"Searched {sites_label} ({len(urls)} URL(s)) but every "
+                    "source returned 0 listings. That usually means a site "
+                    "changed its layout or is blocking automated access, not "
+                    "that there are no matching jobs. The scrapers may need "
+                    "updating.",
+                    actions=[{"action": "search", "found": 0, "new": 0,
+                              "all_sources_empty": True}],
+                )
             return _ok(
                 f"Searched {sites_label} ({len(urls)} URL(s)) \u2014 "
                 "no listings found.",
@@ -3265,10 +3285,13 @@ class JobSearchTalent(BaseTalent):
                     updated += 1
 
                     # Auto-archive poor fits so they don't clutter the
-                    # inbox. Threshold: score <= 20.
+                    # inbox. Threshold: score <= 20. Use db.archive() so the
+                    # archived flag (and archived_at) are set — writing
+                    # status="archived" left archived=0, so the row still
+                    # showed in the inbox and never hit the retention purge.
                     score = fields.get("fit_score", 100)
                     if score <= 20:
-                        db.update_application(app_id, status="archived")
+                        db.archive(app_id)
                         log.info(
                             f"[JobSearch] Auto-archived #{app_id} "
                             f"(fit_score={score})"
