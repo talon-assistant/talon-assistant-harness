@@ -1066,9 +1066,11 @@ class JobTrackerTalent(BaseTalent):
 
     def _handle_cover_letter(self, command: str, context: dict) -> dict:
         """Generate a cover letter for a specific application via Claude CLI."""
-        # Find the application - try ID first, then company name
+        # Find the application - try ID first, then company name.
+        # Require a leading '#' so bare numbers in the command (a year, a
+        # headcount, a salary) are not misread as an application ID.
         app = None
-        id_match = re.search(r'#?(\d+)', command)
+        id_match = re.search(r'#(\d+)', command)
         if id_match:
             app = self._db.get_application(int(id_match.group(1)))
 
@@ -1637,7 +1639,19 @@ class JobTrackerTalent(BaseTalent):
 
     @staticmethod
     def _fetch_job_description(job_url: str) -> str:
-        """Fetch job description text from a URL using selenium."""
+        """Fetch job description text from a URL using selenium.
+
+        Uses the shared persistent Chrome profile (to keep any LinkedIn
+        login), so it must hold _linkedin_lock for the duration: that profile
+        allows only one active Selenium driver at a time, and a concurrent
+        recon / 'I'm Interested' session would otherwise collide on the locked
+        user-data-dir. JD fetch is best-effort, so if the lock is busy we skip
+        rather than block the caller indefinitely.
+        """
+        if not JobTrackerTalent._linkedin_lock.acquire(timeout=20):
+            log.warning("[JobTracker] LinkedIn session busy, skipping JD "
+                        f"fetch for {job_url}")
+            return ""
         try:
             from selenium import webdriver
             from selenium.webdriver.chrome.options import Options
@@ -1677,6 +1691,8 @@ class JobTrackerTalent(BaseTalent):
         except Exception as e:
             log.warning(f"[JobTracker] Could not fetch JD from {job_url}: {e}")
             return ""
+        finally:
+            JobTrackerTalent._linkedin_lock.release()
 
     @staticmethod
     def _write_cover_letter_docx(

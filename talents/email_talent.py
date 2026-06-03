@@ -104,7 +104,9 @@ class EmailTalent(BaseTalent):
         self._imap = None
         self._connected = False
         # Cache of last fetched email list for index/subject-based addressing.
-        # Each entry: {seq_num, from, subject, date, message_id}
+        # Keyed by IMAP UID (stable across reconnects) rather than sequence
+        # number, which shifts when messages are expunged between commands.
+        # Each entry: {uid, from, subject, date, message_id}
         self._email_cache: list[dict] = []
 
     # ── Config schema ──────────────────────────────────────────────
@@ -187,7 +189,7 @@ class EmailTalent(BaseTalent):
             imap.select("INBOX", readonly=True)
 
             # Get unread count
-            status, data = imap.search(None, "UNSEEN")
+            status, data = imap.uid('search', None, "UNSEEN")
             unread_ids = data[0].split() if data[0] else []
             unread_count = len(unread_ids)
 
@@ -197,7 +199,7 @@ class EmailTalent(BaseTalent):
             if unread_ids:
                 fetch_ids = unread_ids[-max_fetch:]
             else:
-                status, data = imap.search(None, "ALL")
+                status, data = imap.uid('search', None, "ALL")
                 all_ids = data[0].split() if data[0] else []
                 fetch_ids = all_ids[-max_fetch:] if all_ids else []
 
@@ -216,7 +218,7 @@ class EmailTalent(BaseTalent):
             # Populate index cache for subsequent commands
             self._email_cache = [
                 {
-                    "seq_num":    mid,
+                    "uid":        mid,
                     "from":       s["from"],
                     "subject":    s["subject"],
                     "date":       s["date"],
@@ -262,14 +264,14 @@ class EmailTalent(BaseTalent):
             # Try resolving from cache first (index / sender / subject keywords)
             cache_entry = self._resolve_email_ref(command)
             if cache_entry:
-                fetch_ids = [cache_entry["seq_num"]]
+                fetch_ids = [cache_entry["uid"]]
             else:
                 # Cold start — fall back to sender filter or most recent
                 sender_filter = self._extract_sender(command)
                 if sender_filter:
-                    status, data = imap.search(None, f'FROM "{sender_filter}"')
+                    status, data = imap.uid('search', None, f'FROM "{sender_filter}"')
                 else:
-                    status, data = imap.search(None, "ALL")
+                    status, data = imap.uid('search', None, "ALL")
                 msg_ids = data[0].split() if data[0] else []
                 if not msg_ids:
                     self._disconnect()
@@ -459,13 +461,13 @@ class EmailTalent(BaseTalent):
 
             cache_entry = self._resolve_email_ref(command)
             if cache_entry:
-                fetch_ids = [cache_entry["seq_num"]]
+                fetch_ids = [cache_entry["uid"]]
             else:
                 sender_filter = self._extract_sender(command)
                 if sender_filter:
-                    status, data = imap.search(None, f'FROM "{sender_filter}"')
+                    status, data = imap.uid('search', None, f'FROM "{sender_filter}"')
                 else:
-                    status, data = imap.search(None, "ALL")
+                    status, data = imap.uid('search', None, "ALL")
                 msg_ids = data[0].split() if data[0] else []
                 if not msg_ids:
                     self._disconnect()
@@ -592,15 +594,15 @@ class EmailTalent(BaseTalent):
 
             cache_entry = self._resolve_email_ref(command)
             if cache_entry:
-                target_uid = cache_entry["seq_num"]
+                target_uid = cache_entry["uid"]
                 subject_hint = cache_entry.get("subject", "")
             else:
                 # Fall back to live search by sender
                 sender_filter = self._extract_sender(command)
                 if sender_filter:
-                    status, data = imap.search(None, f'FROM "{sender_filter}"')
+                    status, data = imap.uid('search', None, f'FROM "{sender_filter}"')
                 else:
-                    status, data = imap.search(None, "ALL")
+                    status, data = imap.uid('search', None, "ALL")
                 msg_ids = data[0].split() if data[0] else []
                 if not msg_ids:
                     self._disconnect()
@@ -613,13 +615,13 @@ class EmailTalent(BaseTalent):
                 target_uid = msg_ids[-1]
                 subject_hint = ""
 
-            imap.store(target_uid, '+FLAGS', '\\Deleted')
+            imap.uid('store', target_uid, '+FLAGS', '\\Deleted')
             imap.expunge()
             self._disconnect()
 
             # Remove from cache
             self._email_cache = [
-                e for e in self._email_cache if e["seq_num"] != target_uid
+                e for e in self._email_cache if e["uid"] != target_uid
             ]
 
             desc = f" ({subject_hint})" if subject_hint else ""
@@ -699,13 +701,13 @@ class EmailTalent(BaseTalent):
 
             cache_entry = self._resolve_email_ref(command)
             if cache_entry:
-                target_uid = cache_entry["seq_num"]
+                target_uid = cache_entry["uid"]
             else:
                 sender_filter = self._extract_sender(command)
                 if sender_filter:
-                    status, data = imap.search(None, f'FROM "{sender_filter}"')
+                    status, data = imap.uid('search', None, f'FROM "{sender_filter}"')
                 else:
-                    status, data = imap.search(None, "ALL")
+                    status, data = imap.uid('search', None, "ALL")
                 msg_ids = data[0].split() if data[0] else []
                 if not msg_ids:
                     self._disconnect()
@@ -717,14 +719,14 @@ class EmailTalent(BaseTalent):
                     }
                 target_uid = msg_ids[-1]
 
-            imap.copy(target_uid, folder)
-            imap.store(target_uid, '+FLAGS', '\\Deleted')
+            imap.uid('copy', target_uid, folder)
+            imap.uid('store', target_uid, '+FLAGS', '\\Deleted')
             imap.expunge()
             self._disconnect()
 
             # Remove from cache
             self._email_cache = [
-                e for e in self._email_cache if e["seq_num"] != target_uid
+                e for e in self._email_cache if e["uid"] != target_uid
             ]
 
             return {
@@ -865,7 +867,7 @@ class EmailTalent(BaseTalent):
         summaries = []
         for mid in msg_ids:
             try:
-                status, data = imap.fetch(mid, "(BODY.PEEK[HEADER])")
+                status, data = imap.uid('fetch', mid, "(BODY.PEEK[HEADER])")
                 if status != "OK":
                     continue
                 if not data or not data[0] or not isinstance(data[0], tuple):
@@ -890,7 +892,7 @@ class EmailTalent(BaseTalent):
         emails = []
         for mid in msg_ids:
             try:
-                status, data = imap.fetch(mid, "(BODY.PEEK[])")
+                status, data = imap.uid('fetch', mid, "(BODY.PEEK[])")
                 if status != "OK":
                     continue
                 if not data or not data[0] or not isinstance(data[0], tuple):
