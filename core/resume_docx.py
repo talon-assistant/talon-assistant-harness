@@ -562,14 +562,16 @@ def convert_to_pdf(docx_path: Path) -> Path | None:
 
     pdf_path = docx_path.with_suffix(".pdf")
 
-    # Run conversion in a child process to isolate COM crashes
+    # Run conversion in a child process to isolate COM crashes.
+    # Paths are passed as argv (not interpolated into the -c source) so a
+    # path containing a quote can't break out and inject code.
     script = (
         "import sys; from docx2pdf import convert; "
-        f"convert(r'{docx_path}', r'{pdf_path}')"
+        "convert(sys.argv[1], sys.argv[2])"
     )
     try:
         result = _sp.run(
-            [sys.executable, "-c", script],
+            [sys.executable, "-c", script, str(docx_path), str(pdf_path)],
             capture_output=True, text=True, timeout=60,
         )
         if pdf_path.exists():
