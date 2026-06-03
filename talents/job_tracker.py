@@ -1902,7 +1902,7 @@ class JobTrackerTalent(BaseTalent):
                     skipped += 1
                     continue
 
-                self._db.add(
+                self._db.add_application(
                     company=company,
                     position=position,
                     source=source,
@@ -2188,7 +2188,7 @@ class JobTrackerTalent(BaseTalent):
                 score = int(result.get("fit_score", 0))
                 # Update DB
                 if self._db:
-                    self._db.update(app_id, fit_score=score)
+                    self._db.update_application(app_id, fit_score=score)
                 return result
         except Exception as e:
             log.error(f"[JobTracker] Fit evaluation parse error: {e}")
@@ -2199,7 +2199,7 @@ class JobTrackerTalent(BaseTalent):
         """Ask Claude to draft a follow-up email for an application."""
         if not self._db:
             return None
-        app = self._db.get(app_id)
+        app = self._db.get_application(app_id)
         if not app:
             return None
 
@@ -2256,7 +2256,7 @@ class JobTrackerTalent(BaseTalent):
         """
         if not self._db:
             return None
-        app = self._db.get(app_id)
+        app = self._db.get_application(app_id)
         if not app:
             return None
 
@@ -2276,7 +2276,7 @@ class JobTrackerTalent(BaseTalent):
             ),
         })
         if task_id and self._db:
-            self._db.update(app_id, cowork_task_id=task_id)
+            self._db.update_application(app_id, cowork_task_id=task_id)
         return task_id
 
     @staticmethod
