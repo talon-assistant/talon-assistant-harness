@@ -3,6 +3,7 @@ import re
 import sqlite3
 import json
 import time
+import threading
 from datetime import datetime
 
 import logging
@@ -16,6 +17,46 @@ import chromadb
 from core import embeddings as _emb
 from core import reranker as _reranker
 from core.document_retriever import DocumentRetriever
+
+
+class _LockedCollection:
+    """Thread-safe proxy over a ChromaDB collection.
+
+    ChromaDB's PersistentClient (SQLite + HNSW) is not safe for concurrent
+    access across threads. The background reflection thread writes free
+    thoughts and belief-reconciliation memories while the main thread reads
+    and writes the same collection; running those at the same time can corrupt
+    the in-memory HNSW index. This proxy routes every collection call through a
+    shared lock so all access — from any thread, any caller — is serialized.
+
+    Only talon_memory is wrapped: it is the one collection that both the main
+    thread and the reflection thread touch (and lora_trainer reads it too). The
+    documents, notes, rules, and corrections collections are single-threaded in
+    practice, so they stay unwrapped to keep the RAG read path lock-free.
+    """
+
+    # Every public ChromaDB collection operation reads or mutates the shared
+    # HNSW index, so all of them must hold the lock.
+    _GUARDED = frozenset({
+        "add", "get", "query", "delete", "update", "upsert",
+        "count", "peek", "modify",
+    })
+
+    def __init__(self, collection, lock):
+        self._collection = collection
+        self._lock = lock
+
+    def __getattr__(self, name):
+        attr = getattr(self._collection, name)
+        if callable(attr) and name in self._GUARDED:
+            lock = self._lock
+
+            def _locked(*args, **kwargs):
+                with lock:
+                    return attr(*args, **kwargs)
+
+            return _locked
+        return attr
 
 
 class MemorySystem:
@@ -38,10 +79,20 @@ class MemorySystem:
         # ChromaDB client
         self.chroma_client = chromadb.PersistentClient(path=chroma_path)
 
-        # Collection for conversation memory
-        self.memory_collection = self.chroma_client.get_or_create_collection(
-            name="talon_memory",
-            metadata={"description": "Talon conversation and preference memory"}
+        # Serializes access to talon_memory across the main thread and the
+        # background reflection thread (see _LockedCollection). Re-entrant so a
+        # read-modify-write method can hold it across several proxied calls
+        # without self-deadlock.
+        self._chroma_lock = threading.RLock()
+
+        # Collection for conversation memory — wrapped so every read/write is
+        # serialized; the reflection thread and lora_trainer also reach it.
+        self.memory_collection = _LockedCollection(
+            self.chroma_client.get_or_create_collection(
+                name="talon_memory",
+                metadata={"description": "Talon conversation and preference memory"}
+            ),
+            self._chroma_lock,
         )
 
         # Collection for documents
