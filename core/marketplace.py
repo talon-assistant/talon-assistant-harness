@@ -10,9 +10,11 @@ Talents are downloaded as single .py files into talents/user/.
 import os
 import json
 import time
+import hashlib
 import requests
 import ast
 import inspect
+from urllib.parse import urlparse
 from talents.base import BaseTalent
 
 import logging
@@ -25,6 +27,100 @@ DEFAULT_CATALOG_URL = (
 
 # How long to cache the catalog locally (seconds)
 CACHE_TTL = 600  # 10 minutes
+
+# Hosts a talent .py may be downloaded from. The configured catalog's own
+# host is always added to this set at runtime. Anything else is rejected so
+# a tampered catalog entry can't point the download at an arbitrary server.
+_ALLOWED_DOWNLOAD_HOSTS = frozenset({
+    "raw.githubusercontent.com",
+    "github.com",
+    "objects.githubusercontent.com",
+    "codeload.github.com",
+    "gist.githubusercontent.com",
+})
+
+# Hard ceiling on a downloaded talent file (bytes). A talent is a single .py;
+# anything larger is almost certainly hostile or a misconfigured URL.
+_MAX_TALENT_BYTES = 1_000_000
+
+
+def _host_allowed(url, catalog_url):
+    """True if `url` is https and its host is on the download allowlist.
+
+    The catalog's own host is always permitted so a self-hosted catalog can
+    serve its own talents without extra configuration.
+    """
+    try:
+        p = urlparse(url)
+    except Exception:
+        return False
+    if p.scheme != "https":
+        return False
+    host = (p.hostname or "").lower()
+    if not host:
+        return False
+    allowed = set(_ALLOWED_DOWNLOAD_HOSTS)
+    try:
+        cat_host = (urlparse(catalog_url).hostname or "").lower()
+        if cat_host:
+            allowed.add(cat_host)
+    except Exception:
+        pass
+    return host in allowed
+
+
+# AST node patterns that almost never appear in a legitimate talent and are
+# the classic obfuscation / sandbox-escape tells. Surfaced to the user in the
+# install review step rather than hard-blocked: the human approval is the gate.
+_DANGEROUS_DUNDERS = frozenset({
+    "__subclasses__", "__globals__", "__bases__", "__mro__",
+    "__builtins__", "__base__", "__code__", "__import__",
+})
+_SUBPROCESS_FUNCS = frozenset({
+    "system", "popen", "Popen", "run", "call", "check_call", "check_output",
+})
+
+
+def _scan_source_security(tree):
+    """Return a list of human-readable warnings about risky constructs.
+
+    This is advisory, not a verdict — talents legitimately need real power
+    (file access, network, subprocess). The list is shown to the user before
+    the code is ever written or imported so they can make an informed call.
+    """
+    warnings = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            fn = node.func
+            # Bare calls: eval(...), exec(...), compile(...), __import__(...)
+            if isinstance(fn, ast.Name) and fn.id in (
+                "eval", "exec", "compile", "__import__",
+            ):
+                warnings.append(f"line {node.lineno}: calls {fn.id}()")
+            # Attribute calls: os.system / os.popen / subprocess.*
+            elif isinstance(fn, ast.Attribute):
+                attr = fn.attr
+                mod = fn.value.id if isinstance(fn.value, ast.Name) else ""
+                if mod == "os" and attr in ("system", "popen"):
+                    warnings.append(f"line {node.lineno}: calls os.{attr}()")
+                elif mod == "subprocess" and attr in _SUBPROCESS_FUNCS:
+                    shelled = any(
+                        kw.arg == "shell"
+                        and isinstance(kw.value, ast.Constant)
+                        and kw.value.value is True
+                        for kw in node.keywords
+                    )
+                    suffix = " with shell=True" if shelled else ""
+                    warnings.append(
+                        f"line {node.lineno}: subprocess.{attr}(){suffix}")
+                elif attr in ("loads", "load") and mod in ("pickle", "marshal"):
+                    warnings.append(
+                        f"line {node.lineno}: {mod}.{attr}() (arbitrary "
+                        "object/code deserialization)")
+        # Attribute access to dunder internals used for sandbox escapes
+        elif isinstance(node, ast.Attribute) and node.attr in _DANGEROUS_DUNDERS:
+            warnings.append(f"line {node.lineno}: accesses {node.attr}")
+    return warnings
 
 
 def _data_dir():
@@ -154,46 +250,112 @@ class MarketplaceClient:
 
     # ── Install ────────────────────────────────────────────────────
 
-    def install_talent(self, talent_entry):
-        """Download and validate a talent from the catalog.
+    def fetch_and_validate(self, talent_entry):
+        """Download a talent and validate it WITHOUT writing it to disk.
+
+        Enforces transport security (https + host allowlist), integrity
+        (sha256 when the catalog entry provides one), structural validity,
+        and a static danger scan. The source is returned so the caller can
+        show it to the user for explicit approval before commit_install().
 
         Args:
-            talent_entry: dict from catalog with at least 'download_url' and 'filename'
+            talent_entry: catalog dict with 'download_url' and 'filename'
+                          (optional 'sha256' for integrity verification).
+
+        Returns:
+            dict: {success, source_code, filename, talent_info, warnings,
+                   verified, error}
+        """
+        download_url = talent_entry.get("download_url", "")
+        filename = talent_entry.get("filename", "")
+        expected_sha = (talent_entry.get("sha256") or "").strip().lower()
+
+        if not download_url or not filename:
+            return {"success": False,
+                    "error": "Missing download_url or filename in catalog entry"}
+
+        # Reject path traversal / nested paths in the filename.
+        if (not filename.endswith(".py")
+                or filename != os.path.basename(filename)
+                or filename.startswith(".")):
+            return {"success": False,
+                    "error": "Talent filename must be a simple .py file name"}
+
+        # Transport security: https + pinned host allowlist.
+        if not _host_allowed(download_url, self.catalog_url):
+            return {"success": False,
+                    "error": ("Refusing to download: URL must be https and on "
+                              f"an allowed host. Got: {download_url}")}
+
+        # Download the file (cap size, verify the final URL host too in case
+        # an allowed host redirected somewhere untrusted).
+        try:
+            log.info(f"[Marketplace] Downloading {filename} from {download_url}")
+            bust = f"{'&' if '?' in download_url else '?'}t={int(time.time())}"
+            resp = requests.get(download_url + bust, timeout=30,
+                                stream=True)
+            if resp.status_code != 200:
+                return {"success": False,
+                        "error": f"Download failed (HTTP {resp.status_code})"}
+            if not _host_allowed(resp.url, self.catalog_url):
+                return {"success": False,
+                        "error": f"Download redirected to a disallowed host: {resp.url}"}
+            raw = resp.raw.read(_MAX_TALENT_BYTES + 1, decode_content=True)
+            if len(raw) > _MAX_TALENT_BYTES:
+                return {"success": False,
+                        "error": f"Talent file exceeds {_MAX_TALENT_BYTES} bytes"}
+            source_code = raw.decode("utf-8", errors="replace")
+        except Exception as e:
+            return {"success": False, "error": f"Download error: {e}"}
+
+        # Integrity: if the catalog declares a hash, it MUST match.
+        actual_sha = hashlib.sha256(raw).hexdigest()
+        if expected_sha:
+            if actual_sha != expected_sha:
+                return {"success": False,
+                        "error": ("Integrity check failed: sha256 mismatch "
+                                  f"(expected {expected_sha[:12]}…, "
+                                  f"got {actual_sha[:12]}…)")}
+            verified = True
+        else:
+            verified = False  # no declared hash — caller should warn the user
+
+        # Structural validation + static danger scan.
+        validation = self.validate_source(source_code, filename)
+        if not validation["valid"]:
+            return {"success": False, "error": validation["error"]}
+
+        return {
+            "success": True,
+            "source_code": source_code,
+            "filename": filename,
+            "talent_info": validation.get("talent_info", {}),
+            "warnings": validation.get("warnings", []),
+            "verified": verified,
+            "sha256": actual_sha,
+            "error": "",
+        }
+
+    def commit_install(self, filename, source_code):
+        """Write already-validated talent source to talents/user/.
+
+        Call this only after fetch_and_validate() succeeded and the user has
+        reviewed the source. Re-validates defensively before writing.
 
         Returns:
             dict: {"success": bool, "filepath": str, "error": str}
         """
-        download_url = talent_entry.get("download_url", "")
-        filename = talent_entry.get("filename", "")
-
-        if not download_url or not filename:
+        if (not filename.endswith(".py")
+                or filename != os.path.basename(filename)
+                or filename.startswith(".")):
             return {"success": False, "filepath": "",
-                    "error": "Missing download_url or filename in catalog entry"}
+                    "error": "Invalid talent filename"}
 
-        if not filename.endswith(".py"):
-            return {"success": False, "filepath": "",
-                    "error": "Talent file must be a .py file"}
-
-        # Download the file
-        try:
-            log.info(f"[Marketplace] Downloading {filename} from {download_url}")
-            bust = f"{'&' if '?' in download_url else '?'}t={int(time.time())}"
-            resp = requests.get(download_url + bust, timeout=30)
-            if resp.status_code != 200:
-                return {"success": False, "filepath": "",
-                        "error": f"Download failed (HTTP {resp.status_code})"}
-            source_code = resp.text
-        except Exception as e:
-            return {"success": False, "filepath": "",
-                    "error": f"Download error: {e}"}
-
-        # Validate via AST (same approach as ImportTalentDialog)
         validation = self.validate_source(source_code, filename)
         if not validation["valid"]:
             return {"success": False, "filepath": "",
                     "error": validation["error"]}
 
-        # Write to talents/user/
         dest_path = os.path.join(_user_talents_dir(), filename)
         try:
             with open(dest_path, 'w', encoding='utf-8') as f:
@@ -251,15 +413,19 @@ class MarketplaceClient:
         - Valid Python syntax
         - Contains at least one BaseTalent subclass
         - Has required class attributes (name, description)
+        - Scans for risky constructs (advisory warnings, not a hard block)
 
         Returns:
-            dict: {"valid": bool, "error": str, "talent_info": dict}
+            dict: {"valid": bool, "error": str, "talent_info": dict,
+                   "warnings": list[str]}
         """
         try:
             tree = ast.parse(source_code, filename=filename)
         except SyntaxError as e:
             return {"valid": False, "error": f"Syntax error: {e}",
-                    "talent_info": {}}
+                    "talent_info": {}, "warnings": []}
+
+        warnings = _scan_source_security(tree)
 
         # Find BaseTalent subclasses
         found = []
@@ -286,15 +452,16 @@ class MarketplaceClient:
         if not found:
             return {"valid": False,
                     "error": "No BaseTalent subclass found in file",
-                    "talent_info": {}}
+                    "talent_info": {}, "warnings": warnings}
 
         talent_info = found[0]
         if "name" not in talent_info:
             return {"valid": False,
                     "error": "Talent class missing 'name' attribute",
-                    "talent_info": talent_info}
+                    "talent_info": talent_info, "warnings": warnings}
 
-        return {"valid": True, "error": "", "talent_info": talent_info}
+        return {"valid": True, "error": "", "talent_info": talent_info,
+                "warnings": warnings}
 
     # ── Installed status ───────────────────────────────────────────
 

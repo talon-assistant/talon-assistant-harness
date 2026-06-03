@@ -14,7 +14,8 @@ Layout:
 
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
                              QPushButton, QLineEdit, QComboBox, QScrollArea,
-                             QWidget, QFrame, QGridLayout, QMessageBox)
+                             QWidget, QFrame, QGridLayout, QMessageBox,
+                             QPlainTextEdit, QDialogButtonBox)
 from PyQt6.QtCore import pyqtSignal, Qt, QThread, pyqtSlot
 from PyQt6.QtGui import QFont
 
@@ -38,8 +39,13 @@ class CatalogWorker(QThread):
 
 
 class InstallWorker(QThread):
-    """Download and install a talent in a background thread."""
-    install_done = pyqtSignal(dict)  # result dict from marketplace_client.install_talent
+    """Download + validate a talent in a background thread (no disk write).
+
+    The actual write happens on the GUI thread via commit_install() only
+    after the user reviews the source, so nothing untrusted is persisted or
+    imported without an explicit approval step.
+    """
+    install_done = pyqtSignal(dict)  # result dict from fetch_and_validate
     error = pyqtSignal(str)
 
     def __init__(self, marketplace_client, talent_entry):
@@ -49,10 +55,74 @@ class InstallWorker(QThread):
 
     def run(self):
         try:
-            result = self.client.install_talent(self.talent_entry)
+            result = self.client.fetch_and_validate(self.talent_entry)
             self.install_done.emit(result)
         except Exception as e:
             self.error.emit(str(e))
+
+
+class TalentReviewDialog(QDialog):
+    """Show downloaded talent source + integrity/danger findings for approval.
+
+    The marketplace serves arbitrary Python that Talon will import and run.
+    No static check can prove such code safe, so the final gate is the user
+    reading what they're about to install. Cancel is the default button.
+    """
+
+    def __init__(self, talent_entry, source_code, warnings, verified, parent=None):
+        super().__init__(parent)
+        name = talent_entry.get("name", "talent")
+        self.setWindowTitle(f"Review: {name}")
+        self.setMinimumSize(640, 520)
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(8)
+
+        author = talent_entry.get("author", "unknown")
+        version = talent_entry.get("version", "")
+        head = QLabel(f"<b>{name}</b>  v{version}  —  by {author}")
+        head.setTextFormat(Qt.TextFormat.RichText)
+        layout.addWidget(head)
+
+        if verified:
+            integrity = QLabel("Integrity: sha256 verified against catalog")
+            integrity.setStyleSheet("color: #2e7d32;")
+        else:
+            integrity = QLabel(
+                "Integrity: NOT verified — catalog entry has no sha256 hash. "
+                "Only install if you trust the source.")
+            integrity.setStyleSheet("color: #c62828;")
+        integrity.setWordWrap(True)
+        layout.addWidget(integrity)
+
+        if warnings:
+            warn = QLabel(
+                "Risky constructs found (review carefully):\n  - "
+                + "\n  - ".join(warnings))
+            warn.setStyleSheet("color: #c62828;")
+            warn.setWordWrap(True)
+            layout.addWidget(warn)
+
+        layout.addWidget(QLabel("Source code:"))
+        viewer = QPlainTextEdit()
+        viewer.setPlainText(source_code)
+        viewer.setReadOnly(True)
+        mono = QFont("Consolas")
+        mono.setStyleHint(QFont.StyleHint.Monospace)
+        viewer.setFont(mono)
+        layout.addWidget(viewer, 1)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Cancel
+            | QDialogButtonBox.StandardButton.Ok)
+        ok_btn = buttons.button(QDialogButtonBox.StandardButton.Ok)
+        ok_btn.setText("Install")
+        cancel_btn = buttons.button(QDialogButtonBox.StandardButton.Cancel)
+        cancel_btn.setDefault(True)
+        cancel_btn.setFocus()
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
 
 
 class TalentCard(QFrame):
@@ -375,17 +445,42 @@ class MarketplaceDialog(QDialog):
         self._install_worker.start()
 
     def _on_install_done(self, name, result):
-        if result.get("success"):
-            self._installed.add(name)
-            if name in self._cards:
-                self._cards[name].mark_installed()
-            self.status_label.setText(f"Installed '{name}' successfully!")
-            self.talent_installed.emit(result["filepath"])
-        else:
+        if not result.get("success"):
             error = result.get("error", "Unknown error")
             if name in self._cards:
                 self._cards[name].reset_button()
             self.status_label.setText(f"Install failed: {error}")
+            return
+
+        # Source downloaded + validated but NOT yet written. Make the user
+        # review it (and any danger/integrity findings) before we commit.
+        entry = self._cards[name].talent_entry if name in self._cards else {"name": name}
+        review = TalentReviewDialog(
+            entry,
+            result.get("source_code", ""),
+            result.get("warnings", []),
+            result.get("verified", False),
+            parent=self,
+        )
+        if review.exec() != QDialog.DialogCode.Accepted:
+            if name in self._cards:
+                self._cards[name].reset_button()
+            self.status_label.setText(f"Install of '{name}' cancelled.")
+            return
+
+        commit = self.client.commit_install(
+            result.get("filename", ""), result.get("source_code", ""))
+        if commit.get("success"):
+            self._installed.add(name)
+            if name in self._cards:
+                self._cards[name].mark_installed()
+            self.status_label.setText(f"Installed '{name}' successfully!")
+            self.talent_installed.emit(commit["filepath"])
+        else:
+            if name in self._cards:
+                self._cards[name].reset_button()
+            self.status_label.setText(
+                f"Install failed: {commit.get('error', 'Unknown error')}")
 
     def _on_install_error(self, name, error):
         if name in self._cards:
