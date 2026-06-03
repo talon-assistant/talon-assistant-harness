@@ -22,6 +22,7 @@ Usage:
 """
 from __future__ import annotations
 
+import threading
 from typing import TYPE_CHECKING
 
 import logging
@@ -29,6 +30,7 @@ log = logging.getLogger(__name__)
 
 _model = None
 _model_name: str | None = None
+_model_lock = threading.Lock()
 
 # BGE instruction prefix applied to queries only (not documents).
 # This asymmetric setup consistently improves top-k recall for retrieval tasks.
@@ -36,14 +38,25 @@ _BGE_QUERY_PREFIX = "Represent this sentence for searching relevant passages: "
 
 
 def _get_model(model_name: str):
+    """Return the cached embedding model, loading it once on first use.
+
+    Lazy load is guarded by a lock: background workers (fit analysis,
+    reflection, deep search) and the UI thread can all reach this
+    concurrently, and without the lock the first callers would each
+    construct a SentenceTransformer or observe a half-assigned global.
+    Inference (encode) needs no lock — it is read-only on the model.
+    """
     global _model, _model_name
-    if _model is None or _model_name != model_name:
-        from sentence_transformers import SentenceTransformer
-        # Run on CPU by default — KoboldCpp holds the GPU for inference.
-        _model = SentenceTransformer(model_name, device="cpu")
-        _model_name = model_name
-        log.info(f"[Embeddings] Loaded {model_name} on cpu")
-    return _model
+    if _model is not None and _model_name == model_name:
+        return _model
+    with _model_lock:
+        if _model is None or _model_name != model_name:
+            from sentence_transformers import SentenceTransformer
+            # Run on CPU by default — KoboldCpp holds the GPU for inference.
+            _model = SentenceTransformer(model_name, device="cpu")
+            _model_name = model_name
+            log.info(f"[Embeddings] Loaded {model_name} on cpu")
+        return _model
 
 
 def embed_documents(texts: list[str], model_name: str) -> list[list[float]]:

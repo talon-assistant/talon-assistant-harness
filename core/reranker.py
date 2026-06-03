@@ -12,22 +12,34 @@ Upgrade to bge-reranker-large for better quality at higher latency cost.
 """
 from __future__ import annotations
 
+import threading
 import logging
 log = logging.getLogger(__name__)
 
 _model = None
 _model_name: str | None = None
+_model_lock = threading.Lock()
 
 
 def _get_model(model_name: str):
+    """Return the cached cross-encoder, loading it once on first use.
+
+    Lazy load is guarded by a lock: explicit-mode RAG can be driven from
+    several threads at once, and without it the first callers would each
+    construct a CrossEncoder or observe a half-assigned global. Inference
+    (predict) needs no lock — it is read-only on the model.
+    """
     global _model, _model_name
-    if _model is None or _model_name != model_name:
-        from sentence_transformers import CrossEncoder
-        # CPU to avoid competing with KoboldCpp VRAM.
-        _model = CrossEncoder(model_name, device="cpu")
-        _model_name = model_name
-        log.info(f"[Reranker] Loaded {model_name} on cpu")
-    return _model
+    if _model is not None and _model_name == model_name:
+        return _model
+    with _model_lock:
+        if _model is None or _model_name != model_name:
+            from sentence_transformers import CrossEncoder
+            # CPU to avoid competing with KoboldCpp VRAM.
+            _model = CrossEncoder(model_name, device="cpu")
+            _model_name = model_name
+            log.info(f"[Reranker] Loaded {model_name} on cpu")
+        return _model
 
 
 def rerank(
