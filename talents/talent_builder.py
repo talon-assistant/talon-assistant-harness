@@ -8,11 +8,10 @@ Conversational flow:
    OR "change it to use USD" → LLM refines → show again
 """
 
+import ast
 import json
 import os
-import py_compile
 import re
-import tempfile
 from pathlib import Path
 
 from talents.base import BaseTalent
@@ -22,18 +21,56 @@ import logging
 log = logging.getLogger(__name__)
 
 
-# Dangerous patterns that are never allowed in generated code
-_FORBIDDEN_PATTERNS = [
-    "os.system(",
-    "os.popen(",
-    "os.execv(", "os.execl(", "os.execle(",
-    "__import__(",
-    "eval(",
-    "exec(",
-    "subprocess.call(", "subprocess.run(",  # but subprocess.Popen is OK if no shell=True
-    "shutil.rmtree(",
-    "open('/etc", "open('C:\\\\Windows",
-]
+# Top-level module names a generated talent may import. This is a
+# default-deny allowlist: anything not listed is rejected. Substring
+# denylists were trivially bypassable (getattr(os, "sy"+"stem"), spacing,
+# zero-width chars), so validation is now AST-based against this set.
+_ALLOWED_IMPORT_ROOTS = frozenset({
+    # stdlib — safe for talent logic
+    "json", "re", "math", "random", "time", "datetime", "calendar",
+    "pathlib", "collections", "itertools", "functools", "typing",
+    "dataclasses", "enum", "string", "textwrap", "html", "base64",
+    "hashlib", "hmac", "uuid", "decimal", "fractions", "statistics",
+    "urllib", "http", "csv", "io", "struct", "secrets", "zoneinfo",
+    "logging", "warnings", "operator", "copy", "bisect", "heapq",
+    "os",  # path/env use is fine; os.system/exec/spawn blocked at call level
+    # common third-party talent dependencies
+    "requests", "dateutil", "bs4", "feedparser", "yaml", "lxml",
+    "pandas", "numpy", "yfinance", "PIL",
+    # Talon framework
+    "talents", "core",
+})
+
+# Builtin call names that enable dynamic code execution or denylist evasion.
+_FORBIDDEN_CALL_NAMES = frozenset({
+    "eval", "exec", "compile", "__import__",
+    "getattr", "setattr", "delattr",
+    "globals", "locals", "vars",
+})
+
+# os.<name> calls that spawn processes — the actual RCE surface on the os
+# module (which is otherwise allowed for path/env use).
+_FORBIDDEN_OS_ATTRS = frozenset({
+    "system", "popen",
+    "execl", "execle", "execlp", "execlpe", "execv", "execve",
+    "execvp", "execvpe", "spawnl", "spawnle", "spawnlp", "spawnlpe",
+    "spawnv", "spawnve", "spawnvp", "spawnvpe", "startfile",
+})
+
+# Dunder internals used to climb the object graph back to builtins/eval.
+_FORBIDDEN_DUNDERS = frozenset({
+    "__subclasses__", "__globals__", "__bases__", "__mro__",
+    "__builtins__", "__base__", "__code__", "__import__", "__class__",
+})
+
+
+def _base_name(base) -> str:
+    """Name of a class base node (handles `BaseTalent` and `x.BaseTalent`)."""
+    if isinstance(base, ast.Name):
+        return base.id
+    if isinstance(base, ast.Attribute):
+        return base.attr
+    return ""
 
 # System prompt with BaseTalent API + 3 working examples
 _GENERATION_SYSTEM_PROMPT = """\
@@ -65,7 +102,10 @@ For pip packages beyond stdlib, set `required_packages = ["package_name"]`.
 3. Return the standard result dict from execute()
 4. If config (API keys) is needed, check for empty values and return a helpful config reminder
 5. Keep the code clean, concise, and well-structured
-6. Do NOT use: os.system(), eval(), exec(), __import__()
+6. SECURITY (generated code is auto-validated and rejected if it violates these):
+   - Do NOT use eval, exec, compile, __import__, getattr, setattr, delattr, globals, locals, or vars
+   - Do NOT use os.system / os.popen / os.exec* / os.spawn* / os.startfile, or import subprocess (set `subprocess_isolated = True` for heavy libs instead)
+   - Only import from: json, re, math, random, time, datetime, pathlib, collections, itertools, functools, typing, dataclasses, enum, string, html, base64, hashlib, uuid, decimal, statistics, urllib, csv, io, secrets, logging, os, requests, dateutil, bs4, feedparser, yaml, pandas, numpy, yfinance, PIL, talents, core
 
 ## Example 1: Simple API talent with config
 
@@ -371,6 +411,14 @@ class TalentBuilderTalent(BaseTalent):
         code = self._pending_code
         name = self._pending_name or "custom_talent"
 
+        # Defense-in-depth: never write/hot-load code that doesn't pass the
+        # validator, regardless of how it became the pending draft.
+        valid, error = self._validate_code(code or "")
+        if not valid:
+            self._clear_pending()
+            return self._fail(
+                f"Refusing to install — code failed validation: {error}")
+
         # Resolve destination
         dest_path = Path("talents/user") / f"{name}.py"
         if dest_path.exists():
@@ -508,40 +556,77 @@ class TalentBuilderTalent(BaseTalent):
 
     @staticmethod
     def _validate_code(code: str) -> tuple[bool, str]:
+        """Validate generated talent code by AST, default-deny.
+
+        This is a hard gate (not advisory): generated code is hot-loaded and
+        executed, so anything outside the allowlist is rejected. Covers the
+        denylist-evasion tricks the old substring scan missed — aliased os
+        imports, `from os import system`, getattr-based indirection, and
+        dunder graph-walking.
+        """
         if not code or not code.strip():
             return False, "Empty code"
 
-        # Must have a BaseTalent subclass
-        if "BaseTalent" not in code:
+        try:
+            tree = ast.parse(code)
+        except SyntaxError as e:
+            return False, f"Syntax error: {e}"
+
+        # Structural requirements
+        if not any(
+            isinstance(n, ast.ClassDef)
+            and any(_base_name(b) == "BaseTalent" for b in n.bases)
+            for n in ast.walk(tree)
+        ):
             return False, "No BaseTalent subclass found"
-        if "def execute(" not in code:
+        if not any(
+            isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and n.name == "execute"
+            for n in ast.walk(tree)
+        ):
             return False, "No execute() method found"
 
-        # Forbidden patterns
-        for p in _FORBIDDEN_PATTERNS:
-            if p in code:
-                return False, f"Forbidden pattern: {p!r}"
+        # Track local names that alias the os module so o.system() (via
+        # `import os as o`) can't slip past the os attribute check.
+        os_aliases = {"os"}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name == "os" and alias.asname:
+                        os_aliases.add(alias.asname)
 
-        # Check for shell=True in subprocess calls (but allow subprocess without shell)
-        if "shell=True" in code and "subprocess" in code:
-            return False, "subprocess with shell=True is not allowed"
-
-        # Syntax check via py_compile
-        tmp = None
-        try:
-            with tempfile.NamedTemporaryFile(
-                suffix=".py", mode="w", delete=False, encoding="utf-8"
-            ) as f:
-                f.write(code)
-                tmp = f.name
-            py_compile.compile(tmp, doraise=True)
-        except py_compile.PyCompileError as e:
-            return False, f"Syntax error: {e}"
-        except Exception as e:
-            return False, str(e)
-        finally:
-            if tmp and os.path.exists(tmp):
-                os.unlink(tmp)
+        for node in ast.walk(tree):
+            # Imports must be on the allowlist
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    root = alias.name.split(".")[0]
+                    if root not in _ALLOWED_IMPORT_ROOTS:
+                        return False, f"Import not allowed: {alias.name!r}"
+            elif isinstance(node, ast.ImportFrom):
+                # Relative imports (level>0) have no vettable root; allow them.
+                root = (node.module or "").split(".")[0]
+                if node.level == 0 and root and root not in _ALLOWED_IMPORT_ROOTS:
+                    return False, f"Import not allowed: {node.module!r}"
+                if root == "os":
+                    for alias in node.names:
+                        if alias.name == "*":
+                            return False, "Wildcard import from os is not allowed"
+                        if alias.name in _FORBIDDEN_OS_ATTRS:
+                            return False, f"Import of os.{alias.name} is not allowed"
+            # Forbidden builtin calls and os process-spawning calls
+            elif isinstance(node, ast.Call):
+                fn = node.func
+                if isinstance(fn, ast.Name) and fn.id in _FORBIDDEN_CALL_NAMES:
+                    return False, f"Use of {fn.id}() is not allowed"
+                if isinstance(fn, ast.Attribute):
+                    mod = fn.value.id if isinstance(fn.value, ast.Name) else ""
+                    if mod in os_aliases and fn.attr in _FORBIDDEN_OS_ATTRS:
+                        return False, f"Use of os.{fn.attr}() is not allowed"
+            # Dunder graph-walking, by attribute or by bare name
+            elif isinstance(node, ast.Attribute) and node.attr in _FORBIDDEN_DUNDERS:
+                return False, f"Access to {node.attr} is not allowed"
+            elif isinstance(node, ast.Name) and node.id in _FORBIDDEN_DUNDERS:
+                return False, f"Use of {node.id} is not allowed"
 
         return True, ""
 
