@@ -346,9 +346,11 @@ class BaseTalent(ABC):
             if not result or result.upper() == "NONE":
                 return fallback
             return result
-        except LLMError:
-            return None
-        except Exception:
+        except LLMError as e:
+            log.warning(f"[{self.name}] LLM unavailable while extracting {what}: {e}")
+            return fallback
+        except Exception as e:
+            log.error(f"[{self.name}] Failed to extract {what}: {e}")
             return fallback
 
 

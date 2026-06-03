@@ -1,4 +1,5 @@
 import logging
+import re
 from datetime import datetime
 import requests
 from talents.base import BaseTalent
@@ -70,14 +71,19 @@ class NewsTalent(BaseTalent):
         # Detect broad "give me top headlines" requests first
         is_headline_request = any(p in cmd_lower for p in self._HEADLINE_PHRASES)
 
-        # Extract topic — strip out news-related noise words
+        # Extract topic — strip out news-related noise words. Match on word
+        # boundaries so a noise word can't eat a substring of a real topic
+        # (e.g. "on" must not turn "boston" into "bost"). Domain suffixes are
+        # stripped literally since "." is not a word character.
         topic = cmd_lower
         for word in self.NEWS_PHRASES + self.NEWS_SITES + [
             "on", "from", "about", "the", "what are", "what's",
-            "tell me", "give me", ".com", ".org", ".net",
+            "tell me", "give me",
         ]:
-            topic = topic.replace(word, "")
-        topic = topic.strip()
+            topic = re.sub(rf"\b{re.escape(word)}\b", " ", topic)
+        for suffix in (".com", ".org", ".net"):
+            topic = topic.replace(suffix, " ")
+        topic = re.sub(r"\s+", " ", topic).strip()
         if not topic or len(topic) < 3:
             if is_headline_request:
                 # Use a date-anchored query for better top-headlines results

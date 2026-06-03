@@ -69,8 +69,11 @@ def _truncate_degeneration(text: str, *, ngram_size: int = 5,
         for idx, sent in enumerate(sentences):
             word_count = len(sent.split())
             if word_count >= RUN_ON_THRESHOLD:
-                # Keep everything up to (but not including) this run-on sentence
-                good_part = ". ".join(sentences[:idx]).rstrip(" ,;:-")
+                # Keep everything up to (but not including) this run-on sentence.
+                # Each segment already retains its terminal punctuation (the
+                # split is zero-width, lookbehind only), so join with a plain
+                # space — ". ".join would double the periods.
+                good_part = " ".join(sentences[:idx]).rstrip(" ,;:-")
                 if not good_part:
                     # The very first sentence is a run-on — take first 60 words
                     good_part = " ".join(sent.split()[:RUN_ON_THRESHOLD])

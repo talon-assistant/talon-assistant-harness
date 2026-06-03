@@ -389,7 +389,7 @@ class NotesTalent(BaseTalent):
                     for t in tags
                     if isinstance(t, str) and len(t.strip()) > 0
                 ][:5]
-        except (json.JSONDecodeError, Exception) as e:
+        except Exception as e:
             log.error(f"[Notes] Tag generation error: {e}")
 
         return []

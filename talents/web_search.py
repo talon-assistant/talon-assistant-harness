@@ -182,7 +182,7 @@ class WebSearchTalent(BaseTalent):
             _blocked, _alert = _sf.check_semantic_input(web_results, "web")
             if _blocked:
                 return {"response": "[Search results blocked by security filter]",
-                        "actions_taken": [], "success": False}
+                        "actions_taken": [], "success": False, "spoken": False}
 
         # Build the user message — wrap results in structural injection-defence markers
         user_message = (
