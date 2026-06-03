@@ -1309,30 +1309,6 @@ class SettingsDialog(QDialog):
                 changed.add(dotted_key)
         return changed
 
-    @staticmethod
-    def _diff_settings(defaults: dict, current: dict) -> dict:
-        """Return only the keys in *current* that differ from *defaults*.
-
-        This ensures settings.json stores user overrides only — not a
-        full copy of the example defaults.  Keys that match the example
-        are omitted so future pulls can update defaults without being
-        shadowed by stale values.
-        """
-        diff: dict = {}
-        for key, val in current.items():
-            default_val = defaults.get(key)
-            if isinstance(val, dict) and isinstance(default_val, dict):
-                nested = SettingsDialog._diff_settings(default_val, val)
-                if nested:
-                    diff[key] = nested
-            elif val != default_val:
-                diff[key] = val
-        # Keys in current that don't exist in defaults at all — always keep
-        for key in current:
-            if key not in defaults and key not in diff:
-                diff[key] = current[key]
-        return diff
-
     def _on_save(self):
         new_settings = self._collect_values()
 

@@ -805,29 +805,6 @@ class MemorySystem:
             return filtered
         return []
 
-    def search_documents(self, query, n_results=5):
-        """Search user documents for relevant information"""
-        try:
-            results = self.docs_collection.query(
-                query_texts=[query],
-                n_results=n_results
-            )
-
-            if results['documents'] and len(results['documents'][0]) > 0:
-                docs = []
-                for i, doc in enumerate(results['documents'][0]):
-                    metadata = results['metadatas'][0][i]
-                    docs.append({
-                        'text': doc,
-                        'filename': metadata.get('filename', 'unknown'),
-                        'type': metadata.get('file_type', 'unknown')
-                    })
-                return docs
-            return []
-        except Exception as e:
-            log.error(f"[Memory] Document search error: {e}")
-            return []
-
     def get_relevant_context(self, query, max_items=3, include_documents=False):
         """Get relevant context for a query from memory (preferences and patterns only).
 

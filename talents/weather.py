@@ -456,36 +456,6 @@ class WeatherTalent(BaseTalent):
 
     # ── Geocoding (shared across providers) ────────────────────────
 
-    def _extract_location(self, command):
-        """Pull a location out of the command, default to empty (auto-detect)."""
-        cmd = command.lower()
-        for phrase in [
-            "what's the weather like in", "what is the weather like in",
-            "what's the weather in", "what is the weather in",
-            "how's the weather in", "how is the weather in",
-            "what's the temperature in", "what is the temperature in",
-            "how hot is it in", "how cold is it in", "how warm is it in",
-            "weather in", "weather for", "weather at",
-            "temperature in", "temperature for", "temperature at",
-            "forecast for", "forecast in",
-        ]:
-            if phrase in cmd:
-                location = cmd.split(phrase, 1)[1].strip()
-                location = location.rstrip("?.!")
-                if location:
-                    return location
-
-        for prep in [" in ", " for ", " at ", " near "]:
-            if prep in cmd:
-                location = cmd.split(prep)[-1].strip().rstrip("?.!")
-                if location and location not in [
-                    "today", "tonight", "now", "right now",
-                    "this week", "tomorrow", "the morning",
-                ]:
-                    return location
-
-        return ""
-
     def _geocode(self, location):
         """Use Open-Meteo geocoding API to resolve a location name to lat/lon."""
         try:

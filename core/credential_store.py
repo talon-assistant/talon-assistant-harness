@@ -35,9 +35,6 @@ _CHUNK_MAX = 1200
 class CredentialStore:
     """OS-level secret storage for Talon talent credentials."""
 
-    # Legacy service names from before centralisation (email_talent used this)
-    _LEGACY_SERVICES = {"talon_email"}
-
     def __init__(self):
         if not _HAS_KEYRING:
             log.warning("[CredentialStore] WARNING: keyring not installed. "
@@ -166,10 +163,6 @@ class CredentialStore:
             log.error(f"[CredentialStore] Failed to read blob "
                   f"{base_key}: {e}")
             return ""
-
-    def delete_blob(self, talent_name: str, field_key: str) -> bool:
-        """Remove all chunks of a stored blob."""
-        return self._delete_blob_chunks(talent_name, field_key)
 
     def _delete_blob_chunks(self, talent_name: str, field_key: str) -> bool:
         """Internal: remove metadata + all numbered chunks."""

@@ -1,4 +1,3 @@
-import threading
 from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot, Qt, QMetaObject, Q_ARG
 
 
@@ -19,7 +18,6 @@ class OutputInterceptor(QObject):
     def __init__(self, original_stdout):
         super().__init__()
         self._original = original_stdout
-        self._lock = threading.Lock()
 
     def write(self, text):
         # Always write to original stdout (thread-safe in CPython)

@@ -435,7 +435,6 @@ class ReflectionLoop:
         n_seeds = self._cfg.get("seed_thoughts", 7) - 1  # reserve 1 for wildcard
         seed_thoughts = list(past[:n_seeds])
         if len(past) > 10:
-            import random
             older_pool = past[10:]  # Thoughts outside the recent window
             wild_card = random.choice(older_pool)
             seed_thoughts.append(wild_card)
