@@ -446,6 +446,14 @@ class ConversationEngine:
                 system_prompt=self._FACTUAL_RAG_SYSTEM_PROMPT,
                 max_length=1024,
                 temperature=0.1,
+                # Override the global repetition penalty for factual answers.
+                # Extraction legitimately repeats tokens (stat labels, "Karma",
+                # "+1", bullet markers); the global 1.3 — which the settings UI
+                # itself flags as the incoherence threshold — starves a long
+                # answer of allowed tokens until it degenerates into rare-token
+                # salad. 1.1 still breaks loops without punishing the structured
+                # repetition a stat-block answer needs.
+                rep_pen=1.1,
                 use_vision=bool(all_images),
                 images_b64=all_images or None,
             )
