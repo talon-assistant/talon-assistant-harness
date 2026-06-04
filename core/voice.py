@@ -4,6 +4,7 @@ import wave
 import tempfile
 import os
 import string
+import time
 import asyncio
 import threading
 import edge_tts
@@ -61,6 +62,13 @@ class VoiceSystem:
         # TTS stop event — set by stop_speaking() to interrupt playback
         self._stop_event = threading.Event()
 
+        # Set while TTS is playing so the capture loop mutes itself instead of
+        # transcribing Talon's own voice (half-duplex). The tail keeps the mic
+        # gated briefly after playback so buffer drain / room echo doesn't
+        # bleed into the next capture.
+        self._speaking = threading.Event()
+        self._speak_tail = voice_config.get("speak_tail_seconds", 0.3)
+
         log.info("TTS ready!")
 
     def record_audio(self, duration):
@@ -112,7 +120,14 @@ class VoiceSystem:
         tts_text = text.replace("Talon", "talun").replace("talon", "talun")
 
         self._stop_event.clear()
-        return asyncio.run(self._async_speak(tts_text))
+        # Mute the capture loop for the duration of playback (plus a short
+        # tail) so the wake-word listener doesn't hear Talon and re-trigger.
+        self._speaking.set()
+        try:
+            return asyncio.run(self._async_speak(tts_text))
+        finally:
+            time.sleep(self._speak_tail)
+            self._speaking.clear()
 
     def stop_speaking(self):
         """Interrupt any in-progress TTS playback immediately."""
@@ -173,6 +188,12 @@ class VoiceSystem:
         log.info("(Press Ctrl+C to exit)\n")
 
         while True:
+            # Don't capture while Talon is speaking — otherwise the mic picks
+            # up the TTS, transcribes it, and can re-trigger on Talon's own
+            # words (the "hears itself / stutters" bug).
+            if self._speaking.is_set():
+                time.sleep(0.05)
+                continue
             audio = self.record_audio(self.chunk_duration)
 
             audio_energy = np.abs(audio).mean()
