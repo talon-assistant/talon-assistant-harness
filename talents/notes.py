@@ -41,8 +41,8 @@ class NotesTalent(BaseTalent):
 
     _NOTE_PHRASES = [
         "save a note", "save note", "note:", "add a note", "add note",
-        "write down", "remember this", "jot down", "take a note",
-        "make a note",
+        "write down", "remember this", "jot down", "jot", "take a note",
+        "make a note", "scribble down", "scribble", "note to self",
     ]
 
     _SEARCH_PHRASES = [
@@ -101,8 +101,39 @@ class NotesTalent(BaseTalent):
         elif any(phrase in cmd_lower for phrase in self._LIST_PHRASES):
             return self._handle_list(context)
         else:
-            # Ambiguous — try search
+            # Phrase-matching was inconclusive. Ask the LLM which action this
+            # is instead of blindly searching — the old "try search" default
+            # discarded create intents like "scribble down a memo before I
+            # forget" as failed lookups.
+            action = self._classify_action(command, context)
+            if action == "save":
+                return self._handle_save(command, context)
+            elif action == "delete":
+                return self._handle_delete(command, context)
+            elif action == "list":
+                return self._handle_list(context)
             return self._handle_search(command, context)
+
+    def _classify_action(self, command, context):
+        """Disambiguate the note action when phrase-matching was inconclusive.
+
+        Returns one of save/search/list/delete. Falls back to 'save' when the
+        LLM is unavailable: a free-form command that reached the notes talent
+        and matched no search/list/delete phrase is far more likely an attempt
+        to record something, and saving preserves the user's text (a stray note
+        can be deleted) where searching would silently discard it.
+        """
+        llm = context.get("llm")
+        if llm is None:
+            return "save"
+        action = self._extract_arg(
+            llm, command,
+            "note action the user wants (save, search, list, or delete)",
+            options=["save", "search", "list", "delete"],
+            fallback="save",
+        )
+        action = (action or "save").strip().lower()
+        return action if action in ("save", "search", "list", "delete") else "save"
 
     # ── Save a note ────────────────────────────────────────────────
 
