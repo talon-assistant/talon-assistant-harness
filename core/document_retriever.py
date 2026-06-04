@@ -248,21 +248,39 @@ class DocumentRetriever:
             # (Berlin Edition with "credits", "table of contents").
             if use_explicit and all_chunks:
                 from collections import defaultdict
-                source_kw_totals: dict[str, int] = defaultdict(int)
+                # IDF-weight the source vote: a rare, discriminating term
+                # ("feathery", present in one book) must outweigh a common one
+                # ("shifter", scattered across the huge core rulebook). An
+                # unweighted count let the largest book win on common-word
+                # volume and buried the supplement that held the actual answer.
+                try:
+                    idf = self._compute_idf_weights(keywords)
+                except Exception:
+                    idf = {}
+
+                def _idf_source_score(chunk_text: str) -> float:
+                    lower = chunk_text.lower()
+                    return sum(idf.get(kw, 1.0) for kw in keywords if kw in lower)
+
+                source_idf: dict[str, float] = defaultdict(float)
+                source_kw_raw: dict[str, int] = defaultdict(int)
                 source_counts: dict[str, int] = defaultdict(int)
                 for fn, txt, _, _ in all_chunks:
-                    source_kw_totals[fn] += _keyword_score(txt)
+                    source_idf[fn] += _idf_source_score(txt)
+                    source_kw_raw[fn] += _keyword_score(txt)
                     source_counts[fn] += 1
 
-                # Pick source with highest total keyword score (ties broken by count)
+                # Pick source by IDF-weighted score (ties broken by chunk count)
                 top_source = max(
-                    source_kw_totals,
-                    key=lambda fn: (source_kw_totals[fn], source_counts[fn]),
+                    source_idf,
+                    key=lambda fn: (source_idf[fn], source_counts[fn]),
                 )
                 top_count = source_counts[top_source]
 
-                # Only concentrate if the source has ≥2 chunks AND meaningful keyword overlap
-                if top_count >= 2 and source_kw_totals[top_source] >= 4:
+                # Gate on the RAW keyword count (unchanged) so the IDF
+                # reweighting only changes WHICH source wins, not whether we
+                # concentrate at all.
+                if top_count >= 2 and source_kw_raw[top_source] >= 4:
                     primary_chunks = [c for c in all_chunks if c[0] == top_source]
                     other_chunks = [c for c in all_chunks if c[0] != top_source]
 
