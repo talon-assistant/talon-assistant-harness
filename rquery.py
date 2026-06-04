@@ -105,12 +105,15 @@ def main():
     parser.add_argument("--contains-sticky", action="store_true",
                         help="Guarantee all $contains chunks make it into "
                              "the reranker pool (expands pool if needed).")
+    parser.add_argument("--chroma", default=None,
+                        help="Override chroma_path, e.g. point at another "
+                             "checkout's library for cross-copy debugging.")
     args = parser.parse_args()
 
     query = args.query
     cfg = _load_config()
     mem_cfg = cfg.get("memory", {})
-    chroma_path = mem_cfg.get("chroma_path", "data/chroma_db")
+    chroma_path = args.chroma or mem_cfg.get("chroma_path", "data/chroma_db")
     embed_model = mem_cfg.get("embedding_model", "BAAI/bge-base-en-v1.5")
     reranker_model = mem_cfg.get(
         "reranker_model", "BAAI/bge-reranker-base")
@@ -400,34 +403,51 @@ def main():
 
     # ── PHASE 6: Source concentration analysis ──
     print(_c("━━━ PHASE 6: Source concentration ━━━", "bold"))
+    # Reuse the production IDF weighting so this mirrors what
+    # DocumentRetriever actually does: a rare term outvotes a common one.
+    from core.document_retriever import DocumentRetriever
+    try:
+        idf = DocumentRetriever(
+            docs, embed_model, reranker_model)._compute_idf_weights(keywords)
+    except Exception:
+        idf = {}
+
+    def _idf_score(txt: str) -> float:
+        low = txt.lower()
+        return sum(idf.get(kw, 1.0) for kw in keywords if kw in low)
+
     source_kw_totals: dict[str, int] = defaultdict(int)
+    source_idf_totals: dict[str, float] = defaultdict(float)
     source_max_kw: dict[str, int] = defaultdict(int)
     source_chunk_counts: dict[str, int] = defaultdict(int)
     for fn, txt, _, _ in final_chunks:
         kw = _keyword_score(txt, keywords)
         source_kw_totals[fn] += kw
+        source_idf_totals[fn] += _idf_score(txt)
         source_chunk_counts[fn] += 1
         if kw > source_max_kw[fn]:
             source_max_kw[fn] = kw
 
-    print(f"  {'source':<55} {'chunks':>6} {'tot_kw':>7} {'max_kw':>7}")
-    for fn in sorted(source_kw_totals,
-                     key=lambda k: (-source_kw_totals[k], k)):
-        print(f"  {fn[:55]:<55} {source_chunk_counts[fn]:>6} "
-              f"{source_kw_totals[fn]:>7} {source_max_kw[fn]:>7}")
+    print(f"  {'source':<48} {'chunks':>6} {'tot_kw':>7} {'idf_kw':>8} {'max_kw':>7}")
+    for fn in sorted(source_idf_totals,
+                     key=lambda k: (-source_idf_totals[k], k)):
+        print(f"  {fn[:48]:<48} {source_chunk_counts[fn]:>6} "
+              f"{source_kw_totals[fn]:>7} {source_idf_totals[fn]:>8.2f} "
+              f"{source_max_kw[fn]:>7}")
 
-    # What would current logic pick?
-    if source_kw_totals:
+    # What production picks now (IDF-weighted) vs the old unweighted vote.
+    if source_idf_totals:
+        top_by_idf = max(
+            source_idf_totals,
+            key=lambda fn: (source_idf_totals[fn], source_chunk_counts[fn]))
         top_by_total = max(
             source_kw_totals,
             key=lambda fn: (source_kw_totals[fn], source_chunk_counts[fn]))
-        top_by_max = max(
-            source_max_kw, key=lambda fn: source_max_kw[fn])
         print()
-        print(_c(f"  Current logic (total kw): would pick {top_by_total}",
-                 "cyan"))
-        print(_c(f"  Alternative (max kw):     would pick {top_by_max}",
-                 "cyan"))
+        print(_c(f"  Production (IDF-weighted): picks {top_by_idf}", "green"))
+        if top_by_total != top_by_idf:
+            print(_c(f"  Old (unweighted total):    would have picked "
+                     f"{top_by_total}", "dim"))
     print()
 
     # ── PHASE 7: Final output ──
