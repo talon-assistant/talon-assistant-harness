@@ -9,6 +9,7 @@ The active format is set via ``config["llm"]["api_format"]`` (default:
 ``"koboldcpp"`` for backward compatibility).
 """
 
+import re
 import requests
 import json
 from urllib.parse import urlparse
@@ -62,9 +63,8 @@ def _truncate_degeneration(text: str, *, ngram_size: int = 5,
     # Split on sentence-ending punctuation. If any segment has 60+
     # words, the model has entered a semantic degeneration spiral
     # (unique vocabulary but no coherent structure).
-    import re as _re
     RUN_ON_THRESHOLD = 60
-    sentences = _re.split(r'(?<=[.!?\n])\s+', text)
+    sentences = re.split(r'(?<=[.!?\n])\s+', text)
     if len(sentences) > 1:
         for idx, sent in enumerate(sentences):
             word_count = len(sent.split())
@@ -87,6 +87,27 @@ def _truncate_degeneration(text: str, *, ngram_size: int = 5,
                     return good_part
 
     return text
+
+
+_THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
+
+
+def _strip_reasoning(text: str) -> str:
+    """Strip Qwen3-style <think>...</think> reasoning blocks from output.
+
+    Hybrid Qwen3 models (3.x) emit a reasoning block before the answer, and
+    even with thinking disabled they still emit an empty <think></think>
+    marker. None of that belongs in the chat view, the TTS, the conversation
+    buffer, or the JSON/arg extraction the talents depend on. Remove the whole
+    block, drop a stray unclosed <think> (generation cut off mid-thought), and
+    tidy the leading whitespace left behind.
+    """
+    if not text or "<think>" not in text:
+        return text
+    text = _THINK_RE.sub("", text)
+    if "<think>" in text:
+        text = text.split("<think>", 1)[0]
+    return text.lstrip()
 
 
 class LLMClient:
@@ -237,6 +258,10 @@ class LLMClient:
             raw = self._generate_koboldcpp(
                 prompt, use_vision, effective_images,
                 max_length, system_prompt, temperature, rep_pen)
+
+        # Strip Qwen3 <think> blocks (including the empty marker emitted when
+        # thinking is disabled) before anything downstream sees the text.
+        raw = _strip_reasoning(raw)
 
         if detect_degeneration:
             return _truncate_degeneration(raw)
