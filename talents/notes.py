@@ -353,13 +353,15 @@ class NotesTalent(BaseTalent):
                 if query:
                     return query
 
-        # Fallback: strip all command words
+        # Fallback: strip command words. Word-boundary, not raw substring — a
+        # bare replace eats letters inside real words ("before" -> "bee",
+        # "forget" -> "get", "theme" -> "me"), mangling the search query.
         for noise in [
             "find", "search", "my", "notes", "note", "about",
             "for", "the", "delete", "remove", "erase",
         ]:
-            cmd = cmd.replace(noise, "")
-        return cmd.strip()
+            cmd = re.sub(rf"\b{re.escape(noise)}\b", " ", cmd)
+        return re.sub(r"\s+", " ", cmd).strip()
 
     # ── Tag generation ─────────────────────────────────────────────
 
