@@ -104,10 +104,17 @@ def _strip_reasoning(text: str) -> str:
     """
     if not text or "<think>" not in text:
         return text
-    text = _THINK_RE.sub("", text)
-    if "<think>" in text:
-        text = text.split("<think>", 1)[0]
-    return text.lstrip()
+    stripped = _THINK_RE.sub("", text)
+    if "<think>" in stripped:                 # unclosed (cut off mid-thought)
+        stripped = stripped.split("<think>", 1)[0]
+    stripped = stripped.lstrip()
+    if stripped:
+        return stripped
+    # Stripping removed everything — the model produced only a reasoning block
+    # with no answer after it (e.g. thinking ran to the token cap). Returning
+    # "" would surface downstream as "(no response)", so fall back to the
+    # reasoning text with its tags removed so the user still gets content.
+    return text.replace("<think>", " ").replace("</think>", " ").strip()
 
 
 class LLMClient:
@@ -124,6 +131,12 @@ class LLMClient:
         self.stop_sequences = llm_config["stop_sequences"]
         self.prompt_template = llm_config["prompt_template"]
         self.api_format = llm_config.get("api_format", "koboldcpp")
+        # Hybrid Qwen3 models emit a <think> block by default. Talon uses the
+        # raw completion endpoints, so the chat template's enable_thinking flag
+        # never applies — suppress thinking in the prompt we build instead. When
+        # on, the assistant turn is pre-filled with an empty closed think block
+        # so the model goes straight to the answer. Harmless on instruct models.
+        self.suppress_thinking = llm_config.get("suppress_thinking", True)
         # Optional reference to LLMServerManager (set by main.py in builtin mode).
         # Used to return a friendly "still loading" message instead of a 503/timeout.
         self.server_manager = None
@@ -441,6 +454,10 @@ class LLMClient:
                 f"{system_prompt}<|im_end|>\n"
             )
 
+        # Pre-fill a closed, empty reasoning block so hybrid Qwen3 models skip
+        # thinking and generate only the answer (see __init__ suppress_thinking).
+        thinking_suffix = "<think>\n\n</think>\n\n" if self.suppress_thinking else ""
+
         if use_vision:
             vision_prefix = self.prompt_template.get("vision_prefix", "")
             formatted = (
@@ -449,6 +466,7 @@ class LLMClient:
                 f"{vision_prefix}{prompt}"
                 f"{self.prompt_template['user_suffix']}"
                 f"{self.prompt_template['assistant_prefix']}"
+                f"{thinking_suffix}"
             )
         else:
             formatted = (
@@ -457,6 +475,7 @@ class LLMClient:
                 f"{prompt}"
                 f"{self.prompt_template['user_suffix']}"
                 f"{self.prompt_template['assistant_prefix']}"
+                f"{thinking_suffix}"
             )
 
         # Diagnostic: log prompt size so context-window issues are visible
