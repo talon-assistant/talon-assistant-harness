@@ -715,6 +715,23 @@ class TalonAssistant:
                 log.debug(f"[LLM Router] -> {talent_name} (confirmed by direct keyword)")
                 return chosen
 
+            # A send/forward/email verb plus a literal email address is an
+            # unambiguous email intent. Route there before the keyword-steal
+            # logic, so "send the digest to a@b.com" isn't hijacked by the noun
+            # "digest" (and it works for any domain, not just ones containing
+            # "mail"). Only reached when the LLM's pick had no direct keyword of
+            # its own — clear-keyword commands like "remind me to email bob@x"
+            # already returned above.
+            if (re.search(r"[^\s@]+@[^\s@]+\.[^\s@]+", command)
+                    and re.search(r"\b(send|forward|e-?mail)\b", command, re.I)):
+                email_t = self._get_talent_by_name("email")
+                if (email_t is not None and email_t is not chosen
+                        and getattr(email_t, "enabled", True)
+                        and getattr(email_t, "routing_available", True)):
+                    log.info(f"[LLM Router] Overriding {talent_name} → "
+                             f"email (send verb + email address)")
+                    return email_t
+
             # LLM pick has no direct keyword match (may have fuzzy confidence).
             # Check if another talent has a direct keyword match — that wins.
             direct_match = None
