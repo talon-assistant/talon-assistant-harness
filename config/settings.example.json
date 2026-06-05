@@ -43,12 +43,14 @@
                    "okay talent", "ok talent", "talent", "hey talent"]
   },
   "whisper": {
-    "model_size": "small",
+    "model_size": "small.en",
     "preferred_device": "cuda",
     "preferred_compute_type": "float16",
     "fallback_device": "cpu",
     "fallback_compute_type": "int8",
-    "language": "en"
+    "language": "en",
+    "vad_filter": true,
+    "initial_prompt": "Talon."
   },
   "memory": {
     "db_path": "data/talon_memory.db",

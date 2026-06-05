@@ -59,6 +59,11 @@ class VoiceSystem:
             )
             log.info("Whisper loaded on CPU!")
 
+        # Transcription tuning (see transcribe_audio): bias toward the wake
+        # word + domain vocab, drop silence via VAD, no cross-clip drift.
+        self._vad_filter = whisper_config.get("vad_filter", True)
+        self._initial_prompt = whisper_config.get("initial_prompt", "Talon.")
+
         # TTS stop event — set by stop_speaking() to interrupt playback
         self._stop_event = threading.Event()
 
@@ -93,8 +98,26 @@ class VoiceSystem:
                 wf.setframerate(self.sample_rate)
                 wf.writeframes(audio.tobytes())
 
-            segments, info = self.whisper_model.transcribe(temp_file, language="en")
-            text = " ".join([segment.text.strip() for segment in segments])
+            # initial_prompt biases recognition toward the wake word and
+            # domain vocab (cuts the "talon" -> "talent" mishearing).
+            # condition_on_previous_text=False stops carry-over drift between
+            # clips. vad_filter drops silence so Whisper stops hallucinating
+            # words out of quiet or noise.
+            kwargs = {"language": "en", "condition_on_previous_text": False}
+            if self._initial_prompt:
+                kwargs["initial_prompt"] = self._initial_prompt
+            try:
+                segments, _ = self.whisper_model.transcribe(
+                    temp_file, vad_filter=self._vad_filter, **kwargs)
+            except Exception as e:
+                # vad_filter needs onnxruntime; if it's unavailable, degrade
+                # gracefully instead of losing transcription entirely.
+                if not self._vad_filter:
+                    raise
+                log.warning(f"[STT] vad_filter unavailable ({e}); disabling it")
+                self._vad_filter = False
+                segments, _ = self.whisper_model.transcribe(temp_file, **kwargs)
+            text = " ".join(segment.text.strip() for segment in segments)
         finally:
             try:
                 os.remove(temp_file)
