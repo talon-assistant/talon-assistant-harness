@@ -776,8 +776,10 @@ class SettingsDialog(QDialog):
         whisper = self._original.get("whisper", {})
 
         self._add_combo("whisper.model_size", form, "Model Size",
-                        ["tiny", "base", "small", "medium", "large-v2"],
-                        whisper.get("model_size", "small"))
+                        ["tiny", "tiny.en", "base", "base.en",
+                         "small", "small.en", "medium", "medium.en",
+                         "large-v2"],
+                        whisper.get("model_size", "small.en"))
         self._add_combo("whisper.preferred_device", form, "Preferred Device",
                         ["cuda", "cpu"],
                         whisper.get("preferred_device", "cuda"))
