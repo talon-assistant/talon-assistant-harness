@@ -118,7 +118,43 @@ This bridges the one-shot review path to the permanent RAG ingest pipeline.
 **Dependencies:** same as Document Ingest section above — `python-docx`,
 `openpyxl`, `python-pptx` (all already planned)
 
+### Voice: Wake Word & Audio Capture
+
+**Dedicated wake-word engine.** Replace Whisper-as-wake-word-detector
+(`core/voice.py` `listen_for_wake_word`) with a purpose-built keyword spotter.
+Today it records fixed-length chunks, transcribes the whole clip with Whisper,
+and substring-matches the wake words, which is why it misses cues and mishears
+"talon" as "talent" (the reason the "talent" alias hack exists). Options:
+- **openWakeWord:** local, free, no account or runtime key, which fits Talon's
+  no-cloud model. No prebuilt "Talon" model exists, so it needs a custom one
+  trained from synthetic TTS clips (~75-90 min via the 2026 Colab notebook;
+  local trainers want WSL2 + CUDA). Produces a ~200KB ONNX model.
+- **Porcupine (Picovoice):** type "Talon" in the free console and get a `.ppn`
+  keyword in seconds via transfer learning, no data gathering. Costs a free
+  Picovoice account plus a runtime AccessKey the SDK validates, a third-party
+  dependency with license terms, though inference stays on-device.
+- **openWakeWord prebuilt phrase:** e.g. "hey jarvis". Zero training, no key,
+  but the wake word stops being "Talon", which also means retuning the TTS
+  pronunciation and the alias handling.
+Integrate as a pluggable detector fed 16kHz frames, wired into the half-duplex
+`_speaking` gate already in place, with fallback to the current Whisper
+detection until a model is configured. Engine decision pending.
+
+**In-memory audio capture (drop the per-chunk temp .wav).** `transcribe_audio`
+writes recorded audio to a temp `.wav`, then hands Whisper the path, on every
+wake-word chunk continuously. faster-whisper accepts a float32 numpy array
+directly, so convert the int16 `sd.rec` output
+(`audio.flatten().astype(np.float32) / 32768.0`) and pass it in, dropping the
+temp file. Removes the continuous voice-mode SSD writes (the dominant
+disk-write source while listening) and the per-chunk disk round-trip, so it is
+also faster. The TTS `.mp3` could get the same treatment if edge-tts streaming
+allows.
+
 ### Other Queued Items
+- **Drop the file log from DEBUG to INFO** (`core/logging_config.py`). The
+  rotating handler writes everything at DEBUG to `data/logs/talon.log`
+  continuously; INFO cuts the steady-state disk writes substantially. Keep
+  DEBUG-to-disk as an opt-in (config flag or env var) for active debugging.
 - RAG: corpus-frequency stop words for `$contains` — skip generic terms like
   "damage" or "shadowrun" that match too broadly across the corpus
 - **Configurable `--mdextract` domain schema** — The metadata extraction prompt is
