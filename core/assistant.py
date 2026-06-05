@@ -718,6 +718,7 @@ class TalonAssistant:
             # LLM pick has no direct keyword match (may have fuzzy confidence).
             # Check if another talent has a direct keyword match — that wins.
             direct_match = None
+            direct_pos = None
             fuzzy_match = None
             for candidate in self.talents:
                 if (candidate is not chosen
@@ -725,9 +726,17 @@ class TalonAssistant:
                         and candidate.routing_available
                         and self._keyword_confidence(candidate, command)):
                     if candidate.keyword_match(command):
-                        # Direct keyword match — strongest signal
-                        if not direct_match or candidate.priority > direct_match.priority:
-                            direct_match = candidate
+                        # Direct keyword match. Break ties by which keyword
+                        # appears EARLIEST (the command's action verb), then by
+                        # priority, so "email the digest file to X" routes to
+                        # email instead of news_digest stealing on the noun
+                        # "digest" just because it outranks email.
+                        pos = self._earliest_keyword_pos(candidate, command)
+                        if (direct_match is None
+                                or pos < direct_pos
+                                or (pos == direct_pos
+                                    and candidate.priority > direct_match.priority)):
+                            direct_match, direct_pos = candidate, pos
                     elif candidate.priority > chosen.priority:
                         # Fuzzy example match — only override if higher priority
                         if not fuzzy_match or candidate.priority > fuzzy_match.priority:
@@ -762,6 +771,22 @@ class TalonAssistant:
         except Exception as e:
             log.error(f"[LLM Router] Error: {e}")
             return None
+
+    def _earliest_keyword_pos(self, talent, command: str) -> int:
+        """Index of the talent's earliest-matching keyword in the command.
+
+        Used to break ties between talents that both keyword-match: the one
+        whose keyword appears first is most likely the command's action verb.
+        "Email the digest file" puts email at index 0, beating news_digest's
+        "digest". Returns len(command) when nothing matches.
+        """
+        low = command.lower()
+        best = len(command)
+        for kw in (getattr(talent, "keywords", None) or []):
+            p = low.find(kw.lower())
+            if 0 <= p < best:
+                best = p
+        return best
 
     def _talent_roster_line(self, talent) -> str:
         """Format one talent as a roster line."""
