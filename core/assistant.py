@@ -178,6 +178,11 @@ class TalonAssistant:
         log.info("[1/5] Testing KoboldCpp connection...")
         self.llm = LLMClient(self.config)
         self.llm.test_connection()
+        # Native tool-calling router (roadmap Option 5). When on, the model
+        # picks the talent via /v1/chat/completions tool calls instead of the
+        # keyword/LLM router. Off by default; opt in via llm.tool_calling.
+        self._tool_calling = bool(
+            self.config.get("llm", {}).get("tool_calling", False))
 
         log.info("[2/5] Initializing Memory + RAG...")
         memory_config = self.config["memory"]
@@ -604,6 +609,44 @@ class TalonAssistant:
         r'(?:send|email|text|forward|message|notify|share|post|tweet|upload|save|copy)',
         re.IGNORECASE,
     )
+
+    def _route_with_tools(self, command):
+        """Route via native tool calling. Returns (talent_or_None, command).
+
+        Builds the tools[] list from routable talents, asks the model to pick
+        one through /v1/chat/completions, and maps the chosen tool back to its
+        talent. The tool's ``request`` argument becomes the command handed to
+        the talent. Returns (None, command) when the model answers directly
+        (no tool) so the conversation path handles it, and falls back to the
+        keyword/LLM router if the chat call fails.
+        """
+        routable = [t for t in self.talents
+                    if t.enabled and getattr(t, "routing_available", True)]
+        tools = [t.to_tool_schema() for t in routable]
+        messages = [
+            {"role": "system", "content": (
+                "You are Talon, a local assistant. Route the user's request to "
+                "the single most appropriate tool. If no tool fits, answer "
+                "directly without calling one.")},
+            {"role": "user", "content": command},
+        ]
+        try:
+            result = self.llm.chat(messages, tools=tools, temperature=0.2)
+        except Exception as e:
+            log.warning(f"[ToolRouter] chat failed ({e}); using keyword router")
+            return self._find_talent(command), command
+        calls = result.get("tool_calls") or []
+        if not calls:
+            log.debug("[ToolRouter] no tool call -> conversation")
+            return None, command
+        tc = calls[0]
+        talent = self._get_talent_by_name(tc.get("name"))
+        if not isinstance(talent, BaseTalent):
+            log.info(f"[ToolRouter] unknown tool '{tc.get('name')}' -> conversation")
+            return None, command
+        sub = (tc.get("arguments") or {}).get("request") or command
+        log.info(f"[ToolRouter] -> {talent.name}({str(sub)[:60]})")
+        return talent, sub
 
     def _find_talent(self, command, exclude_planner=False):
         """Route command to the best talent using LLM intent classification.
@@ -1476,6 +1519,8 @@ class TalonAssistant:
 
             if attachments or is_deep_search_command:
                 talent = None
+            elif self._tool_calling and not _planner_substep:
+                talent, command = self._route_with_tools(command)
             else:
                 talent = self._find_talent(command, exclude_planner=_planner_substep)
 
