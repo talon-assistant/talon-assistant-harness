@@ -427,7 +427,8 @@ class MainWindow(QMainWindow):
         except (FileNotFoundError, json.JSONDecodeError):
             user = {}
 
-        current = SettingsDialog._deep_merge(defaults, user)
+        from core.config import deep_merge
+        current = deep_merge(defaults, user)
 
         dialog = SettingsDialog(current, config_path, self)
         dialog.settings_saved.connect(self.bridge.update_settings)
