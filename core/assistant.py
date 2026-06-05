@@ -952,10 +952,10 @@ class TalonAssistant:
             r'\bremember\s+(?:that|my|i)\b', re.IGNORECASE,
         )
         if _PREF_RE.search(command) or _REMEMBER_RE.search(command):
-            _sem_blocked, _sem_alert = self.security.check_semantic(command, "hint")
-            if _sem_blocked:
-                log.info(f"[Pref] Preference blocked by semantic classifier: {command[:80]}")
-                return False
+            # No injection classifier here: this is the user's own stated
+            # preference, not foreign input, and it false-positives on security
+            # topics (see _consolidate_evicted_turn). Foreign content is screened
+            # at input time via check_semantic_input.
             self.memory.store_preference(command, category="general")
             return True
         return False
@@ -1310,13 +1310,10 @@ class TalonAssistant:
                     log.info(f"[Rules] Rejected suspicious action: {action[:80]}")
                     return None
 
-                # Semantic security check on the full rule text before storage
-                rule_text = f"TRIGGER: {trigger} | ACTION: {action}"
-                _sem_blocked, _sem_alert = self.security.check_semantic(rule_text, "rule")
-                if _sem_blocked:
-                    log.info(f"[Rules] Rule blocked by semantic classifier: {rule_text[:80]}")
-                    return None
-
+                # No injection classifier on the user's own rule text; it
+                # false-positives on security topics (see
+                # _consolidate_evicted_turn). The action-injection pattern check
+                # above still rejects genuinely dangerous actions.
                 rule_id = self.memory.add_rule(trigger, action, command)
                 log.debug(f"[Rules] Stored rule #{rule_id}: "
                       f"'{trigger}' -> '{action}'")

@@ -820,14 +820,16 @@ class ConversationEngine:
         try:
             insight = self._a.llm.generate(prompt, max_length=60, temperature=0.1).strip()
             if insight and insight.lower() not in ("nothing", "no", "none", "n/a", ""):
-                # Security: scan before writing to long-term memory (cross-session risk)
+                # Light output scan before writing to long-term memory. The
+                # injection classifier (check_semantic) is deliberately NOT run
+                # here: this insight comes from the user's own conversation, not
+                # untrusted foreign input, and it flags legitimate security work
+                # (SQL injection, CVEs, exploits) as malicious, silently
+                # destroying real memories. That classifier belongs on foreign
+                # inputs (check_semantic_input), not the user's own turns.
                 suppressed, _alert = self._a.security.check_output(insight, context="eviction")
                 if suppressed:
                     log.info(f"[Buffer] Eviction insight suppressed by security filter")
-                    return
-                _sem_blocked, _sem_alert = self._a.security.check_semantic(insight, "insight")
-                if _sem_blocked:
-                    log.info(f"[Buffer] Eviction insight blocked by semantic classifier")
                     return
                 self._a.memory.store_preference(insight, category="insight")
                 log.info(f"[Buffer] Eviction insight: {insight[:80]}")
@@ -863,14 +865,13 @@ class ConversationEngine:
             summary = self._a.llm.generate(
                 prompt, max_length=80, temperature=0.1).strip()
             if summary:
-                # Security: scan before injecting into future prompts (session-scoped risk)
+                # Light output scan only. The injection classifier is NOT run
+                # here: this summary is built from the user's own conversation,
+                # not foreign input, and it flags legitimate security work as
+                # malicious (see _consolidate_evicted_turn).
                 suppressed, _alert = self._a.security.check_output(summary, context="summarizer")
                 if suppressed:
                     log.info(f"[Buffer] Session summary suppressed by security filter")
-                    return
-                _sem_blocked, _sem_alert = self._a.security.check_semantic(summary, "summary")
-                if _sem_blocked:
-                    log.info(f"[Buffer] Session summary blocked by semantic classifier")
                     return
                 self._session_summary = summary
                 log.info(f"[Buffer] Session summary: {summary[:100]}")
