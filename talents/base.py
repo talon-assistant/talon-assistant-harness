@@ -64,6 +64,11 @@ class TalentResult:
     def __getitem__(self, key):
         return getattr(self, key)
 
+    def __setitem__(self, key, value):
+        # The orchestrator mutates results (e.g. result["spoken"] = True);
+        # talents returning a TalentResult need write access too, not just read.
+        setattr(self, key, value)
+
     def get(self, key, default=None):
         return getattr(self, key, default)
 
