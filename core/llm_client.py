@@ -280,6 +280,71 @@ class LLMClient:
             return _truncate_degeneration(raw)
         return raw
 
+    def chat(self, messages, tools=None, tool_choice="auto",
+             temperature=None, max_length=None):
+        """Native tool-calling via the OpenAI-compatible chat endpoint.
+
+        Unlike generate() (raw completion plus a hand-built ChatML prompt),
+        this posts to /v1/chat/completions with an OpenAI-format tools[] list
+        and lets the model decide which function to call and fill its
+        arguments. The foundation for the agentic tool-calling router.
+
+        Args:
+            messages:    OpenAI-style [{"role","content"}, ...] history.
+            tools:       tools[] schemas (see BaseTalent.to_tool_schema()).
+            tool_choice: "auto" (model decides), "none", or a forced tool.
+            temperature: Override sampling temperature.
+            max_length:  Override max tokens.
+
+        Returns:
+            {"content": str, "tool_calls": [{"id","name","arguments"(dict)}]}.
+            Raises LLMError on transport failure.
+        """
+        # KoboldCpp / llama.cpp expose the chat endpoint on the same host as
+        # the raw-completion endpoint; derive it from the configured base URL.
+        parsed = urlparse(self.endpoint)
+        chat_url = f"{parsed.scheme}://{parsed.netloc}/v1/chat/completions"
+
+        payload = {
+            "messages": messages,
+            "temperature": (temperature if temperature is not None
+                            else self.temperature),
+            "max_tokens": max_length or self.max_length,
+            "stream": False,
+        }
+        if tools:
+            payload["tools"] = tools
+            payload["tool_choice"] = tool_choice
+
+        try:
+            response = requests.post(
+                chat_url, json=payload, timeout=self.timeout)
+            if response.status_code != 200:
+                raise LLMError(f"Status {response.status_code}",
+                               status_code=response.status_code)
+            message = response.json()["choices"][0]["message"]
+        except LLMError:
+            raise
+        except Exception as e:
+            raise LLMError(str(e)) from e
+
+        content = _strip_reasoning(message.get("content") or "")
+        tool_calls = []
+        for tc in (message.get("tool_calls") or []):
+            fn = tc.get("function", {})
+            args = fn.get("arguments")
+            if isinstance(args, str):
+                try:
+                    args = json.loads(args)
+                except (json.JSONDecodeError, ValueError):
+                    args = {"_raw": args}
+            tool_calls.append({
+                "id": tc.get("id"),
+                "name": fn.get("name"),
+                "arguments": args or {},
+            })
+        return {"content": content, "tool_calls": tool_calls}
+
     # ── KoboldCpp Backend ─────────────────────────────────────
 
     def _generate_koboldcpp(self, prompt, use_vision=False, images_b64=None,

@@ -126,6 +126,35 @@ class BaseTalent(ABC):
         self._enabled = True
         self._config = {}  # Per-talent config from talents.json
 
+    def to_tool_schema(self) -> dict:
+        """Build an OpenAI-format tool schema from this talent's metadata.
+
+        Used by the native tool-calling router. v1 exposes a single free-form
+        ``request`` argument carrying the user's intent; the talent keeps its
+        own internal argument extraction. Later phases replace this with typed
+        per-talent parameters.
+        """
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description or self.name,
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "request": {
+                            "type": "string",
+                            "description": (
+                                "The user's request, in their own words, "
+                                "for this capability."
+                            ),
+                        },
+                    },
+                    "required": ["request"],
+                },
+            },
+        }
+
     def check_requirements(self, config: dict) -> list[str]:
         """Return a list of unmet requirement strings (empty = all satisfied).
 
