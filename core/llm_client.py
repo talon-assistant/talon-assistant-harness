@@ -315,6 +315,12 @@ class LLMClient:
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = tool_choice
+        if self.suppress_thinking:
+            # Disable reasoning mode on the chat endpoint. The empty-think-block
+            # prefill only works on the raw-completion path; here we ask
+            # KoboldCpp to turn thinking off via both knobs it understands.
+            payload["reasoning_effort"] = "none"
+            payload["chat_template_kwargs"] = {"enable_thinking": False}
 
         try:
             response = requests.post(
@@ -343,7 +349,7 @@ class LLMClient:
                 "name": fn.get("name"),
                 "arguments": args or {},
             })
-        return {"content": content, "tool_calls": tool_calls}
+        return {"content": content, "tool_calls": tool_calls, "message": message}
 
     # ── KoboldCpp Backend ─────────────────────────────────────
 
