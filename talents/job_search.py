@@ -1479,6 +1479,11 @@ class JobSearchTalent(BaseTalent):
         "div[data-results-list-top-scroll-sentinel] ~ ul",
     )
 
+    # SDUI job cards on the /jobs/search-results/ (semantic) rail expose their
+    # job id only through componentkey="job-card-component-ref-<id>"; there is
+    # no anchor. Used by the CDP walk to recover the full result set.
+    _LINKEDIN_CARD_KEY_RE = re.compile(r"job-card-component-ref-(\d+)")
+
     def _scrape_linkedin(self, url: str) -> list[dict]:
         """Scrape job listings from a LinkedIn jobs search page."""
         from selenium.webdriver.common.by import By
@@ -1664,17 +1669,27 @@ class JobSearchTalent(BaseTalent):
             # shadow roots, which Selenium's find_elements + page_source
             # can't see. CDP DOM.getDocument with pierce=True walks the
             # full composed tree including closed shadow roots.
-            if not jobs:
-                try:
-                    cdp_jobs = self._scrape_linkedin_via_cdp(driver)
-                    if cdp_jobs:
-                        log.info(
-                            f"[JobSearch] LinkedIn CDP fallback: "
-                            f"{len(cdp_jobs)} listings"
-                        )
-                        jobs.extend(cdp_jobs)
-                except Exception as e:
-                    log.warning(f"[JobSearch] CDP fallback failed: {e}")
+            #
+            # Always run and merge (not just `if not jobs`): on the SDUI rail
+            # Strategies 1-2 may scrape the 1 focused card while ~25 sit in
+            # shadow roots, so gating on emptiness left the bulk uncollected.
+            # componentkey extraction recovers the full set; merge by job_url.
+            try:
+                cdp_jobs = self._scrape_linkedin_via_cdp(driver)
+                if cdp_jobs:
+                    existing_urls = {j.get("job_url") for j in jobs}
+                    added_cdp = 0
+                    for cj in cdp_jobs:
+                        if cj.get("job_url") not in existing_urls:
+                            existing_urls.add(cj.get("job_url"))
+                            jobs.append(cj)
+                            added_cdp += 1
+                    log.info(
+                        f"[JobSearch] LinkedIn CDP: {len(cdp_jobs)} found, "
+                        f"{added_cdp} new (total {len(jobs)})"
+                    )
+            except Exception as e:
+                log.warning(f"[JobSearch] CDP fallback failed: {e}")
 
             # Strategy 4: click-driven fallback for the SDUI semantic
             # search rail. The cards have no IDs in the DOM and no
@@ -1952,41 +1967,52 @@ class JobSearchTalent(BaseTalent):
 
         parents = self._cdp_build_parent_map(root)
 
-        # Collect every anchor whose href looks like a job posting
+        # Collect two kinds of job references from the pierced tree:
+        #   1. anchors  <a href="/jobs/view/<id>">  — classic page, and the
+        #      single job open in the detail pane on the SDUI page.
+        #   2. SDUI cards  <div componentkey="job-card-component-ref-<id>"> —
+        #      the semantic /jobs/search-results/ rail renders ~25 of these in
+        #      closed shadow roots with NO anchor. The anchor-only walk used to
+        #      miss the entire result set, so the scrape fell through to the
+        #      slow click fallback that recovered only ~4 of the 25.
         anchors: list[dict] = []
         seen_hrefs: set[str] = set()
+        card_nodes: list[tuple[dict, str]] = []
+        seen_ids: set[str] = set()
 
         def visit(node: dict) -> None:
-            if (node.get("nodeName") or "").lower() != "a":
-                return
             attrs = self._cdp_attrs(node)
-            href = attrs.get("href", "")
-            if "/jobs/view/" not in href:
-                return
-            bare = href.split("?")[0]
-            if bare in seen_hrefs:
-                return
-            seen_hrefs.add(bare)
-            if not bare.startswith("http"):
-                bare = "https://www.linkedin.com" + bare
-            anchor_text = self._cdp_collect_text(node, max_depth=4)
-            anchors.append({
-                "node": node,
-                "href": bare,
-                "anchor_text": anchor_text,
-            })
+            ck = attrs.get("componentkey", "")
+            if ck:
+                m = self._LINKEDIN_CARD_KEY_RE.search(ck)
+                if m and m.group(1) not in seen_ids:
+                    seen_ids.add(m.group(1))
+                    card_nodes.append((node, m.group(1)))
+            if (node.get("nodeName") or "").lower() == "a":
+                href = attrs.get("href", "")
+                if "/jobs/view/" in href:
+                    bare = href.split("?")[0].rstrip("/")
+                    if bare not in seen_hrefs:
+                        seen_hrefs.add(bare)
+                        if not bare.startswith("http"):
+                            bare = "https://www.linkedin.com" + bare
+                        anchors.append({
+                            "node": node,
+                            "href": bare,
+                            "anchor_text": self._cdp_collect_text(node, max_depth=4),
+                        })
 
         self._cdp_walk(root, visit)
 
         log.info(
-            f"[JobSearch] CDP found {len(anchors)} unique job anchors "
-            f"in pierced DOM"
+            f"[JobSearch] CDP found {len(anchors)} job anchors + "
+            f"{len(card_nodes)} SDUI componentkey cards in pierced DOM"
         )
 
-        # Diagnostic: when we find suspiciously few job anchors, dump a
-        # summary of what IS in the pierced tree so we can see whether
-        # the cards use a different element type / URL pattern entirely.
-        if len(anchors) < 3:
+        # Diagnostic: only when BOTH paths come up empty (so we can see what
+        # element type / URL pattern the cards actually use). Finding cards via
+        # componentkey is the normal SDUI path, not a failure.
+        if len(anchors) < 3 and not card_nodes:
             try:
                 self._dump_cdp_tree_summary(root)
             except Exception as e:
@@ -2047,6 +2073,41 @@ class JobSearchTalent(BaseTalent):
             if not company:
                 continue
 
+            jobs.append({
+                "source": "LinkedIn",
+                "date_found": date.today().isoformat(),
+                "position": title,
+                "company": company,
+                "location": location,
+                "job_url": href,
+            })
+
+        # Process SDUI componentkey cards (semantic rail). The id is reliable;
+        # the title/company text exists only for cards LinkedIn has rendered
+        # into the viewport. In practice the scroll loop in _scrape_linkedin
+        # runs before this and renders the whole rail, so cards have text by
+        # the time we read them (trials: 25/25 titled). A card that is still
+        # virtualized yields id + URL only, which is enough for the tracker —
+        # the JD fetch fills title/company downstream.
+        existing = {j["job_url"] for j in jobs}
+        for node, job_id in card_nodes:
+            href = f"https://www.linkedin.com/jobs/view/{job_id}"
+            if href in existing:
+                continue
+            existing.add(href)
+            lines = self._clean_card_lines(
+                self._cdp_collect_text(node, max_depth=10)
+            )
+            title = lines[0] if lines else ""
+            if len(title) > 200:
+                title = ""
+            company = lines[1] if len(lines) > 1 else ""
+            location = ""
+            for ln in lines[2:]:
+                low = ln.lower()
+                if ("remote" in low or "," in ln) and len(ln) < 100:
+                    location = ln
+                    break
             jobs.append({
                 "source": "LinkedIn",
                 "date_found": date.today().isoformat(),
@@ -2553,7 +2614,7 @@ class JobSearchTalent(BaseTalent):
         driver, temp_dir = self._create_driver_clean(headless=True)
         jobs: list[dict] = []
         seen_urls: set[str] = set()
-        max_pages = 5
+        max_pages = 10  # was 5 (=100 cap); raised for recall on broad queries
 
         try:
             for page_num in range(1, max_pages + 1):
@@ -2708,7 +2769,7 @@ class JobSearchTalent(BaseTalent):
             for link in driver.find_elements(
                 By.CSS_SELECTOR, 'a[href*="/job/"]'
             ):
-                text = link.text.strip()
+                text = (link.text or "").strip().split("\n")[0].strip()
                 href = (link.get_attribute("href") or "").split("?")[0]
                 if not text or len(text) < 4 or len(text) > 200:
                     continue
@@ -2716,11 +2777,50 @@ class JobSearchTalent(BaseTalent):
                     continue
                 if not href.startswith("http"):
                     href = "https://builtin.com" + href
+
+                # Walk up to the card to recover company + location. Built In
+                # cards carry the employer as <a href="/company/...">, and a
+                # text line with the location ("Remote"/"Hybrid" or City, ST).
+                # Without company, dedup (keyed on company+title) is unreliable.
+                # Climb only while the ancestor still wraps exactly this one job
+                # link; stop before a container that holds multiple cards (else
+                # we'd read a neighbouring card's company/title).
+                company, location = "", ""
+                card = link
+                for _ in range(8):
+                    try:
+                        parent = card.find_element(By.XPATH, "..")
+                    except Exception:
+                        break
+                    if len(parent.find_elements(
+                            By.CSS_SELECTOR, 'a[href*="/job/"]')) > 1:
+                        break
+                    card = parent
+                # The first /company/ anchor is usually a logo image with no
+                # text; take the first one that actually carries a name.
+                for co in card.find_elements(
+                        By.CSS_SELECTOR, 'a[href*="/company/"]'):
+                    name = (co.text or "").strip()
+                    if name:
+                        company = name
+                        break
+                for ln in [l.strip() for l in (card.text or "").split("\n")
+                           if l.strip()]:
+                    if ln in (text, company):
+                        continue
+                    low = ln.lower()
+                    if ("remote" in low or "hybrid" in low
+                            or ("," in ln and len(ln) < 40)):
+                        location = ln
+                        break
+
                 seen_urls.add(href)
                 jobs.append({
                     "source": "Built In",
                     "date_found": date.today().isoformat(),
                     "position": text,
+                    "company": company,
+                    "location": location,
                     "job_url": href,
                 })
                 added += 1
@@ -2790,7 +2890,7 @@ class JobSearchTalent(BaseTalent):
         driver, temp_dir = self._create_driver_clean(headless=True)
         jobs: list[dict] = []
         seen_urls: set[str] = set()
-        max_pages = 3  # ~20 results per page
+        max_pages = 5  # ~20 results per page; was 3
 
         try:
             page_url = url
@@ -2850,8 +2950,8 @@ class JobSearchTalent(BaseTalent):
                 if page_added == 0:
                     break
 
-                # Find next page link (cursor-based pagination)
-                next_url = self._simplyhired_next_page(driver)
+                # Advance via the numbered cursor link for the next page.
+                next_url = self._simplyhired_next_page(driver, page_num + 1)
                 if not next_url:
                     break
                 page_url = next_url
@@ -2952,29 +3052,23 @@ class JobSearchTalent(BaseTalent):
         return company, location
 
     @staticmethod
-    def _simplyhired_next_page(driver) -> str | None:
-        """Find the 'Next' pagination link and return its URL."""
+    def _simplyhired_next_page(driver, next_page_num: int) -> str | None:
+        """Return the URL for page ``next_page_num``.
+
+        SimplyHired's aria-label="Next page" arrow href points back to the
+        CURRENT page (no cursor), which is why following it looped on page 1.
+        The working pagination is numbered links carrying a ?cursor=<token>,
+        so we match the link whose visible text is the next page number.
+        """
         from selenium.webdriver.common.by import By
 
         try:
-            # SimplyHired uses cursor-based pagination with a next arrow/link
-            next_links = driver.find_elements(
-                By.CSS_SELECTOR, 'a[aria-label="Next"]')
-            if not next_links:
-                next_links = driver.find_elements(
-                    By.CSS_SELECTOR, 'a[aria-label="next page"]')
-            if not next_links:
-                # Fallback: find link with ">" or "Next" text
-                all_links = driver.find_elements(By.CSS_SELECTOR, 'nav a')
-                for a in all_links:
-                    txt = a.text.strip()
-                    if txt in (">", "›", "Next", "next"):
-                        next_links = [a]
-                        break
-            if next_links:
-                href = next_links[0].get_attribute("href")
-                if href:
-                    return href
+            target = str(next_page_num)
+            for a in driver.find_elements(By.CSS_SELECTOR, 'a[href*="cursor="]'):
+                if (a.text or "").strip() == target:
+                    href = a.get_attribute("href")
+                    if href and "cursor=" in href:
+                        return href
         except Exception:
             pass
         return None
