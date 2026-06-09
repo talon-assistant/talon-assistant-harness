@@ -1592,12 +1592,20 @@ class TalonAssistant:
             is_deep_search_command = any(
                 t in _cmd_lower for t in _DEEP_SEARCH_TRIGGERS)
 
-            # Native tool-calling path: the model picks and chains tools itself,
-            # replacing the keyword/LLM router and the prompt-based planner.
-            # Self-contained (runs the agentic loop and finalizes), so it
-            # returns early rather than threading through single-talent dispatch.
+            # Hybrid routing: the agentic tool loop is worth its multi-round-trip
+            # latency only for genuinely multi-step requests — its real strength
+            # is chaining tools the keyword router can't (e.g. "make the digest
+            # and email it"). Simple single-intent commands ("turn on the
+            # lights") fall through to the fast keyword/LLM router below so they
+            # don't pay the per-call tax (each chat turn is ~4.5s on this model,
+            # so a 2-call loop is ~11s vs ~1s for keyword routing).
+            # _MULTI_STEP_RE is the same conjunction+send-verb signal the planner
+            # pre-router uses, so the split stays predictable. The loop is
+            # self-contained (runs the agentic loop and finalizes), returning
+            # early rather than threading through single-talent dispatch.
             if (self._tool_calling and not _planner_substep
-                    and not attachments and not is_deep_search_command):
+                    and not attachments and not is_deep_search_command
+                    and self._MULTI_STEP_RE.search(command)):
                 return self._handle_tool_loop(
                     command, context, speak_response, _executing_rule)
 
