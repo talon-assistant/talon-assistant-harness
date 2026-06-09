@@ -441,10 +441,16 @@ class ConversationEngine:
 
             all_images = ([screenshot_b64] if screenshot_b64 else []) + file_images_b64
 
+            # Deep-search synthesis earns reasoning: it weighs evidence across
+            # many retrieved chunks, the exact spot the model otherwise invents
+            # definitions ("DV" → wrong expansion, "MB-100" for "MB-10"). Plain
+            # factual lookups stay suppressed (think=None → global default) so
+            # they remain fast. With thinking on, the <think> block shares the
+            # token budget, so give synthesis headroom or the answer gets starved.
             response = self._a.llm.generate(
                 prompt,
                 system_prompt=self._FACTUAL_RAG_SYSTEM_PROMPT,
-                max_length=1024,
+                max_length=2048 if is_deep_search else 1024,
                 temperature=0.1,
                 # Override the global repetition penalty for factual answers.
                 # Extraction legitimately repeats tokens (stat labels, "Karma",
@@ -456,6 +462,7 @@ class ConversationEngine:
                 rep_pen=1.1,
                 use_vision=bool(all_images),
                 images_b64=all_images or None,
+                think=True if is_deep_search else None,
             )
 
             self._a.memory.log_command(command, success=True, response=response)
