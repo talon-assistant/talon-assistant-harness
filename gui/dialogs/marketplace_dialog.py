@@ -369,6 +369,7 @@ class MarketplaceDialog(QDialog):
         self._worker = CatalogWorker(self.client, force_refresh=force)
         self._worker.catalog_ready.connect(self._on_catalog_loaded)
         self._worker.error.connect(self._on_catalog_error)
+        self._retain(self._worker)
         self._worker.start()
 
     def _refresh_catalog(self):
@@ -467,6 +468,10 @@ class MarketplaceDialog(QDialog):
             lambda result, n=name: self._on_install_done(n, result))
         self._install_worker.error.connect(
             lambda err, n=name: self._on_install_error(n, err))
+        # Retain like the uninstall path: clicking Install on a second card
+        # reassigns self._install_worker, and without a held reference the
+        # first worker's QThread is destroyed mid-run, which aborts the app.
+        self._retain(self._install_worker)
         self._install_worker.start()
 
     def _on_install_done(self, name, result):
