@@ -44,6 +44,28 @@ from PyQt6.QtWidgets import (
 log = logging.getLogger(__name__)
 
 
+class _NoScrollComboBox(QComboBox):
+    """QComboBox that ignores the mouse wheel unless it has focus.
+
+    Embedded in a scrolling table, a default QComboBox swallows wheel
+    events as the cursor passes over it: one notch silently steps the
+    status (new -> applied), commits to the DB, and can fire the LinkedIn
+    "I'm Interested" automation. Require an explicit click (focus) before
+    the wheel can change the value; unfocused wheel events scroll the
+    table instead.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+
+    def wheelEvent(self, event):
+        if self.hasFocus():
+            super().wheelEvent(event)
+        else:
+            event.ignore()
+
+
 # Workers that were still running when the dialog was closed get moved
 # here so Python doesn't garbage-collect them mid-scrape. They finish on
 # their own and self-drop via _detached_worker_done.
@@ -436,7 +458,7 @@ class JobInboxDialog(QDialog):
             self._table.setItem(r, 6, QTableWidgetItem(row.get("date_found") or ""))
 
             # Status dropdown
-            status_combo = QComboBox()
+            status_combo = _NoScrollComboBox()
             for s in _STATUS_CHOICES:
                 status_combo.addItem(s.title(), s)
             current = (row.get("status") or "new").lower()
