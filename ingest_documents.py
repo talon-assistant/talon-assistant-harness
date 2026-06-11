@@ -1145,13 +1145,17 @@ if __name__ == "__main__":
             log.info(f"{mode_label} mode — connecting to LLM server...")
             llm_client = LLMClient(cfg)
             if not llm_client.test_connection():
-                log.error("⚠  Could not reach LLM server.  "
-                    "Falling back to plain text extraction.\n"
-                    "   Ensure your LLM server is running before using "
-                    "--vision or --mdextraction.\n")
-                llm_client = None
-            else:
-                log.info(f"✓ LLM server ready — {mode_label} ingestion enabled\n")
+                # Abort, never fall back: ingest deletes each file's existing
+                # chunks before re-adding, so silently proceeding in plain-text
+                # mode would replace hours of vision-enhanced chunks with
+                # lower-quality text chunks the user never asked for.
+                log.error(f"⚠  Could not reach LLM server — aborting "
+                    f"({mode_label} was explicitly requested).\n"
+                    "   Start the LLM server and re-run, or re-run without "
+                    "--vision/--mdextraction if you really want plain-text "
+                    "ingestion.\n")
+                sys.exit(1)
+            log.info(f"✓ LLM server ready — {mode_label} ingestion enabled\n")
 
         mode_parts = []
         if args.vision and llm_client:

@@ -245,4 +245,14 @@ class VoiceSystem:
         command = self.transcribe_audio(audio)
 
         if self.command_callback:
-            self.command_callback(command, True)
+            # One failed command (LLM server down/restarting, talent crash)
+            # must not propagate into listen_for_wake_word — that silently
+            # kills voice control until the app is restarted.
+            try:
+                self.command_callback(command, True)
+            except Exception as e:
+                log.error(f"Voice command failed: {e}", exc_info=True)
+                try:
+                    self.speak("Sorry, that command failed. Please try again.")
+                except Exception:
+                    pass

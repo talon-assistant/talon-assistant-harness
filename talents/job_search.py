@@ -43,6 +43,15 @@ import logging
 log = logging.getLogger(__name__)
 
 
+class LinkedInProfileBusy(RuntimeError):
+    """The shared LinkedIn Chrome profile is held by another session.
+
+    Raised instead of returning an empty string so callers can tell
+    contention from a genuinely absent JD — a blank JD fed into fit
+    scoring lands at 5-18 and gets auto-archived, burying good listings.
+    """
+
+
 def _data_dir() -> str:
     d = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
     os.makedirs(d, exist_ok=True)
@@ -303,17 +312,50 @@ class JobSearchTalent(BaseTalent):
 
     def _handle_login(self) -> dict:
         """Open Chrome with the dedicated profile so user can log into LinkedIn."""
+        lock = self._linkedin_lock()
+        if not lock.acquire(timeout=10):
+            return _fail(
+                "Another LinkedIn session (scrape, recon, or JD fetch) is "
+                "using the Chrome profile right now. Wait for it to finish, "
+                "then say 'job search login' again."
+            )
         try:
             driver = self._create_driver_persistent(headless=False)
-            driver.get("https://www.linkedin.com/login")
-            return _ok(
-                "Chrome opened to LinkedIn login. Sign in, then close "
-                "the browser when done. Your session will be saved for "
-                "future searches.",
-                actions=[{"action": "login_prompt"}],
-            )
         except Exception as e:
+            lock.release()
             return _fail(f"Could not open Chrome: {e}")
+
+        # Hold the lock until the user closes the login browser. A scrape or
+        # JD fetch launched while it is open would fail against the profile
+        # ("user data directory is already in use") and surface as a blank JD.
+        def _release_on_close():
+            try:
+                while True:
+                    time.sleep(2.0)
+                    try:
+                        _ = driver.window_handles
+                    except Exception:
+                        break
+            finally:
+                try:
+                    lock.release()
+                except RuntimeError:
+                    pass
+
+        threading.Thread(
+            target=_release_on_close, daemon=True, name="linkedin-login-watch"
+        ).start()
+
+        try:
+            driver.get("https://www.linkedin.com/login")
+        except Exception as e:
+            log.warning(f"[JobSearch] Login page load failed: {e}")
+        return _ok(
+            "Chrome opened to LinkedIn login. Sign in, then close "
+            "the browser when done. Your session will be saved for "
+            "future searches.",
+            actions=[{"action": "login_prompt"}],
+        )
 
     # ── Selenium driver ──────────────────────────────────────────────────────
 
@@ -369,8 +411,25 @@ class JobSearchTalent(BaseTalent):
                 log.warning(f"[JobSearch] CDP cache-bypass failed: {e}")
         return driver
 
+    @staticmethod
+    def _linkedin_lock():
+        """Cross-talent lock guarding data/job_search_chrome_profile.
+
+        Owned by JobTrackerTalent so recon, the "I'm Interested" automation,
+        and every job_search session that opens the persistent profile all
+        serialize on the same lock — Chrome allows only one live driver per
+        user-data-dir; a second launch fails with "user data directory is
+        already in use".
+        """
+        from talents.job_tracker import JobTrackerTalent
+        return JobTrackerTalent._linkedin_lock
+
     def _create_driver_persistent(self, headless: bool = True):
-        """Driver bound to the saved LinkedIn profile (keeps li_at cookie)."""
+        """Driver bound to the saved LinkedIn profile (keeps li_at cookie).
+
+        Callers MUST hold _linkedin_lock() for the lifetime of the returned
+        driver — see _linkedin_lock above.
+        """
         return self._build_driver(self._profile_dir, headless, bypass_cache=True)
 
     def _create_driver_clean(self, headless: bool = True) -> tuple:
@@ -485,6 +544,10 @@ class JobSearchTalent(BaseTalent):
         Prefers the persisted copy on the row; falls back to a live scrape,
         then persists it back to the DB so the next call is free.
 
+        Raises LinkedInProfileBusy when a live LinkedIn scrape is needed but
+        the shared Chrome profile is held by another session — callers must
+        not treat that as "no JD".
+
         Prompt-injection defence for JD text is applied at the point of use,
         not here. A job description is untrusted *data to be analysed*, not a
         set of instructions to obey, so the right defence is to neutralise it
@@ -541,7 +604,13 @@ class JobSearchTalent(BaseTalent):
             )
 
         # Warm the JD cache on the row so both downstream handlers read from DB.
-        self._get_or_fetch_jd(app)
+        try:
+            self._get_or_fetch_jd(app)
+        except LinkedInProfileBusy:
+            return _fail(
+                "LinkedIn profile is busy with another session — "
+                "try 'prepare everything' again in a minute."
+            )
 
         resume_res = self._handle_prepare_materials(command)
         letter_res = self._handle_cover_letter(command)
@@ -642,7 +711,13 @@ class JobSearchTalent(BaseTalent):
 
         # Pull JD (cached on the row if already fetched; scrape and persist otherwise)
         job_url = app.get("job_url", "")
-        job_description = self._get_or_fetch_jd(app)
+        try:
+            job_description = self._get_or_fetch_jd(app)
+        except LinkedInProfileBusy:
+            return _fail(
+                "LinkedIn profile is busy with another session — "
+                "try again in a minute."
+            )
         if not job_description and app.get("notes"):
             job_description = app["notes"]
 
@@ -801,7 +876,13 @@ class JobSearchTalent(BaseTalent):
 
         # Pull JD (cached on row if already fetched)
         job_url = app.get("job_url", "")
-        job_description = self._get_or_fetch_jd(app)
+        try:
+            job_description = self._get_or_fetch_jd(app)
+        except LinkedInProfileBusy:
+            return _fail(
+                "LinkedIn profile is busy with another session — "
+                "try the cover letter again in a minute."
+            )
 
         # Build prompt
         prompt_parts = [
@@ -982,43 +1063,54 @@ class JobSearchTalent(BaseTalent):
 
         is_linkedin = "linkedin.com" in (job_url or "").lower()
         temp_dir: str | None = None
+        lock = None
+        if is_linkedin:
+            lock = self._linkedin_lock()
+            if not lock.acquire(timeout=120):
+                raise LinkedInProfileBusy(
+                    "LinkedIn Chrome profile is in use by another session"
+                )
         try:
-            if is_linkedin:
-                driver = self._create_driver_persistent(headless=True)
-            else:
-                driver, temp_dir = self._create_driver_clean(headless=True)
-        except Exception as e:
-            log.warning(f"[JobSearch] Could not start driver for JD: {e}")
-            return ""
-
-        try:
-            driver.set_page_load_timeout(25)
             try:
-                driver.get(job_url)
+                if is_linkedin:
+                    driver = self._create_driver_persistent(headless=True)
+                else:
+                    driver, temp_dir = self._create_driver_clean(headless=True)
             except Exception as e:
-                log.warning(f"[JobSearch] JD page load timed out: {e}")
-            time.sleep(4)
-            try:
-                body = driver.find_element(By.TAG_NAME, "body").text
-            except Exception as e:
-                log.warning(f"[JobSearch] JD body read failed: {e}")
+                log.warning(f"[JobSearch] Could not start driver for JD: {e}")
                 return ""
-            # Keep both ends of the JD: requirements often live mid/late,
-            # qualifications at the top.
-            if len(body) > 10000:
-                body = body[:6000] + "\n[...truncated...]\n" + body[-4000:]
-            log.info(f"[JobSearch] Fetched JD: {len(body)} chars")
-            return body
-        except Exception as e:
-            log.warning(f"[JobSearch] Could not fetch JD: {e}")
-            return ""
-        finally:
+
             try:
-                driver.quit()
-            except Exception:
-                pass
-            if temp_dir:
-                shutil.rmtree(temp_dir, ignore_errors=True)
+                driver.set_page_load_timeout(25)
+                try:
+                    driver.get(job_url)
+                except Exception as e:
+                    log.warning(f"[JobSearch] JD page load timed out: {e}")
+                time.sleep(4)
+                try:
+                    body = driver.find_element(By.TAG_NAME, "body").text
+                except Exception as e:
+                    log.warning(f"[JobSearch] JD body read failed: {e}")
+                    return ""
+                # Keep both ends of the JD: requirements often live mid/late,
+                # qualifications at the top.
+                if len(body) > 10000:
+                    body = body[:6000] + "\n[...truncated...]\n" + body[-4000:]
+                log.info(f"[JobSearch] Fetched JD: {len(body)} chars")
+                return body
+            except Exception as e:
+                log.warning(f"[JobSearch] Could not fetch JD: {e}")
+                return ""
+            finally:
+                try:
+                    driver.quit()
+                except Exception:
+                    pass
+                if temp_dir:
+                    shutil.rmtree(temp_dir, ignore_errors=True)
+        finally:
+            if lock is not None:
+                lock.release()
 
     def scrape_and_add_from_url(self, job_url: str) -> dict:
         """Drop-in entry point for the Job Inbox dialog.
@@ -1490,7 +1582,17 @@ class JobSearchTalent(BaseTalent):
         from selenium.webdriver.support.ui import WebDriverWait
         from selenium.webdriver.support import expected_conditions as EC
 
-        driver = self._create_driver_persistent(headless=True)
+        lock = self._linkedin_lock()
+        if not lock.acquire(timeout=180):
+            raise RuntimeError(
+                "LinkedIn profile is busy with another session — "
+                "try the search again in a minute"
+            )
+        try:
+            driver = self._create_driver_persistent(headless=True)
+        except Exception:
+            lock.release()
+            raise
         jobs: list[dict] = []
 
         try:
@@ -1754,7 +1856,10 @@ class JobSearchTalent(BaseTalent):
                 except Exception as e:
                     log.warning(f"[JobSearch] Debug dump failed: {e}")
         finally:
-            driver.quit()
+            try:
+                driver.quit()
+            finally:
+                lock.release()
 
         return jobs
 
@@ -3220,6 +3325,15 @@ class JobSearchTalent(BaseTalent):
             # Pull JD (cached if present, scraped and persisted otherwise)
             try:
                 self._get_or_fetch_jd(row)
+            except LinkedInProfileBusy:
+                # Defer rather than score: a blank JD lands at 5-18 and the
+                # <=20 auto-archive would bury the listing. Left unscored,
+                # the job is picked up by the next fit run.
+                log.warning(
+                    f"[JobSearch] LinkedIn profile busy — deferring fit "
+                    f"scoring for #{row.get('id')}"
+                )
+                continue
             except Exception as e:
                 log.warning(
                     f"[JobSearch] JD fetch failed for #{row.get('id')}: {e}"

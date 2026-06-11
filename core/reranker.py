@@ -35,11 +35,45 @@ def _get_model(model_name: str):
     with _model_lock:
         if _model is None or _model_name != model_name:
             from sentence_transformers import CrossEncoder
-            # CPU to avoid competing with KoboldCpp VRAM.
-            _model = CrossEncoder(model_name, device="cpu")
+            # CPU to avoid competing with KoboldCpp VRAM. max_length pinned
+            # to the model's true limit so the truncation horizon
+            # _score_window compensates for is explicit, not implicit.
+            _model = CrossEncoder(model_name, device="cpu", max_length=512)
             _model_name = model_name
             log.info(f"[Reranker] Loaded {model_name} on cpu")
         return _model
+
+
+# Chars of chunk text the cross-encoder can actually see. bge-reranker
+# truncates each (query, chunk) pair at 512 tokens; at roughly 4 chars per
+# token, minus headroom for the query, ~1700 chars of the chunk survive.
+_VISIBLE_CHARS = 1700
+
+
+def _score_window(text: str, keywords: set[str] | None) -> str:
+    """Return the slice of a chunk the cross-encoder should score.
+
+    Chunks in explicit mode are full pages, but the model only sees the
+    first ~_VISIBLE_CHARS — a page whose relevant entry sits at the tail
+    (e.g. a stat block starting at char 3200) scores like an irrelevant
+    page and gets dropped by min_score. When the first query-keyword hit
+    lies beyond the visible head, score a window centered on it instead
+    of the page head.
+    """
+    if len(text) <= _VISIBLE_CHARS or not keywords:
+        return text
+
+    lower = text.lower()
+    first_hit = min(
+        (pos for kw in keywords if (pos := lower.find(kw)) != -1),
+        default=-1,
+    )
+    # No keyword in the chunk, or it already falls inside the visible
+    # head (with margin for the entry it belongs to): keep the head.
+    if first_hit == -1 or first_hit < _VISIBLE_CHARS - 400:
+        return text
+    start = max(0, first_hit - _VISIBLE_CHARS // 3)
+    return text[start:start + _VISIBLE_CHARS]
 
 
 def rerank(
@@ -85,7 +119,7 @@ def rerank(
         return chunks
 
     model = _get_model(model_name)
-    pairs = [(query, chunk[1]) for chunk in chunks]
+    pairs = [(query, _score_window(chunk[1], keywords)) for chunk in chunks]
     raw_scores = model.predict(pairs).tolist()
 
     # Compute final scores with optional keyword boost.
