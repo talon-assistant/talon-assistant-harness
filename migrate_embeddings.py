@@ -7,7 +7,7 @@ return garbage results because the stored embeddings and query embeddings are
 in different vector spaces.
 
 Usage:
-    python migrate_embeddings.py
+    python migrate_embeddings.py [--yes]
 
 The script reads config/settings.json to determine the target model and
 chroma_path.  All five collections are migrated in-place:
@@ -19,6 +19,11 @@ chroma_path.  All five collections are migrated in-place:
 
 Documents, metadatas, and IDs are preserved; only the embedding vectors
 are replaced.
+
+Each collection is re-embedded into a staging collection first and only
+swapped into place after every document has landed and the count verifies,
+so a crash or Ctrl-C mid-run never destroys the original data (several of
+these collections — memory, rules, corrections — exist nowhere else).
 """
 import json
 import sys
@@ -56,6 +61,15 @@ def migrate():
     log.info(f"  chroma_path   : {chroma_path}")
     log.info(f"  embed_model   : {embed_model}")
     log.debug("")
+
+    if "--yes" not in sys.argv:
+        reply = input(
+            "This rewrites every ChromaDB collection with new embeddings.\n"
+            "Make sure Talon is not running. Continue? (yes/no): "
+        )
+        if reply.strip().lower() != "yes":
+            log.info("Aborted — nothing was changed.")
+            return
 
     import chromadb
     from core.embeddings import embed_documents
@@ -103,14 +117,21 @@ def migrate():
         log.info(f"Re-embedding {len(all_docs)} document(s) with {embed_model}...")
         new_embeddings = embed_documents(all_docs, embed_model)
 
-        log.info("Replacing collection...")
-        client.delete_collection(coll_name)
-        new_coll = client.get_or_create_collection(
-            name=coll_name,
+        # Stage into a side collection first. The original is deleted only
+        # after every batch has landed and the count verifies, so a crash,
+        # Ctrl-C, or a metadata entry that fails Chroma validation mid-insert
+        # cannot destroy the only copy of the data.
+        staging_name = f"{coll_name}__migrating"
+        try:
+            client.delete_collection(staging_name)  # stale from a prior crash
+        except Exception:
+            pass
+        new_coll = client.create_collection(
+            name=staging_name,
             metadata=coll_meta,
         )
 
-        log.info("Inserting with new embeddings...")
+        log.info(f"Inserting with new embeddings (staged as {staging_name})...")
         for i in range(0, len(all_docs), BATCH):
             new_coll.add(
                 embeddings=new_embeddings[i:i + BATCH],
@@ -120,6 +141,17 @@ def migrate():
             )
             done = min(i + BATCH, len(all_docs))
             log.info(f"{done}/{len(all_docs)}")
+
+        staged = new_coll.count()
+        if staged != total:
+            raise RuntimeError(
+                f"{coll_name}: staging collection holds {staged} documents, "
+                f"expected {total} — original collection left untouched."
+            )
+
+        log.info("Swapping staged collection into place...")
+        client.delete_collection(coll_name)
+        new_coll.modify(name=coll_name)
 
         log.info(f"Done.\n")
 
