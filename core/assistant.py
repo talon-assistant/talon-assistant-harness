@@ -902,18 +902,25 @@ class TalonAssistant:
     def _detect_repeat_request(self, command):
         """Detect if user wants to repeat last action.
 
-        Uses word-boundary matching to avoid false positives like
-        'again' matching inside 'against'. Commands longer than 8 words
-        are unlikely to be bare repeat requests — they probably contain
-        'again' incidentally (e.g. 'can you try again with web search').
+        Only matches commands that ARE a bare repeat request, not commands
+        that merely contain a repeat word: 'remind me to call mom again'
+        and 'do that math problem now' must reach their talents, not
+        silently re-execute the previous action (which could be re-sending
+        an email).
         """
         import re
-        if len(command.split()) > 8:
-            return False
-        repeat_keywords = ['again', 'repeat', 'do that', 'same thing', 'one more time']
-        cmd_lower = command.lower()
-        return any(re.search(r'\b' + re.escape(kw) + r'\b', cmd_lower)
-                   for kw in repeat_keywords)
+        cmd = command.lower().strip()
+        cmd = re.sub(r"[\s.!?]+$", "", cmd)
+        if cmd.startswith("please "):
+            cmd = cmd[len("please "):]
+        bare_repeats = {
+            "again", "repeat", "repeat that", "repeat it",
+            "do it again", "do that again", "do this again",
+            "same thing", "same thing again", "do the same thing",
+            "one more time", "once more",
+            "run that again", "try that again", "say that again",
+        }
+        return cmd in bare_repeats
 
     def _handle_repeat(self, speak_response):
         """Handle a repeat-last-action request.
@@ -1415,8 +1422,10 @@ class TalonAssistant:
                 self._handle_approval(command)
                 # Respond naturally and continue — no early return
 
-            # Step 1: Repeat detection
-            if self._detect_repeat_request(command):
+            # Step 1: Repeat detection (skipped for rule/planner sub-steps —
+            # a step that happens to contain a repeat word must execute as
+            # written, not replay the previous action)
+            if not _executing_rule and self._detect_repeat_request(command):
                 return self._handle_repeat(speak_response) or {"response": "", "talent": "", "success": False}
 
             # Step 1.5: Rule matching (skip if already executing a rule action)
