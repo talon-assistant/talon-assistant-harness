@@ -45,7 +45,12 @@ class SystemTrayManager(QObject):
         self.tray_icon.setIcon(_create_default_icon())
         self.tray_icon.setToolTip("Talon Assistant")
 
-        menu = QMenu()
+        # The menu must be parented (and retained) or sip garbage-collects
+        # the C++ QMenu when this method returns — setContextMenu() does NOT
+        # take ownership, and a collected menu makes right-click on the tray
+        # icon (Show/Hide/Exit) silently dead.
+        menu = QMenu(self._window)
+        self._tray_menu = menu
         show_action = QAction("Show Talon", menu)
         show_action.triggered.connect(self._show_window)
         menu.addAction(show_action)
