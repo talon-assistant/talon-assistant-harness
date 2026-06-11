@@ -1236,14 +1236,17 @@ class JobTrackerTalent(BaseTalent):
             saved_files.append(str(docx_path))
             log.info(f"[JobTracker] DOCX saved: {docx_path.name}")
 
-            # Convert DOCX to PDF
-            try:
-                import docx2pdf
-                docx2pdf.convert(str(docx_path), str(pdf_path))
-                saved_files.append(str(pdf_path))
-                log.info(f"[JobTracker] PDF saved: {pdf_path.name}")
-            except Exception as e:
-                log.warning(f"[JobTracker] PDF conversion failed: {e}")
+            # Convert DOCX to PDF. Must go through the subprocess-isolated
+            # converter: in-process docx2pdf uses COM automation that can
+            # raise a Windows fatal exception (0x800706be) which kills the
+            # whole Python process, not just this call.
+            from core.resume_docx import convert_to_pdf
+            converted = convert_to_pdf(docx_path)
+            if converted is not None:
+                saved_files.append(str(converted))
+                log.info(f"[JobTracker] PDF saved: {converted.name}")
+            else:
+                log.warning("[JobTracker] PDF conversion failed")
         except Exception as e:
             log.warning(f"[JobTracker] DOCX generation failed: {e}")
 
