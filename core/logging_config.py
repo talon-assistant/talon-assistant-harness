@@ -15,6 +15,16 @@ def setup_logging(log_dir="data/logs", level=logging.DEBUG):
     # Clear any existing handlers (prevents duplicates on reload)
     root.handlers.clear()
 
+    # On Windows sys.stdout defaults to cp1252, which raises
+    # UnicodeEncodeError on non-ASCII console output (box-drawing chars,
+    # em dashes in CLI script headers) and spams "Logging error" tracebacks.
+    # Replace unencodable chars instead of crashing; the rotating file handler
+    # below stays utf-8, so the log file keeps the real characters.
+    try:
+        sys.stdout.reconfigure(errors="replace")
+    except (AttributeError, ValueError):
+        pass
+
     # Console handler — INFO and above, concise format
     console = logging.StreamHandler(sys.stdout)
     console.setLevel(logging.INFO)
