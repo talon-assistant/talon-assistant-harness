@@ -475,6 +475,12 @@ class MainWindow(QMainWindow):
                 llm = self.bridge.assistant.llm
                 llm.api_format = combined["llm"].get(
                     "api_format", llm.api_format)
+                # Hot-swap the tool-calling router flag too, so toggling it in
+                # Settings takes effect immediately without a restart (the
+                # assistant otherwise reads it once at startup).
+                self.bridge.assistant._tool_calling = bool(
+                    combined["llm"].get(
+                        "tool_calling", self.bridge.assistant._tool_calling))
 
         if "llm_server" in combined and self.bridge.server_manager:
             self.bridge.server_manager.update_config(combined["llm_server"])
