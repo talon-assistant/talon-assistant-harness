@@ -651,14 +651,24 @@ class TalonAssistant:
                             or {"role": "assistant", "content": res.get("content", "")})
             for tc in calls:
                 name = tc.get("name")
-                sub = (tc.get("arguments") or {}).get("request") or command
+                tool_args = tc.get("arguments") or {}
+                # Free-form talents send {"request": "..."}; typed talents send
+                # named fields. Build a text form for logging and for talents
+                # that still parse strings, and pass the structured args through
+                # context so typed talents read them directly (no lossy re-parse).
+                sub = (tool_args.get("request")
+                       or " ".join(str(v) for v in tool_args.values() if v)
+                       or command)
                 talent = self._get_talent_by_name(name)
                 if isinstance(talent, BaseTalent):
                     log.info(f"[ToolLoop] -> {name}({str(sub)[:60]})")
+                    context["tool_args"] = tool_args
                     try:
                         tres = talent.execute(sub, context)
                     except Exception as e:
                         tres = {"success": False, "response": f"error: {e}"}
+                    finally:
+                        context.pop("tool_args", None)
                     ok = tres.get("success", True)
                     output = (tres.get("response") or "").strip() or (
                         "done" if ok else "failed")
@@ -676,7 +686,15 @@ class TalonAssistant:
         # Use the talents' own responses as the answer (clean and
         # deterministic). The model's free-text summary turn is discarded
         # because it leaks reasoning intermittently on the chat endpoint.
-        resp = " ".join(a["result"] for a in actions if a.get("result")) or "Done."
+        # Dedupe identical results so a tool the model retried several times
+        # (e.g. a failing send) doesn't repeat its message in the reply.
+        seen, parts = set(), []
+        for a in actions:
+            r = (a.get("result") or "").strip()
+            if r and r not in seen:
+                seen.add(r)
+                parts.append(r)
+        resp = " ".join(parts) or "Done."
         return {"success": all(a.get("success", True) for a in actions),
                 "response": resp, "actions_taken": actions, "spoken": False}
 

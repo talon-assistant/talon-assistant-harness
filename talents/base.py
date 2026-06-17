@@ -129,11 +129,36 @@ class BaseTalent(ABC):
     def to_tool_schema(self) -> dict:
         """Build an OpenAI-format tool schema from this talent's metadata.
 
-        Used by the native tool-calling router. v1 exposes a single free-form
-        ``request`` argument carrying the user's intent; the talent keeps its
-        own internal argument extraction. Later phases replace this with typed
-        per-talent parameters.
+        Used by the native tool-calling router. A talent exposes typed
+        parameters by setting the class attribute ``tool_parameters`` (an
+        OpenAI-schema ``properties`` dict) and optionally ``tool_required``
+        (list of required keys; defaults to all). Talents that leave
+        ``tool_parameters`` unset fall back to a single free-form ``request``
+        string — fine for capabilities with no structured fields, but talents
+        that carry data the model tends to drop (email recipient, file paths,
+        room/colour) should declare typed params so those fields get their own
+        slots instead of being re-serialised into one lossy string.
+
+        Typed talents read the model-supplied values from
+        ``context["tool_args"]`` in execute(); the tool loop populates it.
         """
+        params = getattr(self, "tool_parameters", None)
+        if params:
+            properties = params
+            required = getattr(self, "tool_required", None)
+            if required is None:
+                required = list(params.keys())
+        else:
+            properties = {
+                "request": {
+                    "type": "string",
+                    "description": (
+                        "The user's request, in their own words, "
+                        "for this capability."
+                    ),
+                },
+            }
+            required = ["request"]
         return {
             "type": "function",
             "function": {
@@ -141,16 +166,8 @@ class BaseTalent(ABC):
                 "description": self.description or self.name,
                 "parameters": {
                     "type": "object",
-                    "properties": {
-                        "request": {
-                            "type": "string",
-                            "description": (
-                                "The user's request, in their own words, "
-                                "for this capability."
-                            ),
-                        },
-                    },
-                    "required": ["request"],
+                    "properties": properties,
+                    "required": required,
                 },
             },
         }
