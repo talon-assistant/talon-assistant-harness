@@ -706,6 +706,9 @@ class SettingsDialog(QDialog):
         self._add_combo("llm.api_format", form, "API Format",
                         ["koboldcpp", "llamacpp", "openai"],
                         llm.get("api_format", "koboldcpp"))
+        self._add_check("llm.tool_calling", form,
+                        "Tool Calling (agentic multi-step routing)",
+                        llm.get("tool_calling", False))
         self._add_spin("llm.max_length", form, "Max Length",
                        llm.get("max_length", 512), 1, 8192)
         self._add_dspin("llm.temperature", form, "Temperature",

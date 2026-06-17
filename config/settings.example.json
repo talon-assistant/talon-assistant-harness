@@ -3,6 +3,7 @@
     "endpoint": "http://localhost:5001/api/v1/generate",
     "api_format": "koboldcpp",
     "suppress_thinking": true,
+    "tool_calling": false,
     "max_length": 512,
     "temperature": 0.7,
     "top_p": 0.9,

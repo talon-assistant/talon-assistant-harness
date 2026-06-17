@@ -232,7 +232,7 @@ class LLMClient:
     def generate(self, prompt, use_vision=False, screenshot_b64=None,
                  images_b64=None, max_length=None, system_prompt=None,
                  temperature=None, rep_pen=None,
-                 detect_degeneration=True):
+                 detect_degeneration=True, think=None):
         """Send prompt to LLM server and return generated text.
 
         Dispatches to the appropriate backend based on ``self.api_format``.
@@ -252,6 +252,9 @@ class LLMClient:
                 action plans, tool-call JSON, etc.) should pass False —
                 truncating JSON mid-string breaks the parser, and
                 legitimate creative content can trip the run-on detector.
+            think: Per-call reasoning override. None (default) uses the
+                configured suppress_thinking setting; True forces reasoning on
+                (drops the empty-think prefill); False forces it off.
         """
         # Normalise: merge legacy screenshot_b64 into images_b64 list.
         effective_images = list(images_b64) if images_b64 else []
@@ -259,10 +262,15 @@ class LLMClient:
             effective_images.insert(0, screenshot_b64)
         effective_images = effective_images or None
 
+        # Per-call reasoning override → effective prefill suppression. think=True
+        # forces reasoning on, think=False off, None uses the configured default.
+        suppress = self.suppress_thinking if think is None else (not think)
+
         if self.api_format == "llamacpp":
             raw = self._generate_llamacpp(
                 prompt, use_vision, effective_images,
-                max_length, system_prompt, temperature, rep_pen)
+                max_length, system_prompt, temperature, rep_pen,
+                suppress_thinking=suppress)
         elif self.api_format == "openai":
             raw = self._generate_openai(
                 prompt, use_vision, effective_images,
@@ -270,7 +278,8 @@ class LLMClient:
         else:
             raw = self._generate_koboldcpp(
                 prompt, use_vision, effective_images,
-                max_length, system_prompt, temperature, rep_pen)
+                max_length, system_prompt, temperature, rep_pen,
+                suppress_thinking=suppress)
 
         # Strip Qwen3 <think> blocks (including the empty marker emitted when
         # thinking is disabled) before anything downstream sees the text.
@@ -280,11 +289,91 @@ class LLMClient:
             return _truncate_degeneration(raw)
         return raw
 
+    def chat(self, messages, tools=None, tool_choice="auto",
+             temperature=None, max_length=None, reasoning_effort=None):
+        """Native tool-calling via the OpenAI-compatible chat endpoint.
+
+        Unlike generate() (raw completion plus a hand-built ChatML prompt),
+        this posts to /v1/chat/completions with an OpenAI-format tools[] list
+        and lets the model decide which function to call and fill its
+        arguments. The foundation for the agentic tool-calling router.
+
+        Args:
+            messages:    OpenAI-style [{"role","content"}, ...] history.
+            tools:       tools[] schemas (see BaseTalent.to_tool_schema()).
+            tool_choice: "auto" (model decides), "none", or a forced tool.
+            temperature: Override sampling temperature.
+            max_length:  Override max tokens.
+            reasoning_effort: Per-call thinking budget — none/minimal/low/
+                medium/high. None uses the configured default.
+
+        Returns:
+            {"content": str, "tool_calls": [{"id","name","arguments"(dict)}]}.
+            Raises LLMError on transport failure.
+        """
+        # KoboldCpp / llama.cpp expose the chat endpoint on the same host as
+        # the raw-completion endpoint; derive it from the configured base URL.
+        parsed = urlparse(self.endpoint)
+        chat_url = f"{parsed.scheme}://{parsed.netloc}/v1/chat/completions"
+
+        payload = {
+            "messages": messages,
+            "temperature": (temperature if temperature is not None
+                            else self.temperature),
+            "max_tokens": max_length or self.max_length,
+            "stream": False,
+        }
+        if tools:
+            payload["tools"] = tools
+            payload["tool_choice"] = tool_choice
+        # Per-call thinking control. An explicit reasoning_effort wins; otherwise
+        # fall back to the configured default (suppress_thinking -> "none").
+        # KoboldCpp 1.114 honors reasoning_effort directly (none/minimal/low/
+        # medium/high). chat_template_kwargs only bite when it runs with --jinja,
+        # but they are harmless otherwise and future-proof the toggle. Both kwarg
+        # spellings are sent to cover whichever the model's template expects.
+        eff = (reasoning_effort if reasoning_effort is not None
+               else ("none" if self.suppress_thinking else None))
+        if eff is not None:
+            payload["reasoning_effort"] = eff
+            think_on = eff != "none"
+            payload["chat_template_kwargs"] = {
+                "enable_thinking": think_on, "thinking_enabled": think_on}
+
+        try:
+            response = requests.post(
+                chat_url, json=payload, timeout=self.timeout)
+            if response.status_code != 200:
+                raise LLMError(f"Status {response.status_code}",
+                               status_code=response.status_code)
+            message = response.json()["choices"][0]["message"]
+        except LLMError:
+            raise
+        except Exception as e:
+            raise LLMError(str(e)) from e
+
+        content = _strip_reasoning(message.get("content") or "")
+        tool_calls = []
+        for tc in (message.get("tool_calls") or []):
+            fn = tc.get("function", {})
+            args = fn.get("arguments")
+            if isinstance(args, str):
+                try:
+                    args = json.loads(args)
+                except (json.JSONDecodeError, ValueError):
+                    args = {"_raw": args}
+            tool_calls.append({
+                "id": tc.get("id"),
+                "name": fn.get("name"),
+                "arguments": args or {},
+            })
+        return {"content": content, "tool_calls": tool_calls, "message": message}
+
     # ── KoboldCpp Backend ─────────────────────────────────────
 
     def _generate_koboldcpp(self, prompt, use_vision=False, images_b64=None,
                             max_length=None, system_prompt=None, temperature=None,
-                            rep_pen=None):
+                            rep_pen=None, suppress_thinking=None):
         """KoboldCpp native API: POST /api/v1/generate."""
         effective_max_length = max_length or self.max_length
         effective_temperature = (temperature if temperature is not None
@@ -292,7 +381,8 @@ class LLMClient:
         effective_rep_pen = rep_pen if rep_pen is not None else self.rep_pen
 
         formatted_prompt = self._build_chatml_prompt(
-            prompt, system_prompt, use_vision)
+            prompt, system_prompt, use_vision,
+            suppress_thinking=suppress_thinking)
 
         payload = {
             "prompt": formatted_prompt,
@@ -328,7 +418,7 @@ class LLMClient:
 
     def _generate_llamacpp(self, prompt, use_vision=False, images_b64=None,
                            max_length=None, system_prompt=None, temperature=None,
-                           rep_pen=None):
+                           rep_pen=None, suppress_thinking=None):
         """llama.cpp server API: POST /completion."""
         # If we have a server manager reference, check readiness before sending.
         # Returns a friendly message instead of hanging/503 while model loads.
@@ -347,7 +437,8 @@ class LLMClient:
         effective_rep_pen = rep_pen if rep_pen is not None else self.rep_pen
 
         formatted_prompt = self._build_chatml_prompt(
-            prompt, system_prompt, use_vision)
+            prompt, system_prompt, use_vision,
+            suppress_thinking=suppress_thinking)
 
         payload = {
             "prompt": formatted_prompt,
@@ -441,11 +532,14 @@ class LLMClient:
     # ── Prompt Building ───────────────────────────────────────
 
     def _build_chatml_prompt(self, prompt, system_prompt=None,
-                             use_vision=False):
+                             use_vision=False, suppress_thinking=None):
         """Build a ChatML-formatted prompt string.
 
         Used by koboldcpp and llamacpp backends (which take raw prompt text).
         The openai backend builds messages directly instead.
+
+        suppress_thinking: per-call override of the instance default. None
+        falls back to self.suppress_thinking.
         """
         system_block = ""
         if system_prompt:
@@ -456,7 +550,9 @@ class LLMClient:
 
         # Pre-fill a closed, empty reasoning block so hybrid Qwen3 models skip
         # thinking and generate only the answer (see __init__ suppress_thinking).
-        thinking_suffix = "<think>\n\n</think>\n\n" if self.suppress_thinking else ""
+        suppress = (self.suppress_thinking if suppress_thinking is None
+                    else suppress_thinking)
+        thinking_suffix = "<think>\n\n</think>\n\n" if suppress else ""
 
         if use_vision:
             vision_prefix = self.prompt_template.get("vision_prefix", "")

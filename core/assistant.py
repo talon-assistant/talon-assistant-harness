@@ -178,6 +178,11 @@ class TalonAssistant:
         log.info("[1/5] Testing KoboldCpp connection...")
         self.llm = LLMClient(self.config)
         self.llm.test_connection()
+        # Native tool-calling router (roadmap Option 5). When on, the model
+        # picks the talent via /v1/chat/completions tool calls instead of the
+        # keyword/LLM router. Off by default; opt in via llm.tool_calling.
+        self._tool_calling = bool(
+            self.config.get("llm", {}).get("tool_calling", False))
 
         log.info("[2/5] Initializing Memory + RAG...")
         memory_config = self.config["memory"]
@@ -604,6 +609,119 @@ class TalonAssistant:
         r'(?:send|email|text|forward|message|notify|share|post|tweet|upload|save|copy)',
         re.IGNORECASE,
     )
+
+    def _run_tool_loop(self, command, context, max_iters=6):
+        """Agentic tool-calling loop; returns a talent-style result dict.
+
+        Sends the user request plus the tool list, executes whatever tool calls
+        the model emits by dispatching to the matching talents, feeds each
+        result back, and repeats until the model replies with no further tool
+        call (or hits max_iters). This is the planner replacement: the model
+        chains tools itself instead of Talon pre-building a JSON plan.
+        """
+        routable = [t for t in self.talents
+                    if t.enabled and getattr(t, "routing_available", True)]
+        tools = [t.to_tool_schema() for t in routable]
+        messages = [
+            {"role": "system", "content": (
+                "You are Talon, a local assistant. Use the available tools to "
+                "fulfil the user's request, calling them in sequence when the "
+                "request has multiple steps. Once the work is done, reply with a "
+                "short natural-language confirmation. If no tool is needed, just "
+                "answer.")},
+            {"role": "user", "content": command},
+        ]
+        # Sub-tools must not speak their own results; only the final reply does.
+        context["speak_response"] = False
+        actions = []
+        for _ in range(max_iters):
+            try:
+                res = self.llm.chat(messages, tools=tools, temperature=0.2)
+            except Exception as e:
+                log.warning(f"[ToolLoop] chat failed: {e}")
+                return {"success": False,
+                        "response": f"Tool routing failed: {e}",
+                        "actions_taken": actions, "spoken": False}
+            calls = res.get("tool_calls") or []
+            if not calls:
+                break
+            # Replay the assistant turn (with its tool_calls) so the next
+            # request is a valid continuation.
+            messages.append(res.get("message")
+                            or {"role": "assistant", "content": res.get("content", "")})
+            for tc in calls:
+                name = tc.get("name")
+                sub = (tc.get("arguments") or {}).get("request") or command
+                talent = self._get_talent_by_name(name)
+                if isinstance(talent, BaseTalent):
+                    log.info(f"[ToolLoop] -> {name}({str(sub)[:60]})")
+                    try:
+                        tres = talent.execute(sub, context)
+                    except Exception as e:
+                        tres = {"success": False, "response": f"error: {e}"}
+                    ok = tres.get("success", True)
+                    output = (tres.get("response") or "").strip() or (
+                        "done" if ok else "failed")
+                    actions.append(
+                        {"action": name, "result": output, "success": ok})
+                else:
+                    output = f"Unknown tool: {name}"
+                    actions.append(
+                        {"action": name, "result": output, "success": False})
+                messages.append({"role": "tool", "tool_call_id": tc.get("id"),
+                                 "name": name, "content": output[:1500]})
+        if not actions:
+            # The model called no tool at all: this is plain conversation.
+            return {"conversation": True}
+        # Use the talents' own responses as the answer (clean and
+        # deterministic). The model's free-text summary turn is discarded
+        # because it leaks reasoning intermittently on the chat endpoint.
+        resp = " ".join(a["result"] for a in actions if a.get("result")) or "Done."
+        return {"success": all(a.get("success", True) for a in actions),
+                "response": resp, "actions_taken": actions, "spoken": False}
+
+    def _handle_tool_loop(self, command, context, speak_response, executing_rule):
+        """Run the agentic loop and finalize like a talent result: scan + speak
+        the reply, log to memory, detect preferences, buffer the turn."""
+        result = self._run_tool_loop(command, context)
+        if result.get("conversation"):
+            # No tool fit — fall back to the standard conversation path, which
+            # has working thinking suppression via the raw-completion prefill.
+            context["speak_response"] = speak_response
+            raw = self._handle_conversation(command, context) or ""
+            response_text = self._security_filter_response(
+                raw, context="conversation")
+            if speak_response and response_text:
+                self.voice.speak(response_text)
+            elif response_text:
+                log.info(f"Talon: {response_text}")
+            if not executing_rule and response_text.strip():
+                self._conversation.buffer_turn(command, response_text.strip())
+            self._detect_preference(command, response_text)
+            log.info(f"{'=' * 50}\n")
+            return {"response": response_text, "talent": "", "success": True}
+        response_text = result.get("response", "")
+        if not result.get("spoken", False):
+            response_text = self._security_filter_response(
+                response_text, context="tool")
+            if speak_response and response_text:
+                self.voice.speak(response_text)
+            elif response_text:
+                log.info(f"Talon: {response_text}")
+        if not executing_rule:
+            cmd_id = self.memory.log_command(
+                command, success=result.get("success", True),
+                response=response_text)
+            for a in result.get("actions_taken", []):
+                self.memory.log_action(
+                    cmd_id, a.get("action", {}), a.get("result", ""),
+                    a.get("success", True))
+            if response_text.strip():
+                self._conversation.buffer_turn(command, response_text.strip())
+        self._detect_preference(command, response_text)
+        log.info(f"{'=' * 50}\n")
+        return {"response": response_text, "talent": "tool_loop",
+                "success": result.get("success", True)}
 
     def _find_talent(self, command, exclude_planner=False):
         """Route command to the best talent using LLM intent classification.
@@ -1482,6 +1600,23 @@ class TalonAssistant:
             _cmd_lower = command.lower()
             is_deep_search_command = any(
                 t in _cmd_lower for t in _DEEP_SEARCH_TRIGGERS)
+
+            # Hybrid routing: the agentic tool loop is worth its multi-round-trip
+            # latency only for genuinely multi-step requests — its real strength
+            # is chaining tools the keyword router can't (e.g. "make the digest
+            # and email it"). Simple single-intent commands ("turn on the
+            # lights") fall through to the fast keyword/LLM router below so they
+            # don't pay the per-call tax (each chat turn is ~4.5s on this model,
+            # so a 2-call loop is ~11s vs ~1s for keyword routing).
+            # _MULTI_STEP_RE is the same conjunction+send-verb signal the planner
+            # pre-router uses, so the split stays predictable. The loop is
+            # self-contained (runs the agentic loop and finalizes), returning
+            # early rather than threading through single-talent dispatch.
+            if (self._tool_calling and not _planner_substep
+                    and not attachments and not is_deep_search_command
+                    and self._MULTI_STEP_RE.search(command)):
+                return self._handle_tool_loop(
+                    command, context, speak_response, _executing_rule)
 
             if attachments or is_deep_search_command:
                 talent = None
