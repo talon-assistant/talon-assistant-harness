@@ -496,14 +496,21 @@ class EmailTalent(BaseTalent):
         # Signal-originated commands skip the desktop compose dialog — the
         # explicit remote command is itself sufficient confirmation.  Instead,
         # send immediately and reply with a confirmation.
-        # Local/voice commands show the compose dialog for review unless the
-        # gate is explicitly disabled in security settings.
+        # An explicit tool-call send (the agentic router supplied the recipient
+        # the user named, e.g. "email this file to recipient@example.com") is treated the
+        # same way: the user already said who and what, so send it rather than
+        # staging a draft the tool-loop path can't even surface as a window.
+        # The compose-review path stays for the keyword route, where the model
+        # also composed the recipient and a look before sending is warranted.
+        # Local/voice keyword commands show the compose dialog for review unless
+        # the gate is explicitly disabled in security settings.
         command_source = context.get("command_source", "local")
         from core.security import get_security_filter as _gsf
         _sf = _gsf()
         gate_enabled = (not _sf) or _sf.gate_required("external_send")
+        explicit_send = bool(typed.get("to"))
 
-        if not gate_enabled or command_source == "signal":
+        if not gate_enabled or command_source == "signal" or explicit_send:
             # Send immediately (gate disabled, or remote command = implicit confirmation)
             try:
                 self._send_smtp(to, subject, body, attach_paths=attach_paths)
