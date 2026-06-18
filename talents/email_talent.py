@@ -61,6 +61,32 @@ class EmailTalent(BaseTalent):
     ]
     priority = 55
 
+    # Native tool-calling: typed parameters so the model fills structured
+    # fields in their own slots instead of cramming everything into one
+    # free-form string and dropping the recipient address (the failure that
+    # motivated this migration).
+    tool_parameters = {
+        "action": {
+            "type": "string",
+            "enum": ["send", "check", "read", "reply", "delete", "move"],
+            "description": ("What to do: 'send' a new email, 'check' the inbox, "
+                            "'read' a message, 'reply' to one, 'delete' or "
+                            "'move' one."),
+        },
+        "to": {"type": "string",
+               "description": "Recipient email address. Required when action is 'send'."},
+        "subject": {"type": "string", "description": "Subject line (for 'send')."},
+        "body": {"type": "string",
+                 "description": "Body text of the email to send (for 'send')."},
+        "attachment_path": {"type": "string",
+                            "description": "Absolute path of a local file to attach (for 'send')."},
+        "query": {"type": "string",
+                  "description": ("Which message to act on for read/reply/delete/move — "
+                                  "e.g. 'from Bob', 'about the invoice', or an index like '2'.")},
+        "folder": {"type": "string", "description": "Target folder name (for 'move')."},
+    }
+    tool_required = ["action"]
+
     _EMAIL_PHRASES = [
         "email", "mail", "inbox", "unread",
         "send email", "compose email", "send a message",
@@ -158,6 +184,13 @@ class EmailTalent(BaseTalent):
                 "spoken": False,
             }
 
+        # Native tool-calling path: structured args (action + typed fields)
+        # take priority over keyword-sniffing the command string.
+        args = context.get("tool_args") or {}
+        action = (args.get("action") or "").lower().strip()
+        if action:
+            return self._route_typed(action, args, command, context)
+
         # Route to the right sub-command (most specific first)
         if any(w in cmd_lower for w in ["delete", "trash", "remove"]) and \
                 any(w in cmd_lower for w in ["email", "mail", "message"]):
@@ -179,6 +212,30 @@ class EmailTalent(BaseTalent):
         else:
             # Default: check inbox (unread count + summaries)
             return self._handle_check(command, context)
+
+    def _route_typed(self, action, args, command, context):
+        """Dispatch a native tool-call (typed args) to the right handler.
+
+        'send' passes the structured fields straight through so the recipient
+        is never re-extracted (and lost). read/reply/delete/move hand the
+        'query' string to the existing resolver-based handlers.
+        """
+        if action == "send":
+            return self._handle_send(command, context, typed=args)
+        q = (args.get("query") or "").strip()
+        ref_command = q or command
+        if action == "reply":
+            return self._handle_reply(ref_command, context)
+        if action == "delete":
+            return self._handle_delete(ref_command, context)
+        if action == "move":
+            folder = (args.get("folder") or "").strip()
+            move_command = f"move {q} to {folder}".strip() if folder else ref_command
+            return self._handle_move(move_command, context)
+        if action == "read":
+            return self._handle_read(ref_command, context)
+        # check / unknown → inbox check
+        return self._handle_check(command, context)
 
     # ── Check inbox ────────────────────────────────────────────────
 
@@ -364,43 +421,76 @@ class EmailTalent(BaseTalent):
                 paths.append(p)
         return paths
 
-    def _handle_send(self, command, context):
-        """Compose a draft via LLM and return it for user review in compose dialog."""
+    def _handle_send(self, command, context, typed=None):
+        """Compose/send an email (or stage it for review).
+
+        typed: structured tool-call args ({"to","subject","body",
+        "attachment_path"}). When a recipient is supplied there it is used
+        verbatim, so the native router can't lose the address; only a missing
+        subject/body is filled by the LLM composer. Without typed args this
+        falls back to the original LLM-extracts-everything path.
+        """
         llm = context.get("llm")
-        if not llm:
-            return {
-                "success": False,
-                "response": "LLM not available for composing email.",
-                "actions_taken": [],
-                "spoken": False,
-            }
+        typed = typed or {}
 
         # Extract any file paths present in the command (e.g. from {last_result}
         # substitution) so they can be attached rather than pasted into the body.
         attach_paths = self._extract_attach_paths(command)
+        typed_path = (typed.get("attachment_path") or "").strip()
+        if typed_path and os.path.isfile(typed_path) and typed_path not in attach_paths:
+            attach_paths.append(typed_path)
 
-        try:
-            response = llm.generate(
-                f"Compose an email based on this request:\n\n{command}",
-                system_prompt=self._SYSTEM_PROMPT_COMPOSE,
-                temperature=0.3,
-            )
-        except LLMError as e:
-            return {"success": False, "response": f"LLM unavailable: {e}", "actions_taken": [], "spoken": False}
+        to      = (typed.get("to") or "").strip()
+        subject = (typed.get("subject") or "").strip()
+        body    = (typed.get("body") or "").strip()
 
-        composed = self._parse_json_draft(response)
-        if not composed or "to" not in composed:
-            return {
-                "success": False,
-                "response": "I couldn't figure out who to send the email to. "
-                            "Try: 'send email to user@example.com about ...'",
-                "actions_taken": [{"action": "email_compose_fail"}],
-                "spoken": False,
-            }
+        if to:
+            # Structured recipient from the tool call — never re-extract it.
+            # Only compose what's missing, and keep `to` fixed.
+            if (not subject or not body) and llm:
+                try:
+                    composed = self._parse_json_draft(llm.generate(
+                        f"Compose an email based on this request:\n\n{command}",
+                        system_prompt=self._SYSTEM_PROMPT_COMPOSE,
+                        temperature=0.3)) or {}
+                except LLMError:
+                    composed = {}
+                subject = subject or composed.get("subject", "")
+                body = body or composed.get("body", "")
+            subject = subject or "No Subject"
+            if not body:
+                body = "Please see the attached file." if attach_paths else ""
+        else:
+            # Free-form path: the LLM extracts to/subject/body from the command.
+            if not llm:
+                return {
+                    "success": False,
+                    "response": "LLM not available for composing email.",
+                    "actions_taken": [],
+                    "spoken": False,
+                }
+            try:
+                response = llm.generate(
+                    f"Compose an email based on this request:\n\n{command}",
+                    system_prompt=self._SYSTEM_PROMPT_COMPOSE,
+                    temperature=0.3,
+                )
+            except LLMError as e:
+                return {"success": False, "response": f"LLM unavailable: {e}", "actions_taken": [], "spoken": False}
 
-        to      = composed["to"]
-        subject = composed.get("subject", "No Subject")
-        body    = composed.get("body", "")
+            composed = self._parse_json_draft(response)
+            if not composed or "to" not in composed:
+                return {
+                    "success": False,
+                    "response": "I couldn't figure out who to send the email to. "
+                                "Try: 'send email to user@example.com about ...'",
+                    "actions_taken": [{"action": "email_compose_fail"}],
+                    "spoken": False,
+                }
+
+            to      = composed["to"]
+            subject = composed.get("subject", "No Subject")
+            body    = composed.get("body", "")
 
         # Confirmation gate: external_send
         # Signal-originated commands skip the desktop compose dialog — the
