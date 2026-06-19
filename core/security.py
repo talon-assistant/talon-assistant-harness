@@ -154,12 +154,26 @@ DEFAULT_CONFIRMATION_GATES: list[dict] = [
 ]
 
 # Compiled regexes for output scan checks
+# Signature-based key detection. Deliberately NOT a generic "long string with a
+# separator" rule — that catch-all flagged ordinary hash-named files and git
+# SHAs as secrets (e.g. "<md5>_original") and suppressed legitimate output.
+# These match real provider key formats instead: precise enough to fire on an
+# actual leaked secret in file contents at egress, without crying wolf on
+# filenames. Trade-off is recall on prefix-less random secrets; for a blocking
+# egress filter, precision is the right call.
 _API_KEY_RE = re.compile(
     r"(?:"
-    r"sk-[a-zA-Z0-9]{32,}"                          # OpenAI-style
-    r"|Bearer\s+[a-zA-Z0-9\-._~+/]{20,}"            # Bearer tokens
-    r"|[a-zA-Z0-9]{20,}[-_][a-zA-Z0-9]{8,}"         # generic token pattern
-    r"|AIza[0-9A-Za-z\-_]{35}"                       # Google API key
+    r"sk-ant-[A-Za-z0-9_\-]{20,}"                    # Anthropic
+    r"|sk-[a-zA-Z0-9]{32,}"                           # OpenAI-style
+    r"|Bearer\s+[a-zA-Z0-9\-._~+/]{20,}"             # Bearer tokens
+    r"|AIza[0-9A-Za-z\-_]{35}"                        # Google API key
+    r"|gh[pousr]_[A-Za-z0-9]{36}"                     # GitHub token
+    r"|github_pat_[A-Za-z0-9_]{59,}"                  # GitHub fine-grained PAT
+    r"|xox[bapsr]-[A-Za-z0-9-]{10,}"                  # Slack token
+    r"|glpat-[A-Za-z0-9\-_]{20}"                       # GitLab PAT
+    r"|AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}"             # AWS access key id
+    r"|eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}"  # JWT
+    r"|-----BEGIN (?:[A-Z]+ )?PRIVATE KEY-----"       # PEM private key block
     r")"
 )
 _BASE64_RE = re.compile(r"[A-Za-z0-9+/]{50,}={0,2}")
