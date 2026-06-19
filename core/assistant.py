@@ -242,6 +242,24 @@ class TalonAssistant:
             if hasattr(talent, 'set_assistant'):
                 talent.set_assistant(self)
 
+        # 3f. MCP client — connect to configured external MCP servers and expose
+        #     their tools to the tool-calling loop alongside talents. Gated on
+        #     tool_calling: MCP tools are only reachable through that loop, so
+        #     there's no point spawning server subprocesses when it's off
+        #     (toggling tool_calling on at runtime needs a restart to connect).
+        #     Fail-soft: no config, missing SDK, or a dead server just means no
+        #     MCP tools, never a crashed startup.
+        self.mcp = None
+        if self._tool_calling:
+            try:
+                from core.mcp_client import MCPManager
+                self.mcp = MCPManager()
+                if self.mcp.enabled:
+                    log.info(f"[MCP] tools available from: "
+                             f"{', '.join(self.mcp.connected_servers())}")
+            except Exception as e:
+                log.warning(f"[MCP] init failed, continuing without MCP: {e}")
+
         # 4. Notification callback (set by bridge for talents that need it)
         self.notify_callback = None
 
@@ -622,6 +640,8 @@ class TalonAssistant:
         routable = [t for t in self.talents
                     if t.enabled and getattr(t, "routing_available", True)]
         tools = [t.to_tool_schema() for t in routable]
+        if self.mcp and self.mcp.enabled:
+            tools += self.mcp.tool_schemas()
         messages = [
             {"role": "system", "content": (
                 "You are Talon, a local assistant. Use the available tools to "
@@ -674,6 +694,14 @@ class TalonAssistant:
                         "done" if ok else "failed")
                     actions.append(
                         {"action": name, "result": output, "success": ok})
+                elif self.mcp and self.mcp.is_mcp_tool(name):
+                    # External MCP tool: pass the model's typed args straight
+                    # through (the server defines its own schema) and route to
+                    # the owning server.
+                    log.info(f"[ToolLoop] -> {name}({str(tool_args)[:60]})")
+                    output = self.mcp.call_tool(name, tool_args)
+                    actions.append(
+                        {"action": name, "result": output, "success": True})
                 else:
                     output = f"Unknown tool: {name}"
                     actions.append(

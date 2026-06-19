@@ -59,6 +59,10 @@ webdriver-manager>=4.0
 # Optional — scheduler talent cron support
 croniter>=1.3
 
+# Optional — MCP client (connect external Model Context Protocol servers; see
+# config/mcp_servers.example.json). Only needed if you configure MCP servers.
+mcp>=1.9
+
 # Dev / Testing
 # pytest>=7.0
 # pytest-qt>=4.2

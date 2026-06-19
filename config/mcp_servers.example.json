@@ -1,0 +1,26 @@
+{
+  "_note": "External MCP servers Talon connects to. Copy this file to config/mcp_servers.json (gitignored) and edit. Uses the Claude-Desktop format. Each connected server's tools appear to the tool-calling loop as mcp__<server>__<tool>, alongside Talon's own talents. Requirements: 'pip install mcp', tool_calling enabled in settings, and (for npx servers) Node installed. Remove a server's \"disabled\": true to turn it on.",
+
+  "mcpServers": {
+    "filesystem": {
+      "_note": "stdio server launched as a subprocess (needs Node/npx). Point the last arg at the directory you want to expose. Tools: read_file, write_file, list_directory, etc.",
+      "disabled": true,
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "C:\\Users\\you\\Documents"]
+    },
+
+    "stdio_with_env": {
+      "_note": "stdio server that needs secrets — pass them via env. Talon merges this over the process environment.",
+      "disabled": true,
+      "command": "npx",
+      "args": ["-y", "some-mcp-server"],
+      "env": { "API_KEY": "your-key-here" }
+    },
+
+    "remote_http": {
+      "_note": "Remote server over streamable HTTP. Provide a url instead of a command.",
+      "disabled": true,
+      "url": "https://your-mcp-host.example.com/mcp"
+    }
+  }
+}
