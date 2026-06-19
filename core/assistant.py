@@ -1721,6 +1721,20 @@ class TalonAssistant:
                 talent = None   # Route to conversation path
             context["rag_explicit"] = rag_explicit
 
+            # MCP reach: a command that matched no fast-path talent (and isn't a
+            # deep-search / explicit-RAG / attachment case) drops into the tool
+            # loop when MCP servers are live, so external MCP tools are reachable
+            # for plain single commands, not only multi-step chains. Gated on MCP
+            # being enabled, so with no servers configured normal chat keeps the
+            # fast conversation path. Trade-off: with MCP on, an unmatched command
+            # pays the loop round-trip even if it turns out to be chat (the loop
+            # falls back to conversation when the model picks no tool).
+            if (not talent and not rag_explicit and not is_deep_search_command
+                    and not attachments and not _planner_substep
+                    and self._tool_calling and self.mcp and self.mcp.enabled):
+                return self._handle_tool_loop(
+                    command, context, speak_response, _executing_rule)
+
             if talent:
                 log.debug(f"[Routing] -> {talent.name}")
                 if getattr(talent, "subprocess_isolated", False):
