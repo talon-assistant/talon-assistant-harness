@@ -958,7 +958,11 @@ class JobSearchTalent(BaseTalent):
             )
 
             if result.returncode != 0:
-                log.error(f"[JobSearch] Cover letter failed: {result.stderr[:200]}")
+                log.error(
+                    f"[JobSearch] Cover letter failed (rc={result.returncode}). "
+                    f"stderr: {result.stderr.strip()[:300] or '(empty)'} | "
+                    f"stdout: {result.stdout.strip()[:500] or '(empty)'}"
+                )
                 return _fail("Claude CLI failed to generate the cover letter.")
 
             letter = result.stdout.strip()
@@ -3401,9 +3405,14 @@ class JobSearchTalent(BaseTalent):
             )
 
             if result.returncode != 0:
+                # claude -p frequently prints its error to stdout (especially
+                # with --output-format text), so log BOTH streams — stderr alone
+                # is often empty and hides the real cause (auth, usage limit,
+                # oversized prompt, refusal, etc.).
                 log.error(
-                    f"[JobSearch] claude -p failed (rc={result.returncode}): "
-                    f"{result.stderr[:200]}"
+                    f"[JobSearch] claude -p failed (rc={result.returncode}). "
+                    f"stderr: {result.stderr.strip()[:300] or '(empty)'} | "
+                    f"stdout: {result.stdout.strip()[:500] or '(empty)'}"
                 )
                 return
 
