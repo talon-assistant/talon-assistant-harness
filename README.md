@@ -215,7 +215,7 @@ Each scraper uses a desktop user-agent and standard Selenium WebDriver settings 
 3. **Pipelines per row:** one-click buttons run the "tailored resume" / "cover letter" / "full prep" pipelines, each generating output into a per-application folder `jobappmaterials/{company}_{position}_{date}/`.
 4. **Recon:** for LinkedIn postings, a "Recon" button uses the persistent Chrome profile to find the company's recruiter and first-degree connections, stored as inbox metadata.
 5. **Status tracking:** dropdown per row for `new`, `interested`, `applied`, `interview`, `offer`, `rejected`, `archived`. Moving to `applied` triggers the LinkedIn "I'm Interested" auto-click for jobs sourced from LinkedIn.
-6. **Auto-archive expiry:** archived applications are auto-purged after a configurable retention window (default 30 days) on Talon startup, with a CSV audit log at `data/job_archive_purge.csv` for recovery.
+6. **Startup cleanup:** on launch, `job_tracker` prunes stale scraper rows so the inbox stays fast: `new` listings with fit score ≤ 40 (any age) and archived jobs older than 45 days. Applied, rejected, and withdrawn jobs are never touched. Thresholds are configurable in Settings → Job Tracker, and deleted rows are appended to `data/job_cleanup_purge.csv` for recovery. The Job Inbox **Cleanup** button runs the same prune on demand and writes a full database backup first.
 
 ### Bullet library format
 
@@ -480,7 +480,7 @@ data/
   talon_memory.db          SQLite: commands, corrections, rules, preferences
   talon_book_index.db      SQLite: per-book TOC entries and metadata
   job_tracker.db           SQLite: job applications, follow-ups, recon results
-  job_archive_purge.csv    Audit log of auto-purged archived applications
+  job_cleanup_purge.csv    Audit log of auto-pruned stale job rows (recovery)
   training_pairs.jsonl     Accumulated training pairs (Alpaca format)
   chroma_db/               ChromaDB: memory, documents, notes, rules, corrections
   lora_adapters/           LoRA adapter output (after training)

@@ -438,6 +438,156 @@ class _DB:
 
         return {"expired": len(rows), "audit_path": audit_log_path}
 
+    def cleanup_stale(
+        self,
+        *,
+        new_fit_max: int = 40,
+        archived_max_age_days: int = 45,
+        protect_statuses: tuple[str, ...] = ("applied", "rejected", "withdrawn"),
+        audit_log_path: str | None = None,
+        backup_dir: str | None = None,
+        vacuum: bool = False,
+    ) -> dict:
+        """Prune stale scraper rows to keep the Job Inbox fast.
+
+        Policy (aggressive, keep-what-matters):
+          * DELETE any ``status='new'`` row whose ``fit_score`` is
+            ``<= new_fit_max`` -- low/mid-fit scraper noise -- at any age.
+          * DELETE any archived row (``archived=1`` OR ``status='archived'``)
+            older than ``archived_max_age_days`` days, measured from
+            ``archived_at`` when present, else ``date_found``.
+          * NEVER touch ``protect_statuses`` (applied/rejected/withdrawn);
+            the real pipeline is kept at any age.
+          * ``status='new'`` rows above the fit cutoff are kept at any age
+            (good leads stay until you apply or archive them).
+
+        Safety:
+          * ``backup_dir``  -- if set, write a consistent full-DB snapshot
+            before deleting. Used by the manual command; the lightweight
+            startup run skips it.
+          * ``audit_log_path`` -- append one CSV row per deleted application.
+            Written and fsync'd to disk BEFORE the DELETE, so a CSV failure
+            aborts the purge rather than losing rows silently (this inverts
+            the old expire_old_archives ordering flagged in the 2026-06-10
+            code review).
+          * ``vacuum`` -- reclaim freed pages afterwards (manual path only;
+            VACUUM needs an exclusive lock and adds startup latency).
+
+        Returns:
+            {deleted, new_deleted, archived_deleted, remaining,
+             audit_path, backup_path}
+        """
+        import csv
+
+        arch_expr = "date(COALESCE(NULLIF(archived_at, ''), date_found))"
+        protect_ph = ",".join("?" for _ in protect_statuses)
+        where = (
+            "(status = 'new' AND fit_score <= ?) "
+            "OR ("
+            "  (archived = 1 OR status = 'archived') "
+            f"  AND status NOT IN ({protect_ph}) "
+            f"  AND {arch_expr} IS NOT NULL "
+            f"  AND {arch_expr} < date('now', ?)"
+            ")"
+        )
+        params = [int(new_fit_max), *protect_statuses,
+                  f"-{int(archived_max_age_days)} days"]
+
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT id, company, position, source, status, fit_score, "
+                "       date_found, date_applied, archived_at, job_url "
+                f"FROM applications WHERE {where}",
+                params,
+            ).fetchall()
+
+            if not rows:
+                remaining = conn.execute(
+                    "SELECT COUNT(*) FROM applications").fetchone()[0]
+                return {
+                    "deleted": 0, "new_deleted": 0, "archived_deleted": 0,
+                    "remaining": remaining,
+                    "audit_path": None, "backup_path": None,
+                }
+
+            new_deleted = sum(1 for r in rows if r["status"] == "new")
+            archived_deleted = len(rows) - new_deleted
+
+            # Consistent full-DB snapshot before we touch anything (manual
+            # path only). No open transaction here yet -- only SELECTs ran --
+            # so the backup is a clean pre-delete image.
+            backup_path = None
+            if backup_dir:
+                os.makedirs(backup_dir, exist_ok=True)
+                ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+                backup_path = os.path.join(
+                    backup_dir, f"job_tracker.db.bak-{ts}")
+                dst = sqlite3.connect(backup_path)
+                try:
+                    conn.backup(dst)
+                finally:
+                    dst.close()
+
+            # Audit CSV FIRST, flushed + fsync'd, so a write failure raises
+            # before any DELETE and no row is ever lost without a trace.
+            if audit_log_path:
+                exists = os.path.exists(audit_log_path)
+                with open(audit_log_path, "a", newline="",
+                          encoding="utf-8") as f:
+                    w = csv.writer(f)
+                    if not exists:
+                        w.writerow([
+                            "purged_at", "id", "company", "position",
+                            "source", "status", "fit_score", "date_found",
+                            "date_applied", "archived_at", "job_url",
+                        ])
+                    now_iso = datetime.now().isoformat(timespec="seconds")
+                    for r in rows:
+                        w.writerow([
+                            now_iso, r["id"], r["company"], r["position"],
+                            r["source"] or "", r["status"], r["fit_score"],
+                            r["date_found"] or "", r["date_applied"] or "",
+                            r["archived_at"] or "", r["job_url"] or "",
+                        ])
+                    f.flush()
+                    os.fsync(f.fileno())
+
+            # Subquery form (not IN(ids)) sidesteps the bound-variable limit
+            # on very large first-time purges. follow_ups first so the
+            # subquery still resolves against the not-yet-deleted rows.
+            conn.execute(
+                "DELETE FROM follow_ups WHERE application_id IN "
+                f"(SELECT id FROM applications WHERE {where})",
+                params,
+            )
+            conn.execute(f"DELETE FROM applications WHERE {where}", params)
+            remaining = conn.execute(
+                "SELECT COUNT(*) FROM applications").fetchone()[0]
+
+        result = {
+            "deleted": len(rows),
+            "new_deleted": new_deleted,
+            "archived_deleted": archived_deleted,
+            "remaining": remaining,
+            "audit_path": audit_log_path,
+            "backup_path": backup_path,
+        }
+
+        # VACUUM needs its own autocommit connection with no open transaction.
+        if vacuum:
+            try:
+                vconn = sqlite3.connect(self.db_path, isolation_level=None)
+                try:
+                    vconn.execute("VACUUM")
+                finally:
+                    vconn.close()
+            except sqlite3.OperationalError as exc:
+                log.warning(
+                    f"[JobTracker] VACUUM skipped ({exc}); deletes committed."
+                )
+
+        return result
+
     def hard_delete(self, app_id: int) -> bool:
         """Permanently delete an application row and its follow-ups."""
         with self._connect() as conn:
@@ -586,25 +736,32 @@ class JobTrackerTalent(BaseTalent):
             self._db = None
             return
 
-        # Auto-expire archived applications older than the configured
-        # retention window. Keeps the inbox table small so the UI stays
-        # snappy at scale. 0 disables; default 30 days.
-        retention_days = int(self.talent_config.get(
-            "archive_retention_days", 30))
-        if retention_days > 0:
+        # Auto-prune stale scraper rows on startup so the Job Inbox stays
+        # fast at scale. Drops low/mid-fit 'new' listings and long-archived
+        # rows; the real pipeline (applied/rejected/withdrawn) is never
+        # touched. Lightweight: audit-logs but does not back up or VACUUM
+        # on every launch (the manual Cleanup button does both).
+        if bool(self.talent_config.get("auto_cleanup_enabled", True)):
             audit_path = os.path.join(
-                os.path.dirname(db_path), "job_archive_purge.csv")
+                os.path.dirname(db_path), "job_cleanup_purge.csv")
             try:
-                result = self._db.expire_old_archives(
-                    days=retention_days, audit_log_path=audit_path)
-                if result.get("expired", 0) > 0:
+                result = self._db.cleanup_stale(
+                    new_fit_max=int(self.talent_config.get(
+                        "cleanup_new_fit_max", 40)),
+                    archived_max_age_days=int(self.talent_config.get(
+                        "cleanup_archived_max_age_days", 45)),
+                    audit_log_path=audit_path,
+                )
+                if result.get("deleted", 0) > 0:
                     log.info(
-                        f"[JobTracker] Auto-expired {result['expired']} "
-                        f"archived application(s) older than "
-                        f"{retention_days} days. Audit: {audit_path}"
+                        f"[JobTracker] Startup cleanup removed "
+                        f"{result['deleted']} row(s) "
+                        f"({result['new_deleted']} low-fit new, "
+                        f"{result['archived_deleted']} stale archived); "
+                        f"{result['remaining']} remain. Audit: {audit_path}"
                     )
             except Exception as exc:
-                log.warning(f"[JobTracker] Archive cleanup failed: {exc}")
+                log.warning(f"[JobTracker] Startup cleanup failed: {exc}")
 
     @property
     def routing_available(self) -> bool:
@@ -622,15 +779,38 @@ class JobTrackerTalent(BaseTalent):
                     "default": os.path.join(_data_dir(), "job_tracker.db"),
                 },
                 {
-                    "key": "archive_retention_days",
-                    "label": "Archive Retention (days)",
-                    "type": "int",
-                    "default": 30,
+                    "key": "auto_cleanup_enabled",
+                    "label": "Auto-cleanup on startup",
+                    "type": "bool",
+                    "default": True,
                     "help": (
-                        "Auto-purge archived applications older than this "
-                        "many days on Talon startup. 0 disables. Removed "
-                        "rows are appended to job_archive_purge.csv next "
-                        "to the database file for audit/recovery."
+                        "Prune stale scraper rows every time Talon starts so "
+                        "the Job Inbox stays fast. Applied, rejected, and "
+                        "withdrawn jobs are never touched. Deleted rows are "
+                        "appended to job_cleanup_purge.csv next to the "
+                        "database for audit/recovery."
+                    ),
+                },
+                {
+                    "key": "cleanup_new_fit_max",
+                    "label": "Drop 'new' jobs at or below fit",
+                    "type": "int",
+                    "default": 40,
+                    "help": (
+                        "Delete 'new' (un-actioned) listings whose fit score "
+                        "is this value or lower, at any age. Higher-fit 'new' "
+                        "jobs are kept until you apply or archive them."
+                    ),
+                },
+                {
+                    "key": "cleanup_archived_max_age_days",
+                    "label": "Purge archived after (days)",
+                    "type": "int",
+                    "default": 45,
+                    "help": (
+                        "Hard-delete archived jobs older than this many days, "
+                        "measured from when they were archived (else when "
+                        "found)."
                     ),
                 },
             ]

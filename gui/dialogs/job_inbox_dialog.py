@@ -274,9 +274,10 @@ class JobInboxDialog(QDialog):
 
         cleanup_btn = QPushButton("Cleanup")
         cleanup_btn.setToolTip(
-            "Hard-delete archived applications older than the configured "
-            "retention window. Removed rows are appended to "
-            "job_archive_purge.csv next to the database for recovery."
+            "Prune stale jobs now: low-fit 'new' listings and long-archived "
+            "rows. Applied, rejected, and withdrawn jobs are kept. Backs up "
+            "the database first and logs deletions to job_cleanup_purge.csv "
+            "for recovery."
         )
         cleanup_btn.clicked.connect(self._on_cleanup_clicked)
 
@@ -597,36 +598,32 @@ class JobInboxDialog(QDialog):
                                   "(No fit analysis or JD stored yet.)")
 
     def _on_cleanup_clicked(self) -> None:
-        """Manually run archive expiry, with confirmation + count feedback."""
-        # Pull the configured retention window from the live talent if
-        # available, falling back to 30 days otherwise.
-        retention_days = 30
+        """Manually prune stale jobs, with confirmation + count feedback."""
+        # Pull cleanup thresholds from the live talent config, falling back
+        # to the same defaults the startup auto-run uses.
+        fit_max, arch_days = 40, 45
         try:
-            talent = self._job_search_talent()
             tracker = next(
                 (t for t in (getattr(self._assistant, "talents", None) or [])
                  if getattr(t, "name", "") == "job_tracker"),
                 None,
             )
             if tracker is not None:
-                retention_days = int(tracker.talent_config.get(
-                    "archive_retention_days", 30))
+                fit_max = int(tracker.talent_config.get(
+                    "cleanup_new_fit_max", 40))
+                arch_days = int(tracker.talent_config.get(
+                    "cleanup_archived_max_age_days", 45))
         except Exception:
             pass
-        if retention_days <= 0:
-            QMessageBox.information(
-                self, "Cleanup",
-                "Archive retention is disabled (set to 0). "
-                "Configure a positive day count to use cleanup."
-            )
-            return
 
         resp = QMessageBox.question(
             self, "Run cleanup?",
-            f"Permanently delete archived applications older than "
-            f"{retention_days} days?\n\n"
-            f"Removed rows will be appended to job_archive_purge.csv "
-            f"in the data directory for recovery.",
+            "Permanently delete stale jobs?\n\n"
+            f"• 'new' listings with fit score ≤ {fit_max}\n"
+            f"• archived jobs older than {arch_days} days\n\n"
+            "Applied, rejected, and withdrawn jobs are kept. A full database "
+            "backup is written first, and deleted rows are logged to "
+            "job_cleanup_purge.csv for recovery.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
@@ -635,26 +632,33 @@ class JobInboxDialog(QDialog):
 
         try:
             db = self._db()
-            audit_path = os.path.join(
-                os.path.dirname(db.db_path), "job_archive_purge.csv")
-            result = db.expire_old_archives(
-                days=retention_days, audit_log_path=audit_path)
+            data_dir = os.path.dirname(db.db_path)
+            result = db.cleanup_stale(
+                new_fit_max=fit_max,
+                archived_max_age_days=arch_days,
+                audit_log_path=os.path.join(data_dir, "job_cleanup_purge.csv"),
+                backup_dir=data_dir,
+                vacuum=True,
+            )
         except Exception as exc:
             QMessageBox.critical(
                 self, "Cleanup failed", f"Could not run cleanup:\n\n{exc}"
             )
             return
 
-        n = int(result.get("expired", 0))
+        n = int(result.get("deleted", 0))
         if n == 0:
             QMessageBox.information(
-                self, "Cleanup", "No archived rows were old enough to purge."
+                self, "Cleanup", "No stale rows to purge — inbox is clean."
             )
         else:
             QMessageBox.information(
                 self, "Cleanup",
-                f"Purged {n} archived application(s).\n\n"
-                f"Audit log: {audit_path}"
+                f"Removed {n} job(s): {result.get('new_deleted', 0)} low-fit "
+                f"new, {result.get('archived_deleted', 0)} stale archived.\n"
+                f"{result.get('remaining', 0)} remain.\n\n"
+                f"Backup: {result.get('backup_path') or '(none)'}\n"
+                f"Audit log: {result.get('audit_path') or '(none)'}"
             )
             self.refresh()
 
