@@ -10,10 +10,12 @@ Prerequisites (do once, manually):
   4. Verify:    signal-cli -a +1YOURNUM --config data/signal-cli-config verify CODE
 
 Flow:
-  - Background thread calls `signal-cli receive` as a subprocess every poll_interval
+  - One persistent `signal-cli jsonRpc` process. Incoming messages arrive as
+    JSON-RPC "receive" notifications on its stdout — no polling, no per-message
+    JVM. The JVM (and its ~22 MB native-lib extraction) starts once.
   - Only Note-to-Self messages (syncMessage.sentMessage) with command_prefix are
-    forwarded to assistant.process_command(); replies sent via `signal-cli send`
-  - No daemon process — each receive/send is a fresh signal-cli invocation
+    forwarded to assistant.process_command(); replies are "send" requests
+    written to the process's stdin.
 """
 
 import json
@@ -69,12 +71,6 @@ class SignalRemoteTalent(BaseTalent):
                  "label": "Command Prefix",
                  "type": "string",
                  "default": "talon: "},
-                {"key": "poll_interval",
-                 "label": "Poll Interval (seconds)",
-                 "type": "int",
-                 "default": 5,
-                 "min": 2,
-                 "max": 60},
                 {"key": "max_response_chars",
                  "label": "Max Response Length (chars)",
                  "type": "int",
@@ -95,7 +91,12 @@ class SignalRemoteTalent(BaseTalent):
         # _run_signal_cli) and purge it so the leak can never fill the drive.
         self._jni_tmp = os.path.join(tempfile.gettempdir(), "talon-signal-jni")
         self._stop_event = threading.Event()
-        self._poll_thread: threading.Thread | None = None
+        self._proc: subprocess.Popen | None = None   # persistent signal-cli jsonRpc
+        self._reader_thread: threading.Thread | None = None
+        self._stderr_thread: threading.Thread | None = None
+        self._supervisor_thread: threading.Thread | None = None
+        self._write_lock = threading.Lock()          # serialize stdin writes
+        self._req_id = 0
         self._lock = threading.Lock()
         self._stats: dict = {
             "messages_received": 0,
@@ -113,15 +114,15 @@ class SignalRemoteTalent(BaseTalent):
         # toggle, so without this check, turning the talent "off" left the
         # poll thread running and leaking a signal-cli JVM every interval.
         if self.enabled and self.talent_config.get("enabled", False):
-            self._start_polling()
+            self._start_listener()
 
     def update_config(self, config: dict) -> None:
         """Called by GUI when the user saves talent config changes."""
         super().update_config(config)
         if self.enabled and config.get("enabled", False):
-            self._restart_polling()
+            self._restart_listener()
         else:
-            self._stop_polling()
+            self._stop_listener()
 
     def can_handle(self, command: str) -> bool:
         return self.keyword_match(command)
@@ -234,63 +235,195 @@ class SignalRemoteTalent(BaseTalent):
         except Exception:
             pass
 
-    def _start_polling(self) -> None:
+    def _start_listener(self) -> None:
+        """Spawn the persistent signal-cli jsonRpc process and its threads."""
+        if self._proc and self._proc.poll() is None:
+            return  # already running
         if not self._validate_config():
             return
         self._kill_orphan_signal_processes()
         self._stop_event.clear()
-        self._poll_thread = threading.Thread(
-            target=self._poll_loop,
-            daemon=True,
-            name="signal-remote-poll",
-        )
-        self._poll_thread.start()
-        log.info("[Signal] Poll thread started.")
+        if not self._spawn_process():
+            return
+        self._reader_thread = threading.Thread(
+            target=self._read_loop, daemon=True, name="signal-rpc-reader")
+        self._reader_thread.start()
+        self._supervisor_thread = threading.Thread(
+            target=self._supervise, daemon=True, name="signal-rpc-supervisor")
+        self._supervisor_thread.start()
+        log.info("[Signal] JSON-RPC listener started (persistent process).")
 
-    def _stop_polling(self) -> None:
+    def _stop_listener(self) -> None:
+        """Signal shutdown and terminate the jsonRpc process."""
         self._stop_event.set()
-
-    def _restart_polling(self) -> None:
-        self._stop_polling()
-        time.sleep(0.25)
-        self._start_polling()
-
-    # ── Polling loop ───────────────────────────────────────────────
-
-    def _poll_loop(self) -> None:
-        """Background thread: poll Signal by running signal-cli receive each interval."""
-        interval = max(2, int(self.talent_config.get("poll_interval", 5)))
-        while not self._stop_event.wait(interval):
+        proc, self._proc = self._proc, None
+        if proc and proc.poll() is None:
             try:
-                self._check_messages()
-            except Exception as e:
-                log.error(f"[Signal] Poll error: {e}")
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+            except Exception:
+                pass
+        self._purge_jni_tmp()
+        log.info("[Signal] JSON-RPC listener stopped.")
 
-    def _check_messages(self) -> None:
-        """Run `signal-cli receive` and dispatch any Note-to-Self envelopes."""
+    def _restart_listener(self) -> None:
+        self._stop_listener()
+        time.sleep(0.25)
+        self._start_listener()
+
+    # ── Persistent JSON-RPC transport ──────────────────────────────
+
+    def _spawn_process(self) -> bool:
+        """Launch one long-lived `signal-cli jsonRpc` process.
+
+        Replaces the old poll-a-fresh-JVM-every-interval design: the JVM (and
+        its ~22 MB native-lib extraction) starts once, incoming messages arrive
+        as push notifications on stdout, and replies are written to stdin.
+        """
         cfg = self.talent_config
+        cli = cfg.get("signal_cli_path", "signal-cli")
         config_dir = cfg.get("config_dir", "data/signal-cli-config")
         account = cfg.get("account_number", "")
 
-        result = self._run_signal_cli(
-            ["--output=json", "--config", config_dir, "-a", account,
-             "receive", "--timeout", "3"],
-            timeout=60,  # JVM cold-start with 35+ JARs can take 10-20 s alone
-        )
+        os.makedirs(self._jni_tmp, exist_ok=True)
+        self._purge_jni_tmp()
+        env = dict(os.environ)
+        env["TEMP"] = env["TMP"] = env["TMPDIR"] = self._jni_tmp
 
-        if result.returncode != 0:
-            log.error(f"[Signal] receive failed: {result.stderr.strip()[:200]}")
+        args = ["--config", config_dir, "-a", account,
+                "jsonRpc", "--receive-mode=on-start", "--ignore-stories"]
+        try:
+            self._proc = subprocess.Popen(
+                self._build_cmd(cli, args),
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, text=True, encoding="utf-8",
+                errors="replace", bufsize=1, env=env,
+            )
+        except (FileNotFoundError, OSError) as e:
+            log.error(f"[Signal] Failed to launch jsonRpc process: {e}")
+            self._proc = None
+            return False
+
+        self._stderr_thread = threading.Thread(
+            target=self._drain_stderr, args=(self._proc,),
+            daemon=True, name="signal-rpc-stderr")
+        self._stderr_thread.start()
+        log.info(f"[Signal] signal-cli jsonRpc running (pid {self._proc.pid}).")
+        return True
+
+    def _read_loop(self) -> None:
+        """Read newline-delimited JSON-RPC from stdout and dispatch each line."""
+        proc = self._proc
+        if not proc or not proc.stdout:
             return
-
-        for line in (result.stdout or "").splitlines():
+        while not self._stop_event.is_set():
+            try:
+                line = proc.stdout.readline()
+            except Exception as e:
+                log.error(f"[Signal] stdout read error: {e}")
+                break
+            if line == "":          # EOF: process exited
+                break
             line = line.strip()
             if not line:
                 continue
             try:
-                envelope = json.loads(line)
-                self._handle_envelope(envelope)
+                msg = json.loads(line)
             except json.JSONDecodeError:
                 continue
+            try:
+                self._dispatch_rpc(msg)
+            except Exception as e:
+                log.error(f"[Signal] dispatch error: {e}")
+
+    def _dispatch_rpc(self, msg: dict) -> None:
+        """Route one JSON-RPC message: 'receive' notifications and errors."""
+        if msg.get("method") == "receive":
+            params = msg.get("params") or {}
+            # on-start mode: params holds 'envelope'; manual mode nests it under
+            # 'result'. Unwrap so _handle_envelope always sees {'envelope': ...}.
+            if "envelope" not in params and isinstance(params.get("result"), dict):
+                params = params["result"]
+            self._handle_envelope(params)
+        elif msg.get("error") is not None:
+            log.error(f"[Signal] RPC error (id={msg.get('id')}): {msg['error']}")
+
+    def _rpc_send(self, method: str, params: dict) -> bool:
+        """Write one JSON-RPC request to the process's stdin."""
+        proc = self._proc
+        if not proc or proc.poll() is not None or not proc.stdin:
+            log.error("[Signal] Cannot send: jsonRpc process not running.")
+            return False
+        with self._write_lock:
+            self._req_id += 1
+            req = {"jsonrpc": "2.0", "method": method,
+                   "params": params, "id": self._req_id}
+            try:
+                proc.stdin.write(json.dumps(req) + "\n")
+                proc.stdin.flush()
+                return True
+            except (BrokenPipeError, OSError) as e:
+                log.error(f"[Signal] Failed writing to jsonRpc stdin: {e}")
+                return False
+
+    def _drain_stderr(self, proc) -> None:
+        """Forward signal-cli's stderr logging into our logger."""
+        stream = getattr(proc, "stderr", None)
+        if stream is None:
+            return
+        try:
+            for line in stream:
+                line = line.rstrip()
+                if not line:
+                    continue
+                if "ERROR" in line or "Exception" in line:
+                    log.error(f"[Signal][cli] {line}")
+                elif "WARN" in line:
+                    log.warning(f"[Signal][cli] {line}")
+                else:
+                    log.debug(f"[Signal][cli] {line}")
+        except Exception:
+            pass
+
+    def _supervise(self) -> None:
+        """Restart the jsonRpc process if it dies unexpectedly, with backoff."""
+        backoff = 2
+        fast_failures = 0
+        while not self._stop_event.is_set():
+            proc = self._proc
+            if proc is None:
+                break
+            started = time.monotonic()
+            try:
+                rc = proc.wait()
+            except Exception:
+                break
+            if self._stop_event.is_set():
+                break
+            ran_for = time.monotonic() - started
+            fast_failures = fast_failures + 1 if ran_for < 15 else 0
+            if fast_failures >= 5:
+                log.error("[Signal] jsonRpc keeps exiting immediately; giving "
+                          "up. Check account registration and signal-cli path.")
+                break
+            log.error(f"[Signal] jsonRpc exited (code {rc}) after {ran_for:.0f}s; "
+                      f"restarting in {backoff}s.")
+            if self._stop_event.wait(backoff):
+                break
+            if not (self.enabled and self.talent_config.get("enabled", False)):
+                break
+            if self._spawn_process():
+                self._reader_thread = threading.Thread(
+                    target=self._read_loop, daemon=True, name="signal-rpc-reader")
+                self._reader_thread.start()
+                backoff = 2
+            else:
+                fast_failures += 1
+                backoff = min(backoff * 2, 60)
+        log.info("[Signal] supervisor exited.")
 
     # ── Message handling ───────────────────────────────────────────
 
@@ -420,33 +553,23 @@ class SignalRemoteTalent(BaseTalent):
 
     def _send_reply(self, recipient: str, message: str,
                     attachments: list | None = None) -> None:
-        """Send a Signal message via signal-cli subprocess."""
-        cfg = self.talent_config
-        config_dir = cfg.get("config_dir", "data/signal-cli-config")
-        account = cfg.get("account_number", "")
-
+        """Send a reply as a 'send' request over the persistent jsonRpc stdin."""
+        account = self.talent_config.get("account_number", "")
         is_self = not recipient or recipient == account
+
+        params: dict = {"message": message}
         if is_self:
-            base_args = ["--config", config_dir, "-a", account,
-                         "send", "--note-to-self", "-m", message]
+            params["noteToSelf"] = True
         else:
-            base_args = ["--config", config_dir, "-a", account,
-                         "send", "-m", message, recipient]
-
+            params["recipient"] = [recipient]
         if attachments:
-            for att in attachments:
-                base_args += ["--attachment", att]
+            params["attachment"] = list(attachments)
 
-        try:
-            r = self._run_signal_cli(base_args, timeout=30)
-            if r.returncode != 0:
-                log.error(f"[Signal] Send failed: {r.stderr.strip()[:200]}")
-                return
-            att_note = f" (+{len(attachments)} attachment(s))" if attachments else ""
+        if self._rpc_send("send", params):
+            att_note = (f" (+{len(attachments)} attachment(s))"
+                        if attachments else "")
             dest = "Note-to-Self" if is_self else recipient
-            log.info(f"[Signal] Reply sent to {dest}{att_note}.")
-        except Exception as e:
-            log.error(f"[Signal] Send error: {e}")
+            log.info(f"[Signal] Reply queued to {dest}{att_note}.")
 
     # ── Validation ─────────────────────────────────────────────────
 
@@ -487,37 +610,33 @@ class SignalRemoteTalent(BaseTalent):
 
     def execute(self, command: str, context: dict) -> dict:
         cmd = command.lower()
+        alive = bool(self._proc and self._proc.poll() is None)
 
-        # "check signal messages now" → immediate poll
+        # Messages arrive automatically over the persistent JSON-RPC stream, so
+        # there is no manual poll — just report listener state.
         if any(w in cmd for w in ("check", "now", "poll", "fetch")):
-            thread_alive = bool(self._poll_thread and self._poll_thread.is_alive())
-            if thread_alive:
-                try:
-                    self._check_messages()
-                    response = "Checked Signal for new messages."
-                except Exception as e:
-                    response = f"Signal check failed: {e}"
+            if alive:
+                response = ("Signal listener is running. Messages arrive "
+                            "automatically over the JSON-RPC stream.")
             else:
                 response = ("Signal listener is not running. "
                             "Enable it in Settings → Talent Config → signal_remote.")
             return {"success": True, "response": response, "actions_taken": []}
 
         # Default: status report
-        thread_alive = bool(self._poll_thread and self._poll_thread.is_alive())
         with self._lock:
             stats = dict(self._stats)
 
         cfg = self.talent_config
         prefix = cfg.get("command_prefix", "talon: ")
-        interval = cfg.get("poll_interval", 5)
         account = cfg.get("account_number", "")
         masked = (account[:4] + "***" + account[-3:]) if len(account) > 7 else account
 
-        status = "🟢 Running" if thread_alive else "🔴 Stopped"
+        status = "🟢 Running" if alive else "🔴 Stopped"
         lines = [
             f"Signal Remote: {status}",
             f"Account: {masked or '(not configured)'}",
-            f"Poll interval: every {interval}s",
+            "Mode: JSON-RPC (push, persistent process)",
             f"Command prefix: '{prefix}'",
             f"Messages received: {stats['messages_received']}",
             f"Commands processed: {stats['commands_processed']}",
