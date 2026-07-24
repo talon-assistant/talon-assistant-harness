@@ -18,7 +18,9 @@ Flow:
 
 import json
 import os
+import shutil
 import subprocess
+import tempfile
 import threading
 import time
 from datetime import datetime
@@ -87,6 +89,11 @@ class SignalRemoteTalent(BaseTalent):
     def __init__(self):
         super().__init__()
         self._assistant = None
+        # Dedicated JVM temp dir for signal-cli. libsignal extracts its ~22 MB
+        # native lib (signal_jni_amd64.dll) to java.io.tmpdir on every single
+        # invocation and never cleans up. We pin java.io.tmpdir here (see
+        # _run_signal_cli) and purge it so the leak can never fill the drive.
+        self._jni_tmp = os.path.join(tempfile.gettempdir(), "talon-signal-jni")
         self._stop_event = threading.Event()
         self._poll_thread: threading.Thread | None = None
         self._lock = threading.Lock()
@@ -100,13 +107,18 @@ class SignalRemoteTalent(BaseTalent):
     def set_assistant(self, assistant) -> None:
         """Called by TalonAssistant.__init__() after talent discovery."""
         self._assistant = assistant
-        if self.talent_config.get("enabled", False):
+        # Poll only when the talent is enabled (top-level toggle) AND the
+        # listener is switched on in config. Gating on self.enabled matters:
+        # set_assistant() runs for every talent regardless of the top-level
+        # toggle, so without this check, turning the talent "off" left the
+        # poll thread running and leaking a signal-cli JVM every interval.
+        if self.enabled and self.talent_config.get("enabled", False):
             self._start_polling()
 
     def update_config(self, config: dict) -> None:
         """Called by GUI when the user saves talent config changes."""
         super().update_config(config)
-        if config.get("enabled", False):
+        if self.enabled and config.get("enabled", False):
             self._restart_polling()
         else:
             self._stop_polling()
@@ -114,8 +126,7 @@ class SignalRemoteTalent(BaseTalent):
     def can_handle(self, command: str) -> bool:
         return self.keyword_match(command)
 
-    @staticmethod
-    def _build_cmd(cli: str, args: list) -> list:
+    def _build_cmd(self, cli: str, args: list) -> list:
         """Build the command list to invoke signal-cli.
 
         For .bat wrappers we invoke java directly (bypassing cmd.exe) so that
@@ -147,11 +158,56 @@ class SignalRemoteTalent(BaseTalent):
         return [
             java_exe,
             "--enable-native-access=ALL-UNNAMED",
+            # Pin native-lib extraction to our managed dir so _run_signal_cli
+            # can purge it (belt-and-suspenders with the TEMP/TMP env below).
+            f"-Djava.io.tmpdir={self._jni_tmp}",
             "-Xms32m",   # start small — signal-cli is a short-lived CLI tool
             "-Xmx128m",  # cap heap; default is ~1 GB which exhausts the page file
             "-classpath", classpath,
             "org.asamk.signal.Main",
         ] + args
+
+    # ── signal-cli invocation (leak-contained) ─────────────────────
+
+    def _purge_jni_tmp(self) -> None:
+        """Delete libsignal* native-lib extraction dirs from the managed tmp.
+
+        A DLL still loaded by a concurrent/killed JVM stays locked on Windows;
+        those dirs are skipped (ignore_errors) and cleared on the next pass.
+        """
+        try:
+            for name in os.listdir(self._jni_tmp):
+                if name.startswith("libsignal"):
+                    shutil.rmtree(os.path.join(self._jni_tmp, name),
+                                  ignore_errors=True)
+        except FileNotFoundError:
+            pass
+        except Exception:
+            pass
+
+    def _run_signal_cli(self, args: list, timeout: int):
+        """Run signal-cli with its JVM temp pinned to a managed dir, purging
+        the leaked native-lib extraction before and after.
+
+        Returns the CompletedProcess. Exceptions (FileNotFoundError,
+        TimeoutExpired, OSError) propagate so callers handle them as before.
+        """
+        cli = self.talent_config.get("signal_cli_path", "signal-cli")
+        os.makedirs(self._jni_tmp, exist_ok=True)
+        self._purge_jni_tmp()  # sweep any leftover a prior locked run left
+        env = dict(os.environ)
+        # Java derives java.io.tmpdir from TMP/TEMP on Windows; redirect both
+        # so even the plain-signal-cli (non-.bat) path extracts into our dir.
+        env["TEMP"] = env["TMP"] = env["TMPDIR"] = self._jni_tmp
+        try:
+            return subprocess.run(
+                self._build_cmd(cli, args),
+                capture_output=True, text=True,
+                encoding="utf-8", errors="replace",
+                timeout=timeout, env=env,
+            )
+        finally:
+            self._purge_jni_tmp()
 
     # ── Thread management ──────────────────────────────────────────
 
@@ -213,17 +269,12 @@ class SignalRemoteTalent(BaseTalent):
     def _check_messages(self) -> None:
         """Run `signal-cli receive` and dispatch any Note-to-Self envelopes."""
         cfg = self.talent_config
-        cli = cfg.get("signal_cli_path", "signal-cli")
         config_dir = cfg.get("config_dir", "data/signal-cli-config")
         account = cfg.get("account_number", "")
 
-        result = subprocess.run(
-            self._build_cmd(cli, ["--output=json", "--config", config_dir,
-                                  "-a", account, "receive", "--timeout", "3"]),
-            capture_output=True,
-            text=True,
-            encoding='utf-8',
-            errors='replace',
+        result = self._run_signal_cli(
+            ["--output=json", "--config", config_dir, "-a", account,
+             "receive", "--timeout", "3"],
             timeout=60,  # JVM cold-start with 35+ JARs can take 10-20 s alone
         )
 
@@ -371,7 +422,6 @@ class SignalRemoteTalent(BaseTalent):
                     attachments: list | None = None) -> None:
         """Send a Signal message via signal-cli subprocess."""
         cfg = self.talent_config
-        cli = cfg.get("signal_cli_path", "signal-cli")
         config_dir = cfg.get("config_dir", "data/signal-cli-config")
         account = cfg.get("account_number", "")
 
@@ -387,10 +437,8 @@ class SignalRemoteTalent(BaseTalent):
             for att in attachments:
                 base_args += ["--attachment", att]
 
-        cmd = self._build_cmd(cli, base_args)
         try:
-            r = subprocess.run(cmd, capture_output=True, text=True,
-                               encoding='utf-8', errors='replace', timeout=30)
+            r = self._run_signal_cli(base_args, timeout=30)
             if r.returncode != 0:
                 log.error(f"[Signal] Send failed: {r.stderr.strip()[:200]}")
                 return
@@ -415,9 +463,7 @@ class SignalRemoteTalent(BaseTalent):
 
         cli = cfg.get("signal_cli_path", "signal-cli")
         try:
-            r = subprocess.run(self._build_cmd(cli, ["--version"]),
-                               capture_output=True, text=True,
-                               encoding='utf-8', errors='replace', timeout=15)
+            r = self._run_signal_cli(["--version"], timeout=15)
             if r.returncode != 0:
                 err = (r.stderr or r.stdout or "").strip()[:300]
                 log.error(f"[Signal] Cannot start: signal-cli --version failed "
