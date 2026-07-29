@@ -135,6 +135,7 @@ Talents are plugins that handle specific types of commands. When you send a mess
 | web_browser | 58 | Open URLs cited in previous responses; basic scrape-and-summarize |
 | email | 55 | Check, read, and send email (IMAP/SMTP) |
 | talent_builder | 50 | Natural-language talent authoring — generates reviewable Python into `talents/user/` |
+| hermes_api | 49 | OpenAI-compatible HTTP API for external agents, per-client keys *(disabled by default)* |
 | file_organizer | 48 | Sort and rename files using natural-language rules |
 | notes | 45 | Save, search, and manage personal notes (SQLite + ChromaDB) |
 | clipboard_transform | 44 | Take clipboard contents, transform via the LLM, copy result back |
@@ -455,6 +456,7 @@ talents/
   news.py                  News headlines (DuckDuckGo News)
   news_digest.py           Aggregated RSS / scrape digest
   signal_remote.py         signal-cli remote command bridge
+  hermes_api.py            OpenAI-compatible HTTP API for external agent fleets
   hue_lights.py            Philips Hue smart light control
   itunes.py                iTunes / Apple Music playback control
   reminder.py              Timers and reminders

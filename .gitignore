@@ -32,6 +32,7 @@ config/settings.json
 config/hue_config.json
 config/talents.json
 config/mcp_servers.json
+config/hermes_clients.json
 config/backups/
 
 # User-installed talents
