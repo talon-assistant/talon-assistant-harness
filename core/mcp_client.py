@@ -170,8 +170,42 @@ class MCPManager:
             if not ready.is_set():
                 ready.set()
 
+    # Tools that mutate the server's underlying resource. A server config with
+    # "readOnly": true registers none of these, so the model is never offered a
+    # write path — the only reliable enforcement point, since MCP servers
+    # (e.g. server-filesystem) expose writes with no read-only flag of their own.
+    _WRITE_TOOL_NAMES = frozenset({
+        "write_file", "edit_file", "move_file", "create_directory",
+        "delete_file", "delete_directory", "remove_file", "copy_file",
+        "rename_file", "put_file", "append_file", "patch_file",
+    })
+    _WRITE_TOOL_HINTS = ("write", "edit", "delete", "remove", "create",
+                         "move", "rename", "append", "patch", "put", "upload")
+
+    def _is_write_tool(self, tool_name):
+        low = (tool_name or "").lower()
+        if low in self._WRITE_TOOL_NAMES:
+            return True
+        return any(h in low for h in self._WRITE_TOOL_HINTS)
+
     def _register(self, server, tools):
+        cfg = self._servers.get(server, {}) or {}
+        read_only = bool(cfg.get("readOnly") or cfg.get("read_only"))
+        allow = {str(x) for x in (cfg.get("allowTools") or [])}
+        deny = {str(x) for x in (cfg.get("denyTools") or [])}
+
         for t in (tools or []):
+            if allow and t.name not in allow:
+                log.info(f"[MCP] '{server}': skipping {t.name} "
+                         f"(not in allowTools)")
+                continue
+            if t.name in deny:
+                log.info(f"[MCP] '{server}': skipping {t.name} (denyTools)")
+                continue
+            if read_only and self._is_write_tool(t.name):
+                log.info(f"[MCP] '{server}': skipping {t.name} "
+                         f"(server is readOnly)")
+                continue
             qname = f"{_PREFIX}{server}__{t.name}"
             schema = t.inputSchema if isinstance(t.inputSchema, dict) else None
             if not schema or schema.get("type") != "object":

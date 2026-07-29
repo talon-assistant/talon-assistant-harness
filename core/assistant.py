@@ -642,13 +642,34 @@ class TalonAssistant:
         tools = [t.to_tool_schema() for t in routable]
         if self.mcp and self.mcp.enabled:
             tools += self.mcp.tool_schemas()
+        system = (
+            "You are Talon, a local assistant. Use the available tools to "
+            "fulfil the user's request, calling them in sequence when the "
+            "request has multiple steps. Once the work is done, reply with a "
+            "short natural-language confirmation. If no tool is needed, just "
+            "answer.\n\n"
+            "Report only what the tools actually returned. Never claim you did "
+            "something a tool did not do, and never say a task is running in "
+            "the background — nothing runs after your reply. If a tool returns "
+            "nothing useful, say so and name the limit."
+        )
+        # Filesystem MCP servers expose a search whose globs are matched against
+        # paths relative to the root and are case-sensitive, so the obvious call
+        # (pattern "resume") silently returns "No matches found" for anything in
+        # a subdirectory. Spell out the working form or the model gives up.
+        if any("__search_files" in (s.get("function", {}) or {}).get("name", "")
+               for s in tools):
+            system += (
+                "\n\nFile search: search_files patterns are globs relative to "
+                "the server's root and ARE case-sensitive. A bare word or "
+                "'*.ext' will not match inside subfolders — always prefix "
+                "'**/' and bracket the first letter's case, e.g. "
+                "'**/*[Rr]esume*' or '**/*.md'. If a search returns no "
+                "matches, call directory_tree to list the tree and pick the "
+                "file yourself before concluding nothing exists."
+            )
         messages = [
-            {"role": "system", "content": (
-                "You are Talon, a local assistant. Use the available tools to "
-                "fulfil the user's request, calling them in sequence when the "
-                "request has multiple steps. Once the work is done, reply with a "
-                "short natural-language confirmation. If no tool is needed, just "
-                "answer.")},
+            {"role": "system", "content": system},
             {"role": "user", "content": command},
         ]
         # Sub-tools must not speak their own results; only the final reply does.

@@ -3,8 +3,11 @@
 
   "mcpServers": {
     "filesystem": {
-      "_note": "stdio server launched as a subprocess (needs Node/npx). Point the last arg at the directory you want to expose. Tools: read_file, write_file, list_directory, etc.",
+      "_note": "stdio server launched as a subprocess (needs Node/npx). Point the last arg at the directory you want to expose; subdirectories are included recursively and paths outside it are refused by the server. Tools: read_file, write_file, list_directory, search_files, directory_tree, etc.",
+      "_note_readonly": "\"readOnly\": true registers only non-mutating tools, so write_file / edit_file / move_file / create_directory are never offered to the model and cannot be called. Use it whenever you only intend to read — server-filesystem has no read-only flag of its own. For finer control use \"allowTools\": [..] (whitelist) or \"denyTools\": [..] (blacklist) with bare tool names.",
+      "_note_search": "search_files patterns are globs matched against paths relative to the root and are case-sensitive, so \"resume\" and \"*.md\" match nothing in subdirectories — use \"**/*[Rr]esume*\". directory_tree is usually the better discovery tool.",
       "disabled": true,
+      "readOnly": true,
       "command": "npx",
       "args": ["-y", "@modelcontextprotocol/server-filesystem", "C:\\Users\\you\\Documents"]
     },
