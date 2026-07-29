@@ -89,6 +89,38 @@ class HermesApiTalent(BaseTalent):
                      "Per-client key store. Only SHA-256 hashes are kept; "
                      "plaintext keys are shown once at creation."
                  )},
+                {"key": "_usage_info",
+                 "type": "info",
+                 "text": (
+                     "<hr><b>Managing client keys</b><br>"
+                     "Type these to Talon in the chat box:"
+                     "<table cellpadding='3' style='margin-top:4px'>"
+                     "<tr><td><code>add hermes client NAME</code></td>"
+                     "<td>&nbsp;new client + key</td></tr>"
+                     "<tr><td><code>rotate hermes client NAME</code></td>"
+                     "<td>&nbsp;new key, old one dies at once</td></tr>"
+                     "<tr><td><code>revoke hermes client NAME</code></td>"
+                     "<td>&nbsp;delete that client</td></tr>"
+                     "<tr><td><code>list hermes clients</code></td>"
+                     "<td>&nbsp;who has access</td></tr>"
+                     "<tr><td><code>hermes status</code></td>"
+                     "<td>&nbsp;binds, counts, auth failures</td></tr>"
+                     "</table>"
+                     "New keys are copied to your clipboard and shown only "
+                     "once, so they stay out of the chat log. Lost one? "
+                     "Rotate it.<br><br>"
+                     "<b>Pointing an agent at Talon</b> (any OpenAI client):"
+                     "<pre style='margin:4px 0'>"
+                     "OpenAI(base_url=\"http://HOST:PORT/v1\",\n"
+                     "       api_key=\"th-...\")\n"
+                     "model=\"talon\"</pre>"
+                     "Endpoints: <code>/v1/chat/completions</code>, "
+                     "<code>/v1/models</code>, <code>/health</code>.<br><br>"
+                     "<b>Security:</b> plain HTTP, so keep binds on loopback "
+                     "or a trusted LAN. Any key can run commands and read "
+                     "your data — treat it like a password. Saving here "
+                     "applies immediately; no restart needed."
+                 )},
             ]
         }
 
@@ -238,6 +270,17 @@ class HermesApiTalent(BaseTalent):
         log.info(f"[Hermes] Client {name!r} revoked.")
         return True
 
+    @staticmethod
+    def _copy_to_clipboard(text: str) -> bool:
+        """Put a freshly minted key on the clipboard. False if unavailable."""
+        try:
+            import pyperclip
+            pyperclip.copy(text)
+            return True
+        except Exception as e:
+            log.warning(f"[Hermes] Clipboard copy failed: {e}")
+            return False
+
     def authenticate(self, bearer: str) -> str | None:
         """Return the client name for a presented key, or None."""
         presented = hashlib.sha256(bearer.encode()).hexdigest()
@@ -315,15 +358,38 @@ class HermesApiTalent(BaseTalent):
             existed = name in self._load_clients()
             key = self.add_client(name)
             verb = "key rotated" if existed else "created"
+            binds = ", ".join(f"http://{h}:{p}/v1"
+                              for h, p in self._parse_binds())
+
+            # Keep the plaintext key OUT of the response when we can: the GUI
+            # path logs responses to talon_memory.db and feeds them back to the
+            # LLM via the conversation buffer, so a key in the reply text is a
+            # secret at rest in a searchable store. Clipboard is the handoff
+            # channel; we fall back to showing it only if that fails, since an
+            # unretrievable key would be worse.
+            copied = self._copy_to_clipboard(key)
+            if copied:
+                key_block = (
+                    f"The key is on your clipboard — paste it into the agent "
+                    f"now. It is not printed here so it stays out of the "
+                    f"conversation log. Starts: {key[:11]}…"
+                )
+            else:
+                key_block = (f"Clipboard unavailable, so here it is (shown "
+                             f"once):\n\n{key}")
+
             return {
                 "success": True,
                 "response": (
-                    f"Client '{name}' {verb}. New API key (shown once, "
-                    f"store it now):\n\n{key}\n\n"
-                    f"Point an OpenAI client at http://<bind>/v1 with this "
-                    f"key; model id is '{_MODEL_ID}'."
+                    f"Client '{name}' {verb}.\n\n{key_block}\n\n"
+                    f"Base URL: {binds or '(no binds configured)'}  •  "
+                    f"model: '{_MODEL_ID}'"
                 ),
-                "actions_taken": [f"hermes client {name} {verb}"],
+                # Never put the key in actions_taken — it is persisted via
+                # memory.log_action().
+                "actions_taken": [{"action": "hermes_client_key",
+                                   "result": f"{name} {verb}",
+                                   "success": True}],
             }
 
         # -- revoke hermes client <name> --
@@ -336,8 +402,10 @@ class HermesApiTalent(BaseTalent):
                         "actions_taken": []}
             if self.revoke_client(name):
                 return {"success": True,
-                        "response": f"Client '{name}' revoked.",
-                        "actions_taken": [f"hermes client {name} revoked"]}
+                        "response": f"Client '{name}' revoked. Its key stopped "
+                                    f"working immediately.",
+                        "actions_taken": [{"action": "hermes_client_revoked",
+                                           "result": name, "success": True}]}
             return {"success": False,
                     "response": f"No client named '{name}'.",
                     "actions_taken": []}

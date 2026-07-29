@@ -73,6 +73,19 @@ class TalentConfigDialog(QDialog):
         default = field.get("default", "")
         value = self._current.get(key, default)
 
+        if ftype == "info":
+            # Read-only instructions / cheat-sheet. Spans both form columns and
+            # is deliberately NOT registered in self._fields, so it holds no
+            # value and is never written back to talents.json.
+            widget = QLabel(field.get("text", ""))
+            widget.setObjectName("talent_config_info")
+            widget.setWordWrap(True)
+            widget.setTextFormat(Qt.TextFormat.RichText)
+            widget.setTextInteractionFlags(
+                Qt.TextInteractionFlag.TextSelectableByMouse)
+            form.addRow(widget)
+            return
+
         if ftype == "string":
             widget = QLineEdit(str(value))
             self._fields[key] = ("line", widget)
@@ -158,6 +171,12 @@ class TalentConfigDialog(QDialog):
             self.resize(720, 0)
             self._fields[key] = ("feed_table", widget)
             form.addRow(label, widget)
+
+        # Surface the schema's "help" text as a tooltip. Talents have been
+        # writing help strings for a while; this dialog never showed them.
+        entry = self._fields.get(key)
+        if entry and field.get("help"):
+            entry[1].setToolTip(field["help"])
 
     def _collect_values(self):
         """Read all widget values into a flat config dict.
