@@ -54,7 +54,7 @@ class HermesApiTalent(BaseTalent):
     description = "Expose an OpenAI-compatible API so the Hermes fleet can command and converse with Talon"
     keywords = [
         "hermes status", "hermes api", "hermes client", "hermes clients",
-        "add hermes", "revoke hermes", "list hermes",
+        "add hermes", "revoke hermes", "list hermes", "rotate hermes",
     ]
     examples = [
         "what's the hermes api status",
@@ -302,24 +302,28 @@ class HermesApiTalent(BaseTalent):
         cmd = command.lower()
         running = bool(self._servers)
 
-        # -- add hermes client <name> --
-        if "add" in cmd or "create" in cmd or "new" in cmd:
+        # -- add / rotate hermes client <name> --
+        # Rotation IS re-adding: same name, fresh key, old hash overwritten
+        # (the old key dies the moment the file is saved).
+        if any(w in cmd for w in ("add", "create", "new", "rotate")):
             name = self._extract_client_name(command)
             if not name:
                 return {"success": False,
                         "response": "Give the client a name: "
                                     "'add hermes client scout'.",
                         "actions_taken": []}
+            existed = name in self._load_clients()
             key = self.add_client(name)
+            verb = "key rotated" if existed else "created"
             return {
                 "success": True,
                 "response": (
-                    f"Client '{name}' created. Its API key (shown once, "
+                    f"Client '{name}' {verb}. New API key (shown once, "
                     f"store it now):\n\n{key}\n\n"
                     f"Point an OpenAI client at http://<bind>/v1 with this "
                     f"key; model id is '{_MODEL_ID}'."
                 ),
-                "actions_taken": [f"hermes client {name} created"],
+                "actions_taken": [f"hermes client {name} {verb}"],
             }
 
         # -- revoke hermes client <name> --
