@@ -84,7 +84,14 @@ class ConversationEngine:
         "output. If the user asks for code, put the code in this reply. If "
         "they ask for an explanation, put the explanation in this reply. "
         "Offering without producing is a failure mode.\n\n"
-        "Do not promise actions you are uncertain about."
+        "Do not promise actions you are uncertain about.\n\n"
+        "NEVER narrate work you are not actually doing. You have no "
+        "background execution: nothing runs after this reply is written. Never "
+        "say 'I've started', 'scanning now', 'hold tight', 'one moment', "
+        "'I'll look through it and let you know', or otherwise report progress "
+        "on a task. If you cannot do something in this reply, say plainly that "
+        "you cannot and name what is needed. Inventing progress is worse than "
+        "admitting a limit."
         + INJECTION_DEFENSE_CLAUSE
     )
 
@@ -193,7 +200,7 @@ class ConversationEngine:
             ("home directory", "home folder", "home dir",
              "my home", "home path"):
                 lambda: os.path.expanduser("~"),
-            ("username", "my user", "my account", "current user",
+            ("username", "my account", "current user",
              "logged in as", "who am i"):
                 lambda: os.environ.get("USERNAME") or os.environ.get("USER", "unknown"),
             ("current directory", "working directory", "current folder",
@@ -206,12 +213,29 @@ class ConversationEngine:
                 lambda: __import__("platform").system() + " " +
                         __import__("platform").release(),
         }
-        for triggers, fn in _SYS_TRIGGERS.items():
-            if any(t in cmd_lower for t in triggers):
-                val = fn()
-                response = f"{val}"
-                self._a.memory.log_command(command, success=True, response=response)
-                return response
+        # These triggers are substring matches, so a task that merely mentions a
+        # location used to be swallowed by them: "check my user directory for a
+        # copy of my resume" matched "my user" and answered with just the
+        # username. Only fire when the command is asking for the fact ITSELF —
+        # short, and with no verb that means "go do something with that path".
+        _SYS_FACT_ACTION_VERBS = (
+            "find", "search", "look", "check", "scan", "list", "open", "copy",
+            "move", "delete", "save", "browse", "navigate", "download",
+            "upload", "attach", "organize", "sort", "backup", "print", "put",
+            "create", "make", "write", "edit", "rename", "go to",
+        )
+        _asks_for_fact_itself = (
+            len(cmd_lower.split()) <= 8
+            and not any(v in cmd_lower for v in _SYS_FACT_ACTION_VERBS)
+        )
+        if _asks_for_fact_itself:
+            for triggers, fn in _SYS_TRIGGERS.items():
+                if any(t in cmd_lower for t in triggers):
+                    val = fn()
+                    response = f"{val}"
+                    self._a.memory.log_command(command, success=True,
+                                               response=response)
+                    return response
 
         # Fast-path: rule definition detected — store it and acknowledge directly
         # without wasting an LLM call on a conversational reply.
@@ -792,7 +816,13 @@ class ConversationEngine:
         # Pure length is not enough — "how are you doing today friend" is
         # 6 words with a question word but clearly conversational.
         has_question = bool(words & self._QUESTION_WORDS)
-        has_doc_ref  = any(ref in cmd for ref in self._DOCUMENT_REFERENCE_WORDS)
+        # Whole-word matching. Plain substring made "filesystem" match "file",
+        # so "you have an mcp server to do filesystem work, why don't you use
+        # that" was classified factual and answered out of the document library.
+        has_doc_ref = any(
+            re.search(rf"\b{re.escape(ref)}\b", cmd)
+            for ref in self._DOCUMENT_REFERENCE_WORDS
+        )
         if has_question and has_doc_ref:
             return "factual"
 
