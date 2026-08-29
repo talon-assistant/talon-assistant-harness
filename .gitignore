@@ -33,6 +33,8 @@ config/hue_config.json
 config/talents.json
 config/mcp_servers.json
 config/hermes_clients.json
+config/scheduled_tasks.json
+config/news_digest.json
 config/backups/
 
 # User-installed talents
@@ -56,6 +58,10 @@ docs/local/
 
 # Logs
 *.log
+
+# Local test scratch directories
+.pytest-*/
+.tmp/
 
 # Legacy files
 jarvis_assistant.py

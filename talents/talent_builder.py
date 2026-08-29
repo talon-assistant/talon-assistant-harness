@@ -15,6 +15,7 @@ import re
 from pathlib import Path
 
 from talents.base import BaseTalent
+from core.capability_manifest import validate_third_party_manifest
 from core.llm_client import LLMError
 
 import logging
@@ -81,18 +82,33 @@ You are a Python code generator for Talon, a desktop voice assistant. Generate a
 Every talent must:
 - Subclass `BaseTalent` (from `talents.base import BaseTalent`)
 - Set class attributes: `name` (snake_case), `description` (one line), `keywords` (list), `examples` (3+ example commands), `priority` (int, 50 is default)
+- Set `capability_manifest = {"access": "read_only"}` when it has no
+  privileged side effects. For a talent that writes or controls anything, set
+  `capability_manifest = {"access": "brokered", "capabilities":
+  ("local_data_write",), "enforcement": "host"}`. Other capability names are
+  external_send, external_account_write, destructive_file_ops,
+  desktop_control, device_control, clipboard_write, process_execution,
+  credential_write, rule_write, mcp_write, and plugin_install.
+- Every generated talent runs in a fresh sandbox worker. Add a nested
+  `"sandbox"` declaration only for required access: `{"network": True}` for
+  HTTP, `{"filesystem_read": ["~/Documents"]}` for reads, or
+  `{"filesystem_write": ["data/my_talent"]}` for writes. Filesystem writes
+  also require a write capability. Subprocess access requires both
+  `"sandbox": {"subprocess": True}` and `process_execution`.
 - Implement `execute(self, command: str, context: dict) -> dict`
 - Return dict: `{"success": True/False, "response": "text for user", "actions_taken": [...], "spoken": False}`
 
 Available in execute():
 - `context["llm"]` — LLM client. Call: `llm.generate(prompt, max_length=200, temperature=0.7)` returns str
 - `self._extract_arg(llm, command, "what to extract", max_length=30)` — extract a value from the command via LLM
-- `self.talent_config` — dict of per-talent config (API keys, settings). Read with `.get("key", "")`
+- `self.talent_config` — non-secret per-talent settings. Password/API-key/token
+  fields are deliberately not delivered to third-party code.
 - `self._config` — same as talent_config
 
-For config, define `get_config_schema()` returning `{"fields": [{"key": "api_key", "label": "API Key", "type": "password", "default": ""}]}`
+For config, define `get_config_schema()` with a literal returned dict. Use it
+for non-secret settings; secrets are not available inside the sandbox.
 
-For heavy C-extension libraries (pandas, numpy, yfinance), set `subprocess_isolated = True`.
+All third-party code is already process-isolated; do not set `subprocess_isolated`.
 
 For pip packages beyond stdlib, set `required_packages = ["package_name"]`.
 
@@ -100,11 +116,11 @@ For pip packages beyond stdlib, set `required_packages = ["package_name"]`.
 1. Write a COMPLETE Python file with imports at top, class definition, all methods
 2. Use try/except for network calls and error-prone operations
 3. Return the standard result dict from execute()
-4. If config (API keys) is needed, check for empty values and return a helpful config reminder
+4. Use config only for non-secret preferences; third-party workers never receive API keys or tokens
 5. Keep the code clean, concise, and well-structured
 6. SECURITY (generated code is auto-validated and rejected if it violates these):
    - Do NOT use eval, exec, compile, __import__, getattr, setattr, delattr, globals, locals, or vars
-   - Do NOT use os.system / os.popen / os.exec* / os.spawn* / os.startfile, or import subprocess (set `subprocess_isolated = True` for heavy libs instead)
+   - Do NOT use os.system / os.popen / os.exec* / os.spawn* / os.startfile, or import subprocess unless process execution is the talent's explicit purpose
    - Only import from: json, re, math, random, time, datetime, pathlib, collections, itertools, functools, typing, dataclasses, enum, string, html, base64, hashlib, uuid, decimal, statistics, urllib, csv, io, secrets, logging, os, requests, dateutil, bs4, feedparser, yaml, pandas, numpy, yfinance, PIL, talents, core
 
 ## Example 1: Simple API talent with config
@@ -124,6 +140,10 @@ class BitcoinPriceTalent(BaseTalent):
         "how much is Ethereum worth",
     ]
     priority = 50
+    capability_manifest = {
+        "access": "read_only",
+        "sandbox": {"network": True},
+    }
 
     def can_handle(self, command: str) -> bool:
         return self.keyword_match(command)
@@ -163,20 +183,20 @@ class BitcoinPriceTalent(BaseTalent):
 ## Example 2: LLM-powered text tool
 
 ```python
-import pyperclip
 from talents.base import BaseTalent
 
 
-class SummarizeClipboardTalent(BaseTalent):
-    name = "summarize_clipboard"
-    description = "Summarize or transform text from the clipboard using the LLM"
-    keywords = ["summarize clipboard", "summarize text", "clipboard summary", "rewrite clipboard"]
+class RewriteTextTalent(BaseTalent):
+    name = "rewrite_text"
+    description = "Rewrite text supplied in the command using the LLM"
+    keywords = ["rewrite text", "rephrase", "make this formal"]
     examples = [
-        "summarize my clipboard",
-        "rewrite the clipboard text to be more formal",
-        "translate clipboard to Spanish",
+        "rewrite text: thanks for helping",
+        "rephrase this to sound more formal: see you tomorrow",
+        "make this concise: I wanted to reach out about the meeting",
     ]
     priority = 45
+    capability_manifest = {"access": "read_only"}
 
     def can_handle(self, command: str) -> bool:
         return self.keyword_match(command)
@@ -186,28 +206,22 @@ class SummarizeClipboardTalent(BaseTalent):
         if not llm:
             return {"success": False, "response": "LLM not available.", "actions_taken": [], "spoken": False}
 
-        try:
-            text = pyperclip.paste()
-        except Exception:
-            text = ""
-
-        if not text or len(text.strip()) < 10:
-            return {"success": False, "response": "Clipboard is empty or too short to summarize.",
+        text = command.split(":", 1)[-1].strip()
+        if not text or text == command.strip():
+            return {"success": False, "response": "Put the text after a colon.",
                     "actions_taken": [], "spoken": False}
 
         # Truncate if very long
         if len(text) > 3000:
             text = text[:3000] + "..."
 
-        task = self._extract_arg(llm, command, "what to do with the text", max_length=50) or "summarize"
-
-        prompt = f"Task: {task}\\n\\nText:\\n{text}\\n\\nProvide the result:"
+        prompt = f"Rewrite this as requested, returning only the result:\\n\\n{text}"
         try:
             result = llm.generate(prompt, max_length=500, temperature=0.5)
             return {
                 "success": True,
                 "response": result,
-                "actions_taken": [{"action": "clipboard_transform", "task": task}],
+                "actions_taken": [{"action": "rewrite_text"}],
                 "spoken": False,
             }
         except Exception as e:
@@ -232,6 +246,10 @@ class RecentFilesTotalent(BaseTalent):
         "list latest files in Documents",
     ]
     priority = 45
+    capability_manifest = {
+        "access": "read_only",
+        "sandbox": {"filesystem_read": ["~/Desktop", "~/Downloads", "~/Documents"]},
+    }
 
     def can_handle(self, command: str) -> bool:
         return self.keyword_match(command)
@@ -585,6 +603,29 @@ class TalentBuilderTalent(BaseTalent):
             for n in ast.walk(tree)
         ):
             return False, "No execute() method found"
+
+        talent_classes = [
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.ClassDef)
+            and any(_base_name(base) == "BaseTalent" for base in node.bases)
+        ]
+        manifest = None
+        for item in talent_classes[0].body:
+            if not isinstance(item, ast.Assign):
+                continue
+            if any(isinstance(target, ast.Name)
+                   and target.id == "capability_manifest"
+                   for target in item.targets):
+                try:
+                    manifest = ast.literal_eval(item.value)
+                except (ValueError, TypeError):
+                    return False, "capability_manifest must be a literal dict"
+                break
+        if not isinstance(manifest, dict):
+            return False, "Missing capability_manifest declaration"
+        declaration = validate_third_party_manifest(manifest)
+        if declaration.status == "undeclared":
+            return False, declaration.detail
 
         # Track local names that alias the os module so o.system() (via
         # `import os as o`) can't slip past the os attribute check.

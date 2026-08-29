@@ -237,7 +237,7 @@ class FileOrganizerTalent(BaseTalent):
                     elif intent == "list":
                         return self._list_files(directory)
                     elif intent == "organize":
-                        return self._preview_organize(directory)
+                        return self._preview_organize(directory, context)
                 if count_match:
                     return self._fail(
                         f"Got it — top {self._pending_search['max_results']}. "
@@ -254,7 +254,7 @@ class FileOrganizerTalent(BaseTalent):
                 self._pending_search = {"intent": "organize", "file_type": None,
                                         "max_results": None, "expires": time.time() + 60}
                 return self._fail("Which folder should I organize? Please include a path.")
-            return self._preview_organize(directory)
+            return self._preview_organize(directory, context)
 
         if re.search(r'\b(large(?:st)?|big(?:gest)?)\s+files?\b', cmd):
             if not directory:
@@ -304,7 +304,7 @@ class FileOrganizerTalent(BaseTalent):
 
     # ── Organize — preview (dry-run) ──────────────────────────────
 
-    def _preview_organize(self, directory: str) -> dict:
+    def _preview_organize(self, directory: str, context: dict | None = None) -> dict:
         import time
 
         if not os.path.isdir(directory):
@@ -355,6 +355,44 @@ class FileOrganizerTalent(BaseTalent):
             "\nSay 'yes, do it' to proceed or 'cancel' to abort."
         )
 
+        broker = (context or {}).get("capabilities")
+        if broker:
+            def _perform_organize():
+                return self._execute_organize(directory, plan)
+
+            auth = broker.request(
+                "destructive_file_ops",
+                source=(context or {}).get("command_source", "local"),
+                summary=(f"Move {len(plan)} file(s) into type folders under "
+                         f"{directory}"),
+                metadata={"operation": "organize", "file_count": len(plan)},
+                executor=_perform_organize,
+            )
+            if auth.confirmation_required:
+                # The broker owns the pending action. Keeping the token first
+                # makes remote approval usable even when Signal truncates a
+                # long preview.
+                return {
+                    "success": False,
+                    "response": (broker.confirmation_message(auth)
+                                 + "\n\n" + "\n".join(lines)),
+                    "actions_taken": [{"action": "file_organize_preview",
+                                       "file_count": len(plan)}],
+                    "spoken": False,
+                }
+            if not auth.allowed:
+                return self._fail(broker.denial_message(auth))
+            try:
+                result = _perform_organize()
+                broker.record_outcome(
+                    auth.request, success=result.get("success", True))
+                return result
+            except Exception as exc:
+                broker.record_outcome(auth.request, success=False,
+                                      error=str(exc))
+                raise
+
+        # Legacy standalone path for callers that do not provide a broker.
         self._pending_organize = {
             "directory": directory,
             "plan":      plan,

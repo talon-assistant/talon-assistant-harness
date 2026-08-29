@@ -25,6 +25,9 @@ class EmailComposeDialog(QDialog):
     def __init__(self, draft: dict, parent=None):
         super().__init__(parent)
         self._reply_to_uid = draft.get("reply_to_uid", "")
+        self._attach_paths = list(draft.get("attach_paths") or [])
+        self._capability_request_id = draft.get(
+            "capability_request_id", "")
         self.setWindowTitle("Review Email Draft")
         self.setObjectName("email_compose_dialog")
         self.setMinimumSize(540, 460)
@@ -86,6 +89,8 @@ class EmailComposeDialog(QDialog):
             "subject":      self._subject.text().strip(),
             "body":         self._body.toPlainText(),
             "reply_to_uid": self._reply_to_uid,
+            "attach_paths": self._attach_paths,
+            "capability_request_id": self._capability_request_id,
         })
         self.accept()
 

@@ -13,9 +13,10 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 from pathlib import Path
+
+from core.config import resolve_configured_path
 
 # Force UTF-8 output on Windows
 if sys.platform == "win32":
@@ -41,20 +42,10 @@ def _c(text: str, color: str) -> str:
 def _default_chroma_path() -> str:
     """Pick the chroma DB to read.
 
-    Default: the Desktop runtime copy where the real data lives.
-    Override with --chroma.
+    Default: ``memory.chroma_path`` from runtime settings.
+    Override with ``--chroma``.
     """
-    desktop = Path("C:/Users/you/OneDrive/Desktop/talon-assistant/data/chroma_db")
-    if desktop.exists():
-        return str(desktop)
-    # Fallback: settings.json
-    for name in ("config/settings.json", "config/settings.example.json"):
-        p = Path(name)
-        if p.exists():
-            with open(p, encoding="utf-8") as f:
-                cfg = json.load(f)
-            return cfg.get("memory", {}).get("chroma_path", "data/chroma_db")
-    return "data/chroma_db"
+    return str(resolve_configured_path("memory.chroma_path", "data/chroma_db"))
 
 
 def _load_pages_for(filename: str, chroma_path: str) -> dict[int, str]:

@@ -644,6 +644,9 @@ class SettingsDialog(QDialog):
         "whisper.fallback_compute_type",
         "memory.embedding_model", "memory.db_path", "memory.chroma_path",
         "audio.sample_rate",
+        "resume.bullet_library_path", "resume.template_path",
+        "resume.materials_output_dir", "resume.cover_letters_output_dir",
+        "cowork_bridge.root_path",
     }
 
     def __init__(self, current_settings, config_path, parent=None):
@@ -663,6 +666,7 @@ class SettingsDialog(QDialog):
         self.tabs.addTab(self._build_voice_tab(), "Voice")
         self.tabs.addTab(self._build_whisper_tab(), "Whisper")
         self.tabs.addTab(self._build_memory_tab(), "Memory")
+        self.tabs.addTab(self._build_profile_paths_tab(), "Profile & Paths")
         self.tabs.addTab(self._build_desktop_tab(), "Desktop")
         self.tabs.addTab(self._build_scheduler_tab(), "Scheduler")
         self.tabs.addTab(self._build_security_tab(), "Security")
@@ -822,20 +826,84 @@ class SettingsDialog(QDialog):
         self._add_line("documents.directory", form, "Documents Directory",
                        docs.get("directory", "documents"))
 
-        resume = self._original.get("resume", {})
-        self._add_line(
-            "resume.bullet_library_path", form, "Resume Bullet Library",
-            resume.get(
-                "bullet_library_path",
-                "~/OneDrive/Documents/resume_bullet_library.md",
-            ),
-        )
-
         note = QLabel("Changes to memory/embedding settings require an app restart.")
         note.setObjectName("restart_warning")
         form.addRow(note)
 
         return w
+
+    def _build_profile_paths_tab(self):
+        inner = QWidget()
+        form = QFormLayout(inner)
+        profile = self._original.get("user_profile", {})
+        resume = self._original.get("resume", {})
+        bridge = self._original.get("cowork_bridge", {})
+        job_search = self._original.get("job_search", {})
+
+        identity_note = QLabel(
+            "Optional identity used only in generated resumes and cover letters. "
+            "Real values are saved to the ignored config/settings.json file."
+        )
+        identity_note.setWordWrap(True)
+        identity_note.setObjectName("settings_hint")
+        form.addRow(identity_note)
+        self._add_line("user_profile.display_name", form, "Display Name",
+                       profile.get("display_name", ""))
+        self._add_line("user_profile.email", form, "Email",
+                       profile.get("email", ""))
+        self._add_line("user_profile.phone", form, "Phone",
+                       profile.get("phone", ""))
+        self._add_line("user_profile.location", form, "Location",
+                       profile.get("location", ""))
+
+        self._add_line(
+            "resume.bullet_library_path", form, "Resume Bullet Library",
+            resume.get("bullet_library_path", "~/Documents/Talon/resume_bullet_library.md"),
+        )
+        self._add_line(
+            "resume.template_path", form, "Resume DOCX Template",
+            resume.get("template_path", "~/Documents/Talon/resume_template.docx"),
+        )
+        self._add_line(
+            "resume.materials_output_dir", form, "Application Materials Folder",
+            resume.get(
+                "materials_output_dir", "~/Documents/Talon/job_application_materials"
+            ),
+        )
+        self._add_line(
+            "resume.cover_letters_output_dir", form, "Cover Letters Folder",
+            resume.get("cover_letters_output_dir", "~/Documents/Talon/cover_letters"),
+        )
+        self._add_list(
+            "resume.tracker_import_paths", form, "Tracker Import Candidates",
+            resume.get("tracker_import_paths", [
+                "~/Documents/Talon/job_tracker.xlsx",
+                "~/Documents/job_tracker.xlsx",
+                "~/Desktop/job_tracker.xlsx",
+            ]),
+        )
+        self._add_line(
+            "cowork_bridge.root_path", form, "Cowork Bridge Root",
+            bridge.get("root_path", "~/Documents/Talon/cowork_bridge"),
+        )
+        self._add_line(
+            "job_search.fit_scoring_guidance", form, "Job Fit Guidance",
+            job_search.get(
+                "fit_scoring_guidance",
+                "Weight demonstrated skill match, required experience, "
+                "seniority alignment, and clearly stated qualifications.",
+            ),
+        )
+
+        mapping_note = QLabel(
+            "Resume section mappings, per-section bullet caps, template headers, "
+            "and role markers are also configurable in the resume block of "
+            "config/settings.json. Path changes require a restart."
+        )
+        mapping_note.setWordWrap(True)
+        mapping_note.setObjectName("settings_hint")
+        form.addRow(mapping_note)
+        return self._scrollable(inner)
 
     def _build_scheduler_tab(self):
         w = QWidget()

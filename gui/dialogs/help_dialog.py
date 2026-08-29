@@ -95,11 +95,15 @@ their <code>keywords</code> list instead.</li>
 <li>Disabled talents are skipped during command routing.</li>
 </ul>
 
-<h3>Subprocess Isolation</h3>
-<p>Talents that depend on heavy C extensions (e.g. numpy, pandas) can declare
-<code>subprocess_isolated = True</code> in their class definition. These talents
-run in a separate Python process to prevent C-library conflicts from crashing
-the main application.</p>
+<h3>Third-Party Sandbox</h3>
+<p>User and marketplace talent files are parsed for metadata without being
+imported into Talon. Every invocation uses a fresh isolated worker with a
+private directory, minimal secret-free context, timeout and output limits, and
+process-tree cleanup. File, network, and subprocess access is denied unless it
+is declared in the talent's literal <code>capability_manifest</code>.</p>
+<p>Open <b>Tools &gt; Capability Center</b> to inspect sandbox status and audit
+events. This is Python-audit and process containment, not yet a Windows
+AppContainer boundary; native extensions should still be treated as trusted.</p>
 
 <h3>Talent Builder</h3>
 <p>You can ask Talon to create a custom talent in plain English. Say something like
@@ -379,6 +383,10 @@ created from <code>config/settings.example.json</code> on first run.</p>
 <tr><td>whisper</td><td>Whisper model size, device preference (cuda/cpu), compute type</td></tr>
 <tr><td>memory</td><td>SQLite DB path, ChromaDB path, embedding model</td></tr>
 <tr><td>documents</td><td>Directory for document ingestion (RAG)</td></tr>
+<tr><td>user_profile</td><td>Optional identity for generated resumes and cover letters</td></tr>
+<tr><td>resume</td><td>Resume sources, output folders, section mappings, and template markers</td></tr>
+<tr><td>cowork_bridge</td><td>Shared task-relay root directory</td></tr>
+<tr><td>job_search</td><td>Job-fit scoring guidance</td></tr>
 <tr><td>desktop</td><td>PyAutoGUI timing, failsafe toggle, app launch delay</td></tr>
 <tr><td>appearance</td><td>Theme (dark/light), base font size</td></tr>
 <tr><td>system_tray</td><td>Minimize to tray, notifications, global hotkey</td></tr>
@@ -431,6 +439,7 @@ class MyTalent(BaseTalent):
         "do the custom thing",
         "run my custom action",
     ]
+    capability_manifest = {"access": "read_only"}
 
     def execute(self, command, context):
         llm = context["llm"]
@@ -459,7 +468,7 @@ class MyTalent(BaseTalent):
 <tr><td><b>Attribute</b></td><td><b>Type</b></td><td><b>Description</b></td></tr>
 <tr><td>keywords</td><td>list</td><td>Fallback trigger words (used only when LLM is unavailable)</td></tr>
 <tr><td>priority</td><td>int</td><td>Sidebar display order (higher = listed first, default 50)</td></tr>
-<tr><td>subprocess_isolated</td><td>bool</td><td>Run in a separate process to avoid C-extension crashes (default False)</td></tr>
+<tr><td>capability_manifest</td><td>dict</td><td>Required literal access and sandbox declaration</td></tr>
 <tr><td>required_packages</td><td>list</td><td>Packages needed by the talent (e.g. <code>["pandas", "numpy"]</code>)</td></tr>
 </table>
 
@@ -570,9 +579,9 @@ log file captures DEBUG-level output that is not shown in the console.</li>
 <li>If the app won't start, another instance may already be running. Check for
 <code>data/.talon.lock</code> and delete it if the previous instance crashed
 without cleaning up.</li>
-<li>If a talent crashes the app on startup or during use, it may need
-<code>subprocess_isolated = True</code> in its class definition to run in a
-separate process.</li>
+<li>Third-party talents always run in a separate worker. Check the Capability
+Center audit for <code>sandbox_denied</code>, <code>sandbox_timeout</code>, or
+<code>sandbox_failed</code> events when one does not run.</li>
 </ul>
 
 <h3>LLM Connection Failed</h3>

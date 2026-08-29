@@ -96,6 +96,12 @@ class DesktopControlTalent(BaseTalent):
     _CONFIRM_WORDS = {"yes", "confirm", "do it", "go ahead", "proceed", "execute", "run it"}
     _CANCEL_WORDS  = {"no", "cancel", "stop", "abort", "never mind", "nevermind"}
 
+    _DESTRUCTIVE_FILE_REQUEST_RE = re.compile(
+        r"\b(?:delete|remove|move|rename|overwrite|replace|organize|sort|clean\s+up)\b"
+        r".{0,100}\b(?:file|files|folder|folders|directory|directories)\b",
+        re.IGNORECASE,
+    )
+
     # Syntactic blocklist: (compiled_pattern, human_label)
     # Checked against the text of every type/open_application action before execution.
     # Blocks destructive shell commands and system-critical path references regardless
@@ -201,7 +207,8 @@ class DesktopControlTalent(BaseTalent):
                 command, llm, vision, memory_context, speak_response, voice)
         else:
             return self._handle_desktop_action(
-                command, llm, vision, memory_context, speak_response, voice)
+                command, llm, vision, memory_context, speak_response, voice,
+                context)
 
     # ── Vision query path ────────────────────────────────────────
 
@@ -264,7 +271,7 @@ class DesktopControlTalent(BaseTalent):
     # ── Desktop action path ──────────────────────────────────────
 
     def _handle_desktop_action(self, command, llm, vision,
-                               memory_context, speak_response, voice):
+                               memory_context, speak_response, voice, context):
         """Generate and execute keyboard/mouse actions via LLM JSON."""
 
         # Some action commands still benefit from a screenshot for context
@@ -305,6 +312,10 @@ class DesktopControlTalent(BaseTalent):
         explanation = action_plan.get("explanation", "Executing...")
         actions = action_plan.get("actions", [])
 
+        if not actions:
+            return self._execute_action_plan(
+                action_plan, speak_response=speak_response, voice=voice)
+
         # Syntactic blocklist: scan action text before any execution
         blocked_label = self._scan_action_plan(actions)
         if blocked_label:
@@ -319,7 +330,8 @@ class DesktopControlTalent(BaseTalent):
                 "spoken": False,
             }
 
-        # Confirmation gate: only for shell/terminal launches, not simple apps
+        # Shell/terminal launches receive the stricter destructive-file policy;
+        # other keyboard/mouse actions use the desktop-control policy.
         _GATED_APPS = {"cmd", "powershell", "terminal", "wt", "bash",
                        "command prompt", "windows terminal"}
         has_shell = any(
@@ -327,6 +339,64 @@ class DesktopControlTalent(BaseTalent):
             and a.get("application", "").lower().strip() in _GATED_APPS
             for a in actions
         )
+        has_destructive_file_request = bool(
+            self._DESTRUCTIVE_FILE_REQUEST_RE.search(command))
+        broker = context.get("capabilities")
+        if broker:
+            capability = ("destructive_file_ops"
+                          if has_shell or has_destructive_file_request
+                          else "desktop_control")
+            action_types = []
+            for action in actions:
+                action_type = action.get("action", "unknown")
+                if action_type == "open_application":
+                    app = (action.get("application") or "application").strip()
+                    action_types.append(f"open {app}")
+                else:
+                    action_types.append(action_type.replace("_", " "))
+            summary = "Desktop actions: " + ", ".join(action_types[:8])
+
+            def _perform_plan():
+                return self._execute_action_plan(
+                    action_plan, speak_response=speak_response, voice=voice)
+
+            auth = broker.request(
+                capability,
+                source=context.get("command_source", "local"),
+                summary=summary,
+                metadata={"action_count": len(actions),
+                          "contains_shell": has_shell,
+                          "destructive_file_request":
+                              has_destructive_file_request},
+                executor=_perform_plan,
+            )
+            if auth.confirmation_required:
+                return {
+                    "success": False,
+                    "response": (broker.confirmation_message(auth)
+                                 + f"\n\nPlan: {explanation}"),
+                    "actions_taken": [],
+                    "spoken": False,
+                }
+            if not auth.allowed:
+                return {
+                    "success": False,
+                    "response": broker.denial_message(auth),
+                    "actions_taken": [],
+                    "spoken": False,
+                }
+            try:
+                result = _perform_plan()
+                broker.record_outcome(
+                    auth.request, success=result.get("success", True))
+                return result
+            except Exception as exc:
+                broker.record_outcome(auth.request, success=False,
+                                      error=str(exc))
+                raise
+
+        # Legacy standalone path: preserve the earlier shell-only gate when a
+        # talent is embedded without TalonAssistant's capability broker.
         if has_shell:
             from core.security import get_security_filter as _gsf
             _sf = _gsf()

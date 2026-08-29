@@ -10,7 +10,7 @@ get_active_applications() via the cowork_bridge.
 
 Examples:
     "add a job application at Netflix for VP of Engineering"
-    "I applied to the Microsoft Azure CISO role"
+    "I applied to the Microsoft engineering role"
     "update the Netflix application to interviewing"
     "show my active applications"
     "what jobs need follow up"
@@ -35,6 +35,12 @@ from pathlib import Path
 from typing import Any
 
 from talents.base import BaseTalent
+from core.config import (
+    format_contact_line,
+    get_setting,
+    get_user_profile,
+    resolve_configured_path,
+)
 from core.llm_client import LLMError
 
 import logging
@@ -60,6 +66,28 @@ def _data_dir() -> str:
     d = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
     os.makedirs(d, exist_ok=True)
     return d
+
+
+def _cover_letters_root() -> Path:
+    return resolve_configured_path(
+        "resume.cover_letters_output_dir", "~/Documents/Talon/cover_letters"
+    )
+
+
+def _cowork_bridge_root() -> Path:
+    return resolve_configured_path(
+        "cowork_bridge.root_path", "~/Documents/Talon/cowork_bridge"
+    )
+
+
+def _tracker_import_paths() -> list[Path]:
+    raw = get_setting("resume.tracker_import_paths", [
+        "~/Documents/Talon/job_tracker.xlsx",
+        "~/Documents/job_tracker.xlsx",
+        "~/Desktop/job_tracker.xlsx",
+    ])
+    values = raw if isinstance(raw, list) else []
+    return [Path(os.path.expandvars(str(value))).expanduser() for value in values]
 
 
 def _normalize_company(name: str) -> str:
@@ -706,7 +734,7 @@ class JobTrackerTalent(BaseTalent):
     ]
     examples = [
         "add a job application at Netflix for VP of Engineering",
-        "I applied to the Microsoft Azure CISO role",
+        "I applied to the Microsoft engineering role",
         "update the Netflix application to interviewing",
         "show my active applications",
         "show top jobs",
@@ -1388,7 +1416,7 @@ class JobTrackerTalent(BaseTalent):
             )
 
         # Save to files (docx + pdf + txt)
-        output_dir = Path.home() / "OneDrive" / "Documents" / "Cover Letters"
+        output_dir = _cover_letters_root()
         output_dir.mkdir(parents=True, exist_ok=True)
 
         safe_company = re.sub(r'[^\w\s-]', '', app['company']).strip()
@@ -1901,21 +1929,24 @@ class JobTrackerTalent(BaseTalent):
         font.name = "Calibri"
         font.size = Pt(11)
 
-        # Header: name and contact
-        header = doc.add_paragraph()
-        header.alignment = WD_ALIGN_PARAGRAPH.LEFT
-        run = header.add_run("Talon User")
-        run.bold = True
-        run.font.size = Pt(14)
-        header.paragraph_format.space_after = Pt(2)
+        # Header: configured name and contact, omitted when unset.
+        profile = get_user_profile()
+        display_name = profile.get("display_name", "")
+        if display_name:
+            header = doc.add_paragraph()
+            header.alignment = WD_ALIGN_PARAGRAPH.LEFT
+            run = header.add_run(display_name)
+            run.bold = True
+            run.font.size = Pt(14)
+            header.paragraph_format.space_after = Pt(2)
 
-        contact = doc.add_paragraph()
-        contact.alignment = WD_ALIGN_PARAGRAPH.LEFT
-        run = contact.add_run(
-            "user@example.com | your phone | Your City, ST"
-        )
-        run.font.size = Pt(10)
-        contact.paragraph_format.space_after = Pt(12)
+        contact_line = format_contact_line(profile)
+        if contact_line:
+            contact = doc.add_paragraph()
+            contact.alignment = WD_ALIGN_PARAGRAPH.LEFT
+            run = contact.add_run(contact_line)
+            run.font.size = Pt(10)
+            contact.paragraph_format.space_after = Pt(12)
 
         # Date
         date_para = doc.add_paragraph()
@@ -1928,7 +1959,7 @@ class JobTrackerTalent(BaseTalent):
             # Skip if it looks like a duplicate header/date/signature
             # that Claude may have included
             lower = para_text.lower()
-            if lower.startswith("talon user"):
+            if display_name and lower.startswith(display_name.lower()):
                 continue
             if lower.startswith("dear ") or lower.startswith("re:"):
                 p = doc.add_paragraph(para_text)
@@ -2016,7 +2047,7 @@ class JobTrackerTalent(BaseTalent):
     def _handle_import(self, command: str, context: dict) -> dict:
         """Import applications from an existing XLSX file.
 
-        Matches the 2026-JobSearch.xlsx format:
+        Matches the legacy job-tracker spreadsheet format:
           Sheet 1 columns: Company, title, date applied, found on,
                            applied through, Status, Notes
         """
@@ -2030,20 +2061,16 @@ class JobTrackerTalent(BaseTalent):
         file_path = None
 
         # Check for common locations
-        candidates = [
-            os.path.expanduser("~/OneDrive/Documents/2026-JobSearch.xlsx"),
-            os.path.expanduser("~/Documents/2026-JobSearch.xlsx"),
-            os.path.expanduser("~/Desktop/2026-JobSearch.xlsx"),
-        ]
+        candidates = _tracker_import_paths()
         for c in candidates:
-            if os.path.exists(c):
-                file_path = c
+            if c.exists():
+                file_path = str(c)
                 break
 
         if not file_path:
             return self._fail(
-                "Could not find 2026-JobSearch.xlsx. "
-                "Checked ~/OneDrive/Documents, ~/Documents, ~/Desktop."
+                "Could not find a configured job-tracker spreadsheet. "
+                "Set resume.tracker_import_paths in Settings."
             )
 
         try:
@@ -2130,7 +2157,7 @@ class JobTrackerTalent(BaseTalent):
     def _handle_export(self, context: dict) -> dict:
         """Export applications to XLSX matching the unemployment reporting format.
 
-        Matches the user's existing 2026-JobSearch.xlsx layout:
+        Matches the supported legacy tracker workbook layout:
           Sheet 1 "Jobs Applied For": Company, title, date applied, found on,
                                        applied through, Status, Notes
           Sheet 2 "Recruitment Sites Submitted": Firm, Date, Contact?
@@ -2430,7 +2457,7 @@ class JobTrackerTalent(BaseTalent):
         """
         import uuid
 
-        bridge_tasks = Path.home() / "OneDrive" / "Documents" / "cowork_bridge" / "tasks"
+        bridge_tasks = _cowork_bridge_root() / "tasks"
         bridge_tasks.mkdir(parents=True, exist_ok=True)
 
         task_id = f"job_{task_type}_{uuid.uuid4().hex[:8]}"

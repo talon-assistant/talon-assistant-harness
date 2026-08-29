@@ -246,6 +246,22 @@ class TalentManagerDialog(QDialog):
         data = current.data(Qt.ItemDataRole.UserRole)
         name = data["name"]
 
+        assistant = getattr(self._bridge, "assistant", None)
+        broker = getattr(assistant, "capabilities", None)
+        authorization = None
+        if broker:
+            authorization = broker.request(
+                "plugin_install",
+                source="local",
+                summary=f"Delete installed talent {name!r}",
+                metadata={"operation": "delete_talent", "talent": name},
+            )
+            if not (authorization.allowed
+                    or authorization.confirmation_required):
+                self._info_label.setText(
+                    broker.denial_message(authorization))
+                return
+
         reply = QMessageBox.question(
             self, "Delete Talent",
             f"Delete talent '{name}'?\n\nThis will remove the file and "
@@ -253,7 +269,21 @@ class TalentManagerDialog(QDialog):
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if reply != QMessageBox.StandardButton.Yes:
+            if authorization and authorization.confirmation_required:
+                broker.cancel(authorization.request.request_id, source="local")
             return
+
+        approved_request = None
+        if authorization:
+            if authorization.confirmation_required:
+                approved_request = broker.approve(
+                    authorization.request.request_id, source="local")
+                if approved_request is None:
+                    self._info_label.setText(
+                        "Talent deletion approval expired. Please try again.")
+                    return
+            else:
+                approved_request = authorization.request
 
         # Unload from assistant
         if data["loaded"]:
@@ -263,8 +293,13 @@ class TalentManagerDialog(QDialog):
         try:
             os.remove(data["file"])
             log.info(f"[TalentManager] Deleted {data['file']}")
+            if broker and approved_request:
+                broker.record_outcome(approved_request, success=True)
         except Exception as e:
             log.error(f"[TalentManager] Delete failed: {e}")
+            if broker and approved_request:
+                broker.record_outcome(
+                    approved_request, success=False, error=str(e))
 
         self._refresh_list()
         self._editor.clear()

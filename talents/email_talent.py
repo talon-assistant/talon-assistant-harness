@@ -421,6 +421,34 @@ class EmailTalent(BaseTalent):
                 paths.append(p)
         return paths
 
+    @staticmethod
+    def _remote_draft_confirmation(broker, auth, *, to, subject, body,
+                                   attach_paths=None, reply=False):
+        """Render an informed approval prompt for a non-desktop channel.
+
+        Put the approval token first so Signal's response-length limit cannot
+        truncate the only way to authorize the action. Draft bodies are
+        previewed in-channel and bounded to keep the response practical.
+        """
+        preview_limit = 600
+        body_preview = body or "(empty body)"
+        if len(body_preview) > preview_limit:
+            body_preview = body_preview[:preview_limit] + "... [truncated]"
+        attachments = list(attach_paths or [])
+        attach_note = (
+            "\nAttachments: "
+            + ", ".join(os.path.basename(path) for path in attachments)
+            if attachments else ""
+        )
+        label = "reply" if reply else "email"
+        return (
+            f"{broker.confirmation_message(auth)}\n\n"
+            f"Draft {label}:\n"
+            f"To: {to}\n"
+            f"Subject: {subject}{attach_note}\n\n"
+            f"{body_preview}"
+        )
+
     def _handle_send(self, command, context, typed=None):
         """Compose/send an email (or stage it for review).
 
@@ -492,47 +520,85 @@ class EmailTalent(BaseTalent):
             subject = composed.get("subject", "No Subject")
             body    = composed.get("body", "")
 
-        # Confirmation gate: external_send
-        # Signal-originated commands skip the desktop compose dialog — the
-        # explicit remote command is itself sufficient confirmation.  Instead,
-        # send immediately and reply with a confirmation.
-        # An explicit tool-call send (the agentic router supplied the recipient
-        # the user named, e.g. "email this file to recipient@example.com") is treated the
-        # same way: the user already said who and what, so send it rather than
-        # staging a draft the tool-loop path can't even surface as a window.
-        # The compose-review path stays for the keyword route, where the model
-        # also composed the recipient and a look before sending is warranted.
-        # Local/voice keyword commands show the compose dialog for review unless
-        # the gate is explicitly disabled in security settings.
         command_source = context.get("command_source", "local")
-        from core.security import get_security_filter as _gsf
-        _sf = _gsf()
-        gate_enabled = (not _sf) or _sf.gate_required("external_send")
-        explicit_send = bool(typed.get("to"))
+        broker = context.get("capabilities")
 
-        if not gate_enabled or command_source == "signal" or explicit_send:
-            # Send immediately (gate disabled, or remote command = implicit confirmation)
-            try:
-                self._send_smtp(to, subject, body, attach_paths=attach_paths)
-                attach_note = (f" with {len(attach_paths)} attachment(s)"
-                               if attach_paths else "")
-                return {
-                    "success": True,
-                    "response": f"Email sent to {to}{attach_note}.",
-                    "actions_taken": [{"action": "email_sent", "to": to}],
-                    "spoken": False,
-                }
-            except Exception as exc:
+        def _perform_send():
+            self._send_smtp(to, subject, body, attach_paths=attach_paths)
+            attach_note = (f" with {len(attach_paths)} attachment(s)"
+                           if attach_paths else "")
+            return {
+                "success": True,
+                "response": f"Email sent to {to}{attach_note}.",
+                "actions_taken": [{"action": "email_sent", "to": to}],
+                "spoken": False,
+            }
+
+        auth = None
+        if broker:
+            auth = broker.request(
+                "external_send",
+                source=command_source,
+                summary=f"Send email to {to} with subject {subject!r}",
+                metadata={"channel": "email", "recipient": to},
+                executor=_perform_send,
+            )
+            if not auth.allowed and not auth.confirmation_required:
                 return {
                     "success": False,
-                    "response": f"Failed to send email: {exc}",
+                    "response": broker.denial_message(auth),
                     "actions_taken": [],
                     "spoken": False,
                 }
+            if auth.allowed:
+                try:
+                    result = _perform_send()
+                    broker.record_outcome(auth.request, success=True)
+                    return result
+                except Exception as exc:
+                    broker.record_outcome(auth.request, success=False,
+                                          error=str(exc))
+                    return {
+                        "success": False,
+                        "response": f"Failed to send email: {exc}",
+                        "actions_taken": [],
+                        "spoken": False,
+                    }
+            if command_source != "local":
+                return {
+                    "success": False,
+                    "response": self._remote_draft_confirmation(
+                        broker, auth, to=to, subject=subject, body=body,
+                        attach_paths=attach_paths),
+                    "actions_taken": [{"action": "email_send_pending",
+                                       "to": to}],
+                    "spoken": False,
+                }
 
-        # Gate enabled, local command — present draft for user review before sending
+        if not broker:
+            from core.security import get_security_filter as _gsf
+            _sf = _gsf()
+            gate_enabled = (not _sf) or _sf.gate_required("external_send")
+            if not gate_enabled:
+                try:
+                    return _perform_send()
+                except Exception as exc:
+                    return {
+                        "success": False,
+                        "response": f"Failed to send email: {exc}",
+                        "actions_taken": [],
+                        "spoken": False,
+                    }
+
+        # Local GUI commands use the compose dialog as the confirmation UI.
+        # The request id follows the draft so the worker can verify approval
+        # immediately before SMTP is invoked.
         attach_note = (f"\nAttachments: {', '.join(os.path.basename(p) for p in attach_paths)}"
                        if attach_paths else "")
+        pending_email = {"to": to, "subject": subject, "body": body,
+                         "attach_paths": attach_paths}
+        if auth:
+            pending_email["capability_request_id"] = auth.request.request_id
         return {
             "success": True,
             "response": (
@@ -544,8 +610,7 @@ class EmailTalent(BaseTalent):
             ),
             "actions_taken": [{"action": "email_draft_created", "to": to}],
             "spoken": False,
-            "pending_email": {"to": to, "subject": subject, "body": body,
-                              "attach_paths": attach_paths},
+            "pending_email": pending_email,
         }
 
     # ── Reply to email ─────────────────────────────────────────────
@@ -625,34 +690,92 @@ class EmailTalent(BaseTalent):
                 except LLMError as e:
                     return {"success": False, "response": f"LLM unavailable: {e}", "actions_taken": [], "spoken": False}
 
-            # Confirmation gate: external_send
-            # Signal-originated commands bypass the desktop compose dialog;
-            # the remote command is treated as implicit confirmation.
             command_source = context.get("command_source", "local")
-            from core.security import get_security_filter as _gsf
-            _sf = _gsf()
-            gate_enabled = (not _sf) or _sf.gate_required("external_send")
-            if not gate_enabled or command_source == "signal":
-                # Send immediately
-                try:
-                    self._send_smtp_reply(reply_to_addr, reply_subject,
-                                          reply_body, original_msg_id)
-                    return {
-                        "success": True,
-                        "response": f"Reply sent to {reply_to_addr}.",
-                        "actions_taken": [{"action": "email_reply_sent",
-                                           "to": reply_to_addr}],
-                        "spoken": False,
-                    }
-                except Exception as exc:
+            broker = context.get("capabilities")
+
+            def _perform_reply():
+                self._send_smtp_reply(reply_to_addr, reply_subject,
+                                      reply_body, original_msg_id)
+                return {
+                    "success": True,
+                    "response": f"Reply sent to {reply_to_addr}.",
+                    "actions_taken": [{"action": "email_reply_sent",
+                                       "to": reply_to_addr}],
+                    "spoken": False,
+                }
+
+            auth = None
+            if broker:
+                auth = broker.request(
+                    "external_send",
+                    source=command_source,
+                    summary=(f"Reply to {reply_to_addr} with subject "
+                             f"{reply_subject!r}"),
+                    metadata={"channel": "email", "recipient": reply_to_addr,
+                              "reply": True},
+                    executor=_perform_reply,
+                )
+                if not auth.allowed and not auth.confirmation_required:
                     return {
                         "success": False,
-                        "response": f"Failed to send reply: {exc}",
+                        "response": broker.denial_message(auth),
                         "actions_taken": [],
                         "spoken": False,
                     }
+                if auth.allowed:
+                    try:
+                        result = _perform_reply()
+                        broker.record_outcome(auth.request, success=True)
+                        return result
+                    except Exception as exc:
+                        broker.record_outcome(auth.request, success=False,
+                                              error=str(exc))
+                        return {
+                            "success": False,
+                            "response": f"Failed to send reply: {exc}",
+                            "actions_taken": [],
+                            "spoken": False,
+                        }
+                if command_source != "local":
+                    return {
+                        "success": False,
+                        "response": self._remote_draft_confirmation(
+                            broker, auth, to=reply_to_addr,
+                            subject=reply_subject, body=reply_body,
+                            reply=True),
+                        "actions_taken": [{"action": "email_reply_pending",
+                                           "to": reply_to_addr}],
+                        "spoken": False,
+                    }
 
-            # Gate enabled, local command — present draft for user review before sending
+            # With no broker, retain the legacy security switch. Disabling the
+            # old gate explicitly still permits immediate sends for embedders
+            # that construct EmailTalent outside TalonAssistant.
+            if not broker:
+                from core.security import get_security_filter as _gsf
+                _sf = _gsf()
+                gate_enabled = (not _sf) or _sf.gate_required("external_send")
+                if not gate_enabled:
+                    try:
+                        return _perform_reply()
+                    except Exception as exc:
+                        return {
+                            "success": False,
+                            "response": f"Failed to send reply: {exc}",
+                            "actions_taken": [],
+                            "spoken": False,
+                        }
+
+            # Gate enabled, local command — present draft for user review.
+            pending_email = {
+                "to":           reply_to_addr,
+                "subject":      reply_subject,
+                "body":         reply_body,
+                "reply_to_uid": original_msg_id,
+            }
+            if auth:
+                pending_email["capability_request_id"] = auth.request.request_id
+
             return {
                 "success": True,
                 "response": (
@@ -664,12 +787,7 @@ class EmailTalent(BaseTalent):
                 ),
                 "actions_taken": [{"action": "email_reply_draft", "to": reply_to_addr}],
                 "spoken": False,
-                "pending_email": {
-                    "to":           reply_to_addr,
-                    "subject":      reply_subject,
-                    "body":         reply_body,
-                    "reply_to_uid": original_msg_id,
-                },
+                "pending_email": pending_email,
             }
 
         except Exception as e:
@@ -684,6 +802,14 @@ class EmailTalent(BaseTalent):
     # ── Delete email ───────────────────────────────────────────────
 
     def _handle_delete(self, command, context):
+        return self._authorize_account_change(
+            command,
+            context,
+            summary=f"Delete email matching: {command[:160]}",
+            executor=lambda: self._delete_now(command),
+        )
+
+    def _delete_now(self, command):
         """Delete the referenced email (by index, sender, or subject)."""
         try:
             imap = self._connect_imap()
@@ -782,6 +908,14 @@ class EmailTalent(BaseTalent):
             }
 
     def _handle_move(self, command, context):
+        return self._authorize_account_change(
+            command,
+            context,
+            summary=f"Move or archive email matching: {command[:160]}",
+            executor=lambda: self._move_now(command),
+        )
+
+    def _move_now(self, command):
         """Move the referenced email to a target folder."""
         m = re.search(
             r'(?:move|archive)\s+(?:email\s+)?(?:\d+\s+)?(?:to\s+)?([a-zA-Z0-9_\-/ ]+)',
@@ -841,6 +975,48 @@ class EmailTalent(BaseTalent):
                 "actions_taken": [],
                 "spoken": False,
             }
+
+    def _authorize_account_change(
+        self, command, context, *, summary, executor
+    ):
+        """Broker destructive IMAP mutations before opening a write session."""
+        broker = context.get("capabilities")
+        if broker is None:
+            return {
+                "success": False,
+                "response": "Email account changes require the capability broker.",
+                "actions_taken": [],
+                "spoken": False,
+            }
+        authorization = broker.request(
+            "external_account_write",
+            source=context.get("command_source", "local"),
+            summary=summary,
+            metadata={"channel": "email", "command": command[:160]},
+            executor=executor,
+        )
+        if authorization.confirmation_required:
+            return {
+                "success": False,
+                "response": broker.confirmation_message(authorization),
+                "actions_taken": [],
+                "spoken": False,
+            }
+        if not authorization.allowed:
+            return {
+                "success": False,
+                "response": broker.denial_message(authorization),
+                "actions_taken": [],
+                "spoken": False,
+            }
+        result = executor()
+        success = result.get("success", True)
+        broker.record_outcome(
+            authorization.request,
+            success=bool(success),
+            error="" if success else result.get("response", ""),
+        )
+        return result
 
     # ── Email reference resolver ───────────────────────────────────
 

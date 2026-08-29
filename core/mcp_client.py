@@ -235,6 +235,33 @@ class MCPManager:
     def is_mcp_tool(self, name):
         return isinstance(name, str) and name in self._tool_routes
 
+    def tool_is_mutating(self, qualified_name):
+        """Return whether a registered tool appears to change external state.
+
+        This shares the same conservative name classifier used by readOnly
+        registration.  The capability broker is the second enforcement layer:
+        writable tools may be configured, but they are not silently executed.
+        """
+        route = self._tool_routes.get(qualified_name)
+        return bool(route and self._is_write_tool(route[1]))
+
+    def capability_inventory(self):
+        """Return normalized coverage records for all registered MCP tools."""
+        records = []
+        for qualified_name, (server, raw_name) in sorted(self._tool_routes.items()):
+            mutating = self._is_write_tool(raw_name)
+            records.append({
+                "owner": qualified_name,
+                "owner_type": "mcp",
+                "access": "brokered" if mutating else "read_only",
+                "capabilities": ("mcp_write",) if mutating else (),
+                "enforcement": "host" if mutating else "none",
+                "status": "protected" if mutating else "read_only",
+                "detail": f"{server}:{raw_name}",
+                "sandbox": "host",
+            })
+        return records
+
     def call_tool(self, qualified_name, arguments, timeout=60):
         route = self._tool_routes.get(qualified_name)
         if not route or not self._loop:

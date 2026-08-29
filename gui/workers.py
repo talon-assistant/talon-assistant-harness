@@ -456,15 +456,31 @@ class EmailSendWorker(QThread):
         self._draft  = draft
 
     def run(self):
+        approved_request = None
+        broker = None
         try:
             talent = self._bridge.get_talent("email")
             if talent is None:
                 self.error.emit("Email talent not loaded.")
                 return
+            request_id = self._draft.get("capability_request_id", "")
+            assistant = getattr(self._bridge, "assistant", None)
+            broker = getattr(assistant, "capabilities", None)
+            if broker and not request_id:
+                self.error.emit("Email draft is missing a capability approval.")
+                return
+            if broker:
+                approved_request = broker.approve(request_id, source="local")
+                if approved_request is None:
+                    self.error.emit(
+                        "Email approval expired or did not match this session."
+                    )
+                    return
             reply_uid = self._draft.get("reply_to_uid", "")
             to_addr   = self._draft.get("to", "")
             subject   = self._draft.get("subject", "")
             body      = self._draft.get("body", "")
+            attach_paths = self._draft.get("attach_paths") or []
             if reply_uid:
                 talent._send_smtp_reply(
                     to_addr=to_addr,
@@ -477,9 +493,15 @@ class EmailSendWorker(QThread):
                     to_addr=to_addr,
                     subject=subject,
                     body=body,
+                    attach_paths=attach_paths,
                 )
+            if broker and approved_request:
+                broker.record_outcome(approved_request, success=True)
             self.sent.emit(to_addr, subject)
         except Exception as e:
+            if broker and approved_request:
+                broker.record_outcome(
+                    approved_request, success=False, error=str(e))
             self.error.emit(str(e))
 
 

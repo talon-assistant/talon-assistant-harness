@@ -1,11 +1,8 @@
 import os
 import json
 import shutil
-import inspect
-import importlib
 from PyQt6.QtCore import QObject, QTimer, pyqtSignal, pyqtSlot
 from gui.workers import CommandWorker, TTSWorker, VoiceListenWorker, EmailSendWorker
-from talents.base import BaseTalent
 from core.credential_store import CredentialStore
 
 import logging
@@ -390,59 +387,47 @@ class AssistantBridge(QObject):
         if "security" in new_settings:
             self.assistant.security.reload(new_settings["security"])
 
+        # Hot-reload capability policies so approval behavior changes
+        # immediately when settings are saved.
+        if "capabilities" in new_settings:
+            self.assistant.capabilities.reload(new_settings["capabilities"])
+
         # Update full config reference
         self.assistant.config.update(new_settings)
         self.settings_changed.emit(new_settings)
         self.activity.emit("idle")
 
     def import_talent(self, source_filepath):
-        """Copy talent file to talents/user/, dynamically import, register."""
+        """Copy a talent to talents/user/ and register its sandbox proxy."""
         if self.assistant is None:
             raise RuntimeError("Assistant not initialized")
+
+        from core.capability_manifest import inspect_source_manifest
+        source_manifest = inspect_source_manifest(source_filepath)
+        if source_manifest.status == "undeclared":
+            self.assistant._record_blocked_manifest(source_manifest)
+            raise RuntimeError(
+                "Talent blocked before import: " + source_manifest.detail
+            )
 
         filename = os.path.basename(source_filepath)
         dest = os.path.join("talents", "user", filename)
         if os.path.abspath(source_filepath) != os.path.abspath(dest):
             shutil.copy2(source_filepath, dest)
 
-        module_name = filename.replace('.py', '')
-        module = importlib.import_module(f"talents.user.{module_name}")
-
-        for attr_name in dir(module):
-            attr = getattr(module, attr_name)
-            if (inspect.isclass(attr)
-                    and issubclass(attr, BaseTalent)
-                    and attr is not BaseTalent):
-                instance = attr()
-                instance.initialize(self.assistant.config)
-                self.assistant.talents.append(instance)
-                self.assistant.talents.sort(
-                    key=lambda t: t.priority, reverse=True)
-
-                # Rebuild LLM routing prompt (new talent added)
-                self.assistant.invalidate_routing_cache()
-
-                # Persist to talents.json
-                config_path = os.path.join(self.config_dir, "talents.json")
-                try:
-                    with open(config_path, 'r', encoding="utf-8") as f:
-                        talents_cfg = json.load(f)
-                except (FileNotFoundError, json.JSONDecodeError):
-                    talents_cfg = {}
-                talents_cfg[instance.name] = {"enabled": True}
-                with open(config_path, 'w', encoding="utf-8") as f:
-                    json.dump(talents_cfg, f, indent=2)
-
-                self._emit_full_talent_list()
-                return {
-                    "name": instance.name,
-                    "description": instance.description,
-                    "enabled": True,
-                    "keywords": instance.keywords,
-                    "priority": instance.priority
-                }
-
-        raise ValueError(f"No BaseTalent subclass found in {filename}")
+        result = self.assistant.load_user_talent(dest)
+        if not result.get("success"):
+            raise RuntimeError(result.get("error", "Talent registration failed"))
+        instance = self.get_talent(result["name"])
+        self._emit_full_talent_list()
+        return {
+            "name": instance.name,
+            "description": instance.description,
+            "enabled": instance.enabled,
+            "keywords": instance.keywords,
+            "priority": instance.priority,
+            "sandboxed": True,
+        }
 
     def get_talent(self, talent_name):
         """Return the talent instance by name, or None."""

@@ -64,9 +64,45 @@
     "directory": "documents"
   },
 
+  "user_profile": {
+    "_note": "Optional identity used in generated resumes and cover letters. Keep real values in untracked config/settings.json.",
+    "display_name": "",
+    "email": "",
+    "phone": "",
+    "location": ""
+  },
   "resume": {
-    "_note": "Source-of-truth bullet library for resume + cover letter generation. ~ expands to the user home directory. Used by both the structured DOCX pipeline (core/resume_builder.py) and the inline-text LLM-context readers in the job_search and job_tracker talents.",
-    "bullet_library_path": "~/OneDrive/Documents/resume_bullet_library.md"
+    "_note": "Portable resume/job-workflow defaults. ~ and environment variables are expanded. Override these values in untracked config/settings.json.",
+    "bullet_library_path": "~/Documents/Talon/resume_bullet_library.md",
+    "template_path": "~/Documents/Talon/resume_template.docx",
+    "materials_output_dir": "~/Documents/Talon/job_application_materials",
+    "cover_letters_output_dir": "~/Documents/Talon/cover_letters",
+    "tracker_import_paths": [
+      "~/Documents/Talon/job_tracker.xlsx",
+      "~/Documents/job_tracker.xlsx",
+      "~/Desktop/job_tracker.xlsx"
+    ],
+    "sections": [
+      {"header": "leadership scope", "slug": "leadership_scope", "cap": 2},
+      {"header": "career highlights", "slug": "career_highlights", "cap": 2},
+      {"header": "professional experience", "slug": "professional_experience", "cap": 8},
+      {"header": "ai development project", "slug": "talon", "cap": 4},
+      {"header": "teaching", "slug": "teaching", "cap": 0},
+      {"header": "ic bullet library", "slug": "ic_library", "cap": 0}
+    ],
+    "role_markers": [],
+    "career_highlights_header": "CAREER HIGHLIGHTS",
+    "core_competencies_header": "CORE COMPETENCIES",
+    "featured_project_header": "AI DEVELOPMENT PROJECT",
+    "next_section_header": "EDUCATION"
+  },
+  "cowork_bridge": {
+    "_note": "Shared task relay directory. Point this at any locally synced folder when cross-device relay is required.",
+    "root_path": "~/Documents/Talon/cowork_bridge"
+  },
+  "job_search": {
+    "_note": "Optional guidance applied when scoring job fit. Put role, location, compensation, industry, or certification preferences in untracked settings.json.",
+    "fit_scoring_guidance": "Weight demonstrated skill match, required experience, seniority alignment, and clearly stated qualifications. Base every conclusion on the resume and job description."
   },
   "desktop": {
     "pyautogui_pause": 0.5,
@@ -91,6 +127,73 @@
   "training": {
     "harvest_pairs": true,
     "_lora_note": "Configure LoRA training in Settings → Talent Config → lora_train"
+  },
+
+  "capabilities": {
+    "_note": "Central policy for actions with side effects. Decisions are allow, confirm, or deny and may vary by command source.",
+    "enabled": true,
+    "pending_ttl_seconds": 300,
+    "default_decision": "confirm",
+    "policies": {
+      "external_send": {
+        "local": "confirm", "signal": "confirm", "hermes": "confirm",
+        "scheduler": "deny", "reflection": "deny", "default": "confirm"
+      },
+      "rule_write": {
+        "local": "confirm", "signal": "confirm", "hermes": "confirm",
+        "scheduler": "deny", "reflection": "deny", "default": "confirm"
+      },
+      "destructive_file_ops": {
+        "local": "confirm", "signal": "confirm", "hermes": "confirm",
+        "scheduler": "deny", "reflection": "deny", "default": "confirm"
+      },
+      "mcp_write": {
+        "local": "confirm", "signal": "confirm", "hermes": "confirm",
+        "scheduler": "deny", "reflection": "deny", "default": "confirm"
+      },
+      "desktop_control": {
+        "local": "allow", "signal": "confirm", "hermes": "confirm",
+        "scheduler": "deny", "reflection": "deny", "default": "confirm"
+      },
+      "plugin_install": {
+        "local": "confirm", "signal": "confirm", "hermes": "confirm",
+        "scheduler": "deny", "reflection": "deny", "default": "confirm"
+      },
+      "local_data_write": {
+        "local": "allow", "signal": "confirm", "hermes": "confirm",
+        "scheduler": "deny", "reflection": "deny", "default": "confirm"
+      },
+      "device_control": {
+        "local": "allow", "signal": "confirm", "hermes": "confirm",
+        "scheduler": "deny", "reflection": "deny", "default": "confirm"
+      },
+      "clipboard_write": {
+        "local": "allow", "signal": "deny", "hermes": "deny",
+        "scheduler": "deny", "reflection": "deny", "default": "deny"
+      },
+      "process_execution": {
+        "local": "confirm", "signal": "confirm", "hermes": "confirm",
+        "scheduler": "deny", "reflection": "deny", "default": "confirm"
+      },
+      "credential_write": {
+        "local": "confirm", "signal": "deny", "hermes": "deny",
+        "scheduler": "deny", "reflection": "deny", "default": "deny"
+      },
+      "external_account_write": {
+        "local": "confirm", "signal": "confirm", "hermes": "confirm",
+        "scheduler": "deny", "reflection": "deny", "default": "confirm"
+      }
+    }
+  },
+
+  "talent_sandbox": {
+    "_note": "Third-party talents run in fresh isolated workers. Python audit rules default-deny undeclared file, network, and subprocess access; this is process containment, not yet a Windows AppContainer boundary.",
+    "enabled": true,
+    "timeout_seconds": 30,
+    "memory_limit_mb": 512,
+    "output_limit_bytes": 131072,
+    "max_host_calls": 8,
+    "base_dir": "data/talent_sandboxes"
   },
 
   "web_browser": {
@@ -173,7 +276,7 @@
   "scheduler": [
     {
       "_note":   "Set enabled:true to activate. Time is 24-hour local time (HH:MM).",
-      "command": "search the web for Dallas Texas weather today",
+      "command": "search the web for today's weather forecast",
       "time":    "06:00",
       "days":    ["mon","tue","wed","thu","fri","sat","sun"],
       "enabled": false

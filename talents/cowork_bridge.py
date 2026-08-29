@@ -1,14 +1,14 @@
 """Cowork Bridge Talent — file-based task relay between Cowork and Talon.
 
 Cowork (Claude desktop) writes task JSON files to:
-    ~/OneDrive/Documents/cowork_bridge/tasks/{task_id}.json
+    <configured bridge root>/tasks/{task_id}.json
 
 This talent polls that folder on a scheduler interval, executes each task,
 and writes results to:
-    ~/OneDrive/Documents/cowork_bridge/results/{task_id}.json
+    <configured bridge root>/results/{task_id}.json
 
 Processed task files are moved to:
-    ~/OneDrive/Documents/cowork_bridge/logs/{task_id}.json
+    <configured bridge root>/logs/{task_id}.json
 
 After processing, if any tasks completed, the talent notifies Cowork via
 the Claude CLI (``claude -p ...``) so Cowork can read and act on results
@@ -24,6 +24,7 @@ import subprocess
 from datetime import datetime
 from pathlib import Path
 
+from core.config import resolve_configured_path
 from talents.base import BaseTalent
 
 import logging
@@ -31,7 +32,9 @@ log = logging.getLogger(__name__)
 
 # ── paths ─────────────────────────────────────────────────────────────────────
 
-_BRIDGE_ROOT = Path.home() / "OneDrive" / "Documents" / "cowork_bridge"
+_BRIDGE_ROOT = resolve_configured_path(
+    "cowork_bridge.root_path", "~/Documents/Talon/cowork_bridge"
+)
 _TASKS_DIR   = _BRIDGE_ROOT / "tasks"
 _RESULTS_DIR = _BRIDGE_ROOT / "results"
 _LOGS_DIR    = _BRIDGE_ROOT / "logs"

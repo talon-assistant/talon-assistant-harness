@@ -3,8 +3,8 @@
 Fabrication-proof design:
     - Bullets are NEVER generated. Only picked by index from the library.
     - Claude CLI returns JSON with selected indices per section.
-    - Library at ~/OneDrive/Documents/resume_bullet_library.md is
-      the single source of truth for content. Read fresh every call.
+    - The configured resume bullet library is the single source of truth for
+      content and is read fresh every call.
     - Phase 1 output: markdown preview only. DOCX/PDF come in Phase 2.
 
 Public API:
@@ -23,42 +23,83 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from core.config import get_setting, load_runtime_settings, resolve_configured_path
+
 log = logging.getLogger(__name__)
 
 
-# Fallback path used when settings.json has no override.
-_FALLBACK_LIBRARY_PATH = (
-    Path.home() / "OneDrive" / "Documents" / "resume_bullet_library.md"
+_FALLBACK_LIBRARY_PATH = Path.home() / "Documents" / "Talon" / "resume_bullet_library.md"
+
+_GENERIC_SECTIONS = (
+    {"header": "leadership scope", "slug": "leadership_scope", "cap": 2},
+    {"header": "career highlights", "slug": "career_highlights", "cap": 2},
+    {"header": "professional experience", "slug": "professional_experience", "cap": 8},
+    {"header": "ai development project", "slug": "talon", "cap": 4},
+    {"header": "teaching", "slug": "teaching", "cap": 0},
+    {"header": "ic bullet library", "slug": "ic_library", "cap": 0},
 )
+
+
+def get_resume_config() -> dict[str, Any]:
+    resume = load_runtime_settings().get("resume", {})
+    return resume if isinstance(resume, dict) else {}
+
+
+def get_resume_sections() -> list[dict[str, Any]]:
+    raw = get_resume_config().get("sections", _GENERIC_SECTIONS)
+    if not isinstance(raw, list):
+        raw = list(_GENERIC_SECTIONS)
+    sections = []
+    seen = set()
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        header = str(item.get("header", "")).strip().lower()
+        slug = re.sub(r"[^a-z0-9_]+", "_", str(item.get("slug", "")).lower()).strip("_")
+        if not header or not slug or slug in seen:
+            continue
+        try:
+            cap = max(0, min(int(item.get("cap", 0)), 20))
+        except (TypeError, ValueError):
+            cap = 0
+        sections.append({"header": header, "slug": slug, "cap": cap})
+        seen.add(slug)
+    return sections or [dict(item) for item in _GENERIC_SECTIONS]
 
 
 def get_bullet_library_path() -> Path:
     """Resolve the bullet library path from config, with fallback.
 
-    Reads `resume.bullet_library_path` from config/settings.json.
-    Supports `~` expansion for home directory references. Falls back
-    to the hardcoded default if config is missing, malformed, or the
-    key isn't set.
+    Reads `resume.bullet_library_path` from runtime settings and supports
+    home-directory and environment expansion.
 
     This is the single source of truth. The structured DOCX pipeline
     (this module's ResumeLibrary) and the inline-text cover-letter
     readers in talents/job_search.py and talents/job_tracker.py should
     all call this function so they stay in sync.
     """
-    import json
-    try:
-        config_path = Path("config/settings.json")
-        if config_path.exists():
-            with open(config_path, encoding="utf-8") as f:
-                cfg = json.load(f)
-            override = cfg.get("resume", {}).get("bullet_library_path")
-            if override:
-                return Path(override).expanduser()
-    except Exception:
-        # Any config-read failure falls back silently — we never want
-        # path resolution to crash the resume pipeline.
-        pass
-    return _FALLBACK_LIBRARY_PATH
+    return resolve_configured_path(
+        "resume.bullet_library_path", str(_FALLBACK_LIBRARY_PATH)
+    )
+
+
+def get_resume_template_path() -> Path:
+    return resolve_configured_path(
+        "resume.template_path", "~/Documents/Talon/resume_template.docx"
+    )
+
+
+def get_role_markers() -> list[tuple[str, str]]:
+    raw = get_setting("resume.role_markers", [])
+    markers = []
+    for item in raw if isinstance(raw, list) else ():
+        if not isinstance(item, dict):
+            continue
+        slug = str(item.get("slug", "")).strip()
+        marker = str(item.get("marker", "")).strip()
+        if slug and marker:
+            markers.append((slug, marker))
+    return markers
 
 
 # Computed at import time. Stays as a module-level constant so existing
@@ -66,33 +107,9 @@ def get_bullet_library_path() -> Path:
 # still work without each caller having to invoke the function.
 DEFAULT_LIBRARY_PATH = get_bullet_library_path()
 
-# Per-section bullet caps for a 2-page resume targeting leadership roles.
 DEFAULT_CAPS: dict[str, int] = {
-    "leadership_scope": 2,     # competencies line items
-    "career_highlights": 2,    # summary callouts above role history
-    "amherst": 6,
-    "welldyne": 5,
-    "cognizant": 3,
-    "abercrombie": 4,
-    "oarnet": 3,
-    "talon": 4,
-    "teaching": 0,             # optional, off by default
-    "ic_library": 0,           # only for senior IC targets
+    item["slug"]: item["cap"] for item in get_resume_sections()
 }
-
-# H2 header substring -> slug. First hit wins.
-_HEADER_SLUGS: list[tuple[str, str]] = [
-    ("leadership scope", "leadership_scope"),
-    ("amherst", "amherst"),
-    ("welldyne", "welldyne"),
-    ("cognizant", "cognizant"),
-    ("abercrombie", "abercrombie"),
-    ("oarnet", "oarnet"),
-    ("career highlights", "career_highlights"),
-    ("ai development project", "talon"),
-    ("teaching", "teaching"),
-    ("ic bullet library", "ic_library"),
-]
 
 # Sections we parse but never feed to the selector.
 _SKIP_SLUGS = {"earlier_career", "corrections_ledger"}
@@ -111,8 +128,14 @@ class Section:
 class ResumeLibrary:
     """Parser for the bullet library markdown file."""
 
-    def __init__(self, path: Path | None = None) -> None:
+    def __init__(self, path: Path | None = None, sections=None) -> None:
         self.path = Path(path) if path else DEFAULT_LIBRARY_PATH
+        self.section_definitions = list(sections or get_resume_sections())
+        self.caps = {
+            str(item["slug"]): int(item.get("cap", 0))
+            for item in self.section_definitions
+        }
+        self.preview_order = list(self.caps)
         self.sections: dict[str, Section] = {}
         self._raw = ""
 
@@ -129,9 +152,9 @@ class ResumeLibrary:
             return "corrections_ledger"
         if "earlier career" in h:
             return "earlier_career"
-        for needle, slug in _HEADER_SLUGS:
-            if needle in h:
-                return slug
+        for item in self.section_definitions:
+            if str(item["header"]).lower() in h:
+                return str(item["slug"])
         return None
 
     def _parse_sections(self) -> None:
@@ -315,7 +338,7 @@ class ResumeSelector:
         job_description: str,
         caps: dict[str, int] | None = None,
     ) -> Selection:
-        caps = {**DEFAULT_CAPS, **(caps or {})}
+        caps = {**self.library.caps, **(caps or {})}
         payload = self.library.to_selector_payload()
 
         # Trim bullets that aren't in allowed sections (cap == 0)
@@ -436,21 +459,6 @@ def _extract_json(text: str) -> dict | None:
 # Preview renderer
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Display order matches the target resume template.
-_PREVIEW_ORDER = [
-    "leadership_scope",
-    "career_highlights",
-    "amherst",
-    "welldyne",
-    "cognizant",
-    "abercrombie",
-    "oarnet",
-    "talon",
-    "teaching",
-    "ic_library",
-]
-
-
 def render_preview(
     library: ResumeLibrary,
     selection: Selection,
@@ -471,7 +479,7 @@ def render_preview(
     out.append("---")
     out.append("")
 
-    for slug in _PREVIEW_ORDER:
+    for slug in library.preview_order:
         picks = sorted(selection.picks.get(slug, []))
         section = library.get(slug)
         if not section:
@@ -529,12 +537,12 @@ def render_selection_notes(
     out.append(f"**Total bullets picked:** {total}")
     out.append("")
 
-    for slug in _PREVIEW_ORDER:
+    for slug in library.preview_order:
         picks = sorted(selection.picks.get(slug, []))
         section = library.get(slug)
         if not section or not picks:
             continue
-        cap = DEFAULT_CAPS.get(slug, 0)
+        cap = library.caps.get(slug, 0)
         out.append(f"## {section.header}  ({len(picks)}/{cap})")
         for i in picks:
             if 0 <= i < len(section.bullets):

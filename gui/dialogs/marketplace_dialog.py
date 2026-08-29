@@ -71,14 +71,16 @@ class UninstallWorker(QThread):
     uninstall_done = pyqtSignal(dict)  # result dict from uninstall_talent
     error = pyqtSignal(str)
 
-    def __init__(self, marketplace_client, talent_name):
+    def __init__(self, marketplace_client, talent_name, authorization=None):
         super().__init__()
         self.client = marketplace_client
         self.talent_name = talent_name
+        self.authorization = authorization
 
     def run(self):
         try:
-            result = self.client.uninstall_talent(self.talent_name)
+            result = self.client.uninstall_talent(
+                self.talent_name, authorization=self.authorization)
             self.uninstall_done.emit(result)
         except Exception as e:
             self.error.emit(str(e))
@@ -485,6 +487,15 @@ class MarketplaceDialog(QDialog):
         # Source downloaded + validated but NOT yet written. Make the user
         # review it (and any danger/integrity findings) before we commit.
         entry = self._cards[name].talent_entry if name in self._cards else {"name": name}
+        authorization = self.client.request_plugin_change(
+            "install", name, result.get("filename", ""))
+        if authorization and not (
+                authorization.allowed or authorization.confirmation_required):
+            if name in self._cards:
+                self._cards[name].reset_button()
+            self.status_label.setText(
+                self.client.capabilities.denial_message(authorization))
+            return
         review = TalentReviewDialog(
             entry,
             result.get("source_code", ""),
@@ -493,13 +504,18 @@ class MarketplaceDialog(QDialog):
             parent=self,
         )
         if review.exec() != QDialog.DialogCode.Accepted:
+            if authorization and authorization.confirmation_required:
+                self.client.capabilities.cancel(
+                    authorization.request.request_id,
+                    source=self.client.command_source)
             if name in self._cards:
                 self._cards[name].reset_button()
             self.status_label.setText(f"Install of '{name}' cancelled.")
             return
 
         commit = self.client.commit_install(
-            result.get("filename", ""), result.get("source_code", ""))
+            result.get("filename", ""), result.get("source_code", ""),
+            authorization=authorization)
         if commit.get("success"):
             self._installed.add(name)
             if name in self._cards:
@@ -520,6 +536,15 @@ class MarketplaceDialog(QDialog):
     # ── Uninstall ─────────────────────────────────────────
 
     def _on_uninstall_requested(self, talent_name):
+        authorization = self.client.request_plugin_change(
+            "remove", talent_name)
+        if authorization and not (
+                authorization.allowed or authorization.confirmation_required):
+            if talent_name in self._cards:
+                self._cards[talent_name].reset_button()
+            self.status_label.setText(
+                self.client.capabilities.denial_message(authorization))
+            return
         reply = QMessageBox.question(
             self, "Remove Talent",
             f"Remove '{talent_name}'? This will delete the talent file.\n"
@@ -527,12 +552,17 @@ class MarketplaceDialog(QDialog):
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if reply != QMessageBox.StandardButton.Yes:
+            if authorization and authorization.confirmation_required:
+                self.client.capabilities.cancel(
+                    authorization.request.request_id,
+                    source=self.client.command_source)
             if talent_name in self._cards:
                 self._cards[talent_name].reset_button()
             return
 
         self.status_label.setText(f"Removing {talent_name}...")
-        self._uninstall_worker = UninstallWorker(self.client, talent_name)
+        self._uninstall_worker = UninstallWorker(
+            self.client, talent_name, authorization=authorization)
         self._uninstall_worker.uninstall_done.connect(
             lambda result, n=talent_name: self._on_uninstall_done(n, result))
         self._uninstall_worker.error.connect(

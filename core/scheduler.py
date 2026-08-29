@@ -363,7 +363,9 @@ class Scheduler:
             # assistant, scheduled tasks should not override that.
             global_tts = getattr(self._assistant, "tts_enabled", True)
             self._assistant.process_command(
-                command, speak_response=(speak_tts and global_tts)
+                command,
+                speak_response=(speak_tts and global_tts),
+                command_source="scheduler",
             )
         except Exception as exc:
             log.error(f"[Scheduler] Error running {command!r}: {exc}")

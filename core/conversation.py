@@ -240,11 +240,20 @@ class ConversationEngine:
         # Fast-path: rule definition detected — store it and acknowledge directly
         # without wasting an LLM call on a conversational reply.
         if any(ind in cmd_lower for ind in self._a._RULE_INDICATORS):
-            rule = self._a._detect_and_store_rule(command)
+            rule = self._a._detect_and_store_rule(
+                command,
+                command_source=context.get("command_source", "local"),
+            )
             if rule:
-                response = (f"Got it! I'll {rule['action']} whenever you say "
-                            f"\"{rule['trigger']}\".")
-                self._a.memory.log_command(command, success=True, response=response)
+                if rule.get("status") in ("pending", "denied"):
+                    response = rule["response"]
+                    success = rule["status"] != "denied"
+                else:
+                    response = (f"Got it! I'll {rule['action']} whenever you say "
+                                f"\"{rule['trigger']}\".")
+                    success = True
+                self._a.memory.log_command(command, success=success,
+                                           response=response)
                 return response
 
         # Only trigger vision for phrases that *clearly* ask about the screen.

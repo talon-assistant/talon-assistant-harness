@@ -36,6 +36,8 @@ CONFIG_FILES = [
     ("settings.example.json", "settings.json"),
     ("hue_config.example.json", "hue_config.json"),
     ("talents.example.json", "talents.json"),
+    ("news_digest.example.json", "news_digest.json"),
+    ("scheduled_tasks.example.json", "scheduled_tasks.json"),
 ]
 
 

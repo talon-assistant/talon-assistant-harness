@@ -26,6 +26,9 @@ def _make_assistant_stub():
     stub.llm = MagicMock()
     stub.security = MagicMock()
     stub.security.check_semantic.return_value = (False, None)
+    # Routing unit tests predate the centralized capability broker and exercise
+    # the legacy immediate-store branch directly.
+    stub.capabilities = None
 
     # Bind the real class-level constants
     stub._RULE_INDICATORS = TalonAssistant._RULE_INDICATORS

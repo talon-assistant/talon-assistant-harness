@@ -100,15 +100,84 @@ All settings live in `config/settings.json`. Run `python setup.py` to create it 
 | `whisper` | Whisper model size, device preference, compute type |
 | `memory` | SQLite, ChromaDB, and book-index paths; embedding model; reranker model |
 | `documents` | Document ingestion directory for RAG |
+| `user_profile` | Optional name/contact fields used in generated application documents |
+| `resume` | Resume sources, output folders, tracker imports, section mappings, and template markers |
+| `cowork_bridge` | Shared task-relay root directory |
+| `job_search` | User-configurable job-fit scoring guidance |
 | `desktop` | PyAutoGUI timing, failsafe toggle, app launch delays |
 | `appearance` | Theme (dark/light), base font size |
 | `system_tray` | Minimize-to-tray behavior, notifications, global hotkey |
 | `task_assist` | Hotkey and screenshot resolution cap for the task-assist talent |
 | `training` | Training pair harvesting toggle; LoRA settings live in Talent Config → lora_train |
+| `capabilities` | Source-aware allow/confirm/deny policy for actions with side effects |
 | `web_browser` | Per-domain RSS overrides and disable list |
 | `personality` | Optional inner-life features (reflection, valence, goals, coherence, anticipation, lora self-refinement) — all default off |
 | `scheduler` | Time-based recurring tasks (cron-like, with `enabled` toggles per entry) |
 | `security` | Input filter patterns, output scan checks, rate limit, confirmation gates, audit log |
+
+### Capability approvals
+
+Actions with side effects are checked by a central capability broker before
+execution. Policies can distinguish local commands from Signal, Hermes,
+scheduler, and reflection sources. Email sends, rule changes, file moves,
+destructive desktop plans, mutating MCP tools, and talent installation/removal
+are covered. Unattended scheduler/reflection writes are denied. Pending textual
+approvals expire after five minutes and can be resolved with
+`confirm <request-id>` or `cancel <request-id>`.
+
+GUI email drafts carry the same broker request through the compose dialog, so
+clicking **Send** approves the exact pending action immediately before SMTP is
+called. Decisions and outcomes are written to the `capability_audit` SQLite
+table without persisting sensitive action payloads such as message bodies.
+Signal-originated email drafts never open that desktop dialog: the draft and
+approval token are returned to the Signal Note-to-Self conversation, where a
+plain `confirm <request-id>` or `cancel <request-id>` reply resolves it.
+
+Open **Tools → Capability Center** (or press **Ctrl+Alt+C**) to edit the policy
+matrix without hand-editing JSON. The editor flags unattended or remote routes
+that bypass confirmation, can restore the built-in safe defaults, and applies
+saved policies immediately. **Inventory & Simulator** lists every loaded talent
+and MCP tool as protected, read-only, or undeclared, and previews effective
+decisions without creating requests. **Audit Viewer** filters and paginates the
+redacted decision/outcome history by capability, source, and event.
+
+Third-party talents must include a literal class-level manifest. Missing or
+invalid manifests are rejected before Python imports the file, and are also
+blocked again at dispatch. Brokered third-party talents must use host
+enforcement; action-aware internal enforcement is reserved for reviewed
+built-ins:
+
+```python
+# No privileged mutations
+capability_manifest = {"access": "read_only"}
+
+# Host checks policy before execution
+capability_manifest = {
+    "access": "brokered",
+    "capabilities": ("local_data_write",),
+    "enforcement": "host",
+    "sandbox": {"filesystem_write": ["data/my_talent"]},
+}
+```
+
+Third-party talent files are parsed for metadata without being imported into
+Talon. Each invocation starts a fresh `python -I` worker with a private working
+directory, a minimal JSON context, bounded output, a timeout, and process-tree
+cleanup. Network, subprocesses, and access outside that private directory are
+denied unless the literal manifest declares them. Available sandbox keys are
+`network`, `subprocess`, `llm`, `filesystem_read`, and `filesystem_write`.
+Subprocess access also requires `process_execution`; filesystem writes require
+a matching write capability. Sandbox lifecycle events appear in Audit Viewer.
+
+This is meaningful process and Python-audit containment, but it is not yet a
+Windows AppContainer/restricted-token security boundary. Native extension code
+should still be treated as trusted. Secrets and the full settings dictionary
+are never delivered to third-party workers.
+
+Built-in manifests cover external sends and account changes, file/rule changes,
+desktop and device control, local data and clipboard writes, process execution,
+credential changes, plugin installation, and mutating MCP tools. A startup
+coverage report is also written to the activity log.
 
 ## Built-in Talents
 
@@ -213,7 +282,7 @@ Each scraper uses a desktop user-agent and standard Selenium WebDriver settings 
 
 1. **Scrape and score:** `job_search` runs every configured search URL, deduplicates by job URL, and calls the LLM to compute a fit score (0–100) against the bullet library.
 2. **Inbox UI:** the **Job Inbox** dialog shows all postings with fit score, source, status, and per-row actions. Filter by status, source, minimum fit, or full-text search across company / position / location.
-3. **Pipelines per row:** one-click buttons run the "tailored resume" / "cover letter" / "full prep" pipelines, each generating output into a per-application folder `jobappmaterials/{company}_{position}_{date}/`.
+3. **Pipelines per row:** one-click buttons run the "tailored resume" / "cover letter" / "full prep" pipelines, each generating output beneath the configured `resume.materials_output_dir`.
 4. **Recon:** for LinkedIn postings, a "Recon" button uses the persistent Chrome profile to find the company's recruiter and first-degree connections, stored as inbox metadata.
 5. **Status tracking:** dropdown per row for `new`, `interested`, `applied`, `interview`, `offer`, `rejected`, `archived`. Moving to `applied` triggers the LinkedIn "I'm Interested" auto-click for jobs sourced from LinkedIn.
 6. **Startup cleanup:** on launch, `job_tracker` prunes stale scraper rows so the inbox stays fast: `new` listings with fit score ≤ 40 (any age) and archived jobs older than 45 days. Applied, rejected, and withdrawn jobs are never touched. Thresholds are configurable in Settings → Job Tracker, and deleted rows are appended to `data/job_cleanup_purge.csv` for recovery. The Job Inbox **Cleanup** button runs the same prune on demand and writes a full database backup first.
@@ -266,10 +335,7 @@ class MyTalent(BaseTalent):
     description = "Does something useful"
     examples = ["do the useful thing", "run my talent"]
     priority = 50
-
-    # Run in a subprocess if your talent loads C-extension libraries
-    # (numpy, pandas, yfinance, etc.) that can corrupt the host process.
-    subprocess_isolated = False
+    capability_manifest = {"access": "read_only"}
 
     # Pip packages beyond base requirements (checked at load time).
     required_packages = []
@@ -307,19 +373,21 @@ You can also ask Talon to build a talent for you: say "create a talent that does
 
 ### Context dict
 
-The `context` dictionary passed to `execute()` contains:
+Built-in talents receive Talon's full service context. Third-party talents
+receive only this sandbox-safe subset:
 
 | Key | Type | Description |
 |-----|------|-------------|
-| `llm` | LLMClient | Send prompts to the LLM |
-| `memory` | MemorySystem | Store and retrieve notes, search history |
-| `vision` | VisionSystem | Capture and analyze screenshots |
-| `voice` | VoiceSystem | Text-to-speech output |
-| `config` | dict | Full settings.json contents |
-| `memory_context` | str | Pre-fetched relevant memory for the current command |
-| `notify` | callable | Send desktop notifications: `notify(title, message)` |
-| `server_manager` | LLMServerManager \| None | Stop/start the built-in inference server (set only in builtin mode) |
-| `assistant` | TalonAssistant | The main assistant instance |
+| `llm` | proxy | Bounded `generate()` calls mediated by the host, when enabled |
+| `config` | dict | Sandbox status and the talent's private work directory only |
+| `command_source` | str | Origin such as `local`, `signal`, or `scheduler` |
+| `tool_args` | dict | Sanitized structured arguments from tool routing |
+| `speak_response` | bool | Always `False`; the host owns output delivery |
+
+`self.talent_config` contains non-secret per-talent settings. It never contains
+keys whose names indicate passwords, tokens, credentials, private keys, or API
+keys. Third-party code does not receive `assistant`, memory, vision, voice,
+notifications, the capability broker, or the full settings object.
 
 ### Optional: configurable settings
 
@@ -331,15 +399,16 @@ def get_config_schema(self):
         "fields": [
             {"key": "max_results", "label": "Max Results", "type": "int",
              "default": 5, "min": 1, "max": 50},
-            {"key": "api_key", "label": "API Key", "type": "password",
-             "default": ""},
+            {"key": "style", "label": "Writing style", "type": "string",
+             "default": "concise"},
         ]
     }
 ```
 
 Supported field types: `string`, `password`, `int`, `float`, `bool`, `choice`, `list`.
 
-Password fields are stored in the OS keyring and never written to disk.
+Password fields are stored in the OS keyring and never written to disk. They
+are available to reviewed built-ins only, not third-party sandbox workers.
 
 ### Installation
 
@@ -428,6 +497,10 @@ core/
   config.py                Configuration utilities (deep merge)
   logging_config.py        Centralized logging with rotating file output
   security.py              Prompt injection defense, input/output filtering, alerts
+  capabilities.py          Central side-effect policy, approvals, and audit trail
+  capability_manifest.py   Talent/MCP declarations and coverage inventory
+  talent_sandbox.py        Third-party proxy loader and isolated worker controller
+  talent_sandbox_worker.py Restricted one-shot talent execution process
   security_classifier.py   ML-based classifier for foreign-input prompt injection
   skill_router.py          On-demand talent loader for query-driven activation
   input_normalizer.py      Punctuation / whitespace / Unicode normalization
@@ -477,34 +550,39 @@ talents/
   cowork_bridge.py         Cowork session-host integration
   desktop_control.py       Desktop automation (PyAutoGUI)
   user/                    User-installed talents (auto-discovered)
-tests/                     97-test pytest suite covering core modules
+tests/                     pytest suite covering core modules
 data/
   talon_memory.db          SQLite: commands, corrections, rules, preferences
+                           and capability decision/outcome audit records
   talon_book_index.db      SQLite: per-book TOC entries and metadata
   job_tracker.db           SQLite: job applications, follow-ups, recon results
   job_cleanup_purge.csv    Audit log of auto-pruned stale job rows (recovery)
   training_pairs.jsonl     Accumulated training pairs (Alpaca format)
   chroma_db/               ChromaDB: memory, documents, notes, rules, corrections
   lora_adapters/           LoRA adapter output (after training)
-  jobappmaterials/         Per-application generated resumes and cover letters
+  job_application_materials/  Per-application generated resumes and cover letters
   logs/                    Rotating log files (talon.log)
 config/
   settings.example.json    Configuration template
   hue_config.example.json
   talents.example.json
-  news_digest.json         News digest feed configuration
-  scheduled_tasks.json     Scheduler task definitions
+  news_digest.example.json  News digest feed defaults
+  scheduled_tasks.example.json  Disabled scheduler task example
 ```
 
 ## Testing
 
-Run the test suite:
+Install development dependencies and run the test suite:
 
 ```
+pip install -r requirements-dev.txt
 python -m pytest tests/ -v
 ```
 
-97 tests cover config, security, LLM client, talent base, memory, conversation, and routing.
+153 tests cover capability policy and its GUI, sandbox containment, config,
+security, LLM client,
+talent base, memory, conversation, and routing. A Windows Python 3.10–3.12
+matrix runs in GitHub Actions.
 
 ## Logging
 

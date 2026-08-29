@@ -3,6 +3,22 @@
 ## Recently Completed
 
 ### Architecture & Code Quality
+  * Central capability broker — source-aware allow/confirm/deny policy,
+    expiring approvals, redacted SQLite audit trail, and enforcement for email,
+    behavioral-rule writes, mutating MCP tools, file organization, desktop
+    control, and talent installation/removal
+  * Capability Center GUI — source-by-capability policy matrix, unsafe-policy
+    warnings, safe-default restore, hot reload, and a paginated/filterable
+    redacted audit viewer
+  * Capability manifests and coverage — every built-in talent plus live MCP
+    tools inventoried as protected/read-only/undeclared, pre-import rejection
+    and runtime blocking for undeclared third-party talents, host preflight,
+    startup coverage reporting, and a non-executing GUI policy simulator
+  * Third-party talent sandbox — static proxy loading (no host import), fresh
+    isolated workers, private work directories, minimal secret-free JSON
+    context, mediated LLM calls, manifest-declared file/network/process access,
+    time/memory/output limits, process-tree cleanup, and audited lifecycle
+  * Windows CI matrix for Python 3.10–3.12 plus dedicated development requirements
 - Structured logging system — 46 files converted from print() to Python logging module, rotating file handler at data/logs/talon.log
 - ConversationEngine extracted from assistant.py (633 lines -> core/conversation.py)
 - DocumentRetriever extracted from memory.py (417 lines -> core/document_retriever.py)
@@ -10,14 +26,17 @@
 - LLMError exceptions replace error-string returns across 36 callers
 - Security utilities (wrap_external, injection patterns) moved to core/security.py
 - deep_merge moved to core/config.py (breaks circular import)
-- 97-test pytest suite covering config, security, LLM client, talents, memory, conversation, routing
+- 153-test pytest suite covering capability policy and GUI, sandbox containment,
+  config, security,
+  LLM client, talents, memory, conversation, and routing
 - requirements.lock for reproducible builds, version-pinned requirements.txt
 - GPL-3.0 LICENSE file
 - Instance locking (data/.talon.lock) prevents concurrent runs / DB corruption
 
 ### Talent System
 - Talent builder complete rewrite — full-file generation, code review before install, iterative refinement loop
-- Subprocess isolation for talents with C-extension libraries (subprocess_isolated = True)
+- Legacy crash isolation for reviewed built-ins with C-extension libraries;
+  third-party talents always use the stricter sandbox worker
 - required_packages attribute for declaring pip dependencies
 - pynput replaced with Win32 RegisterHotKey for global hotkeys
 

@@ -16,6 +16,7 @@ import ast
 import inspect
 from urllib.parse import urlparse
 from talents.base import BaseTalent
+from core.capability_manifest import validate_third_party_manifest
 
 import logging
 log = logging.getLogger(__name__)
@@ -141,11 +142,55 @@ def _user_talents_dir():
 class MarketplaceClient:
     """Handles catalog fetching, caching, downloading, and validation."""
 
-    def __init__(self, catalog_url=None):
+    def __init__(self, catalog_url=None, capabilities=None,
+                 command_source="local"):
         self.catalog_url = catalog_url or DEFAULT_CATALOG_URL
         self._cache_path = os.path.join(_data_dir(), "marketplace_cache.json")
         self._catalog = None
         self._cache_time = 0
+        self.capabilities = capabilities
+        self.command_source = command_source
+
+    def request_plugin_change(self, operation, talent_name, filename=""):
+        """Create a broker authorization for an install/remove operation."""
+        if not self.capabilities:
+            return None
+        verb = "Install" if operation == "install" else "Remove"
+        return self.capabilities.request(
+            "plugin_install",
+            source=self.command_source,
+            summary=f"{verb} talent {talent_name!r}",
+            metadata={"operation": operation, "talent": talent_name,
+                      "filename": filename},
+        )
+
+    def _consume_plugin_authorization(self, authorization, *, operation,
+                                      target):
+        """Validate and consume the one-time grant immediately before write."""
+        if not self.capabilities:
+            return None, ""
+        if authorization is None:
+            return None, "Plugin change is missing capability authorization"
+        if authorization.confirmation_required:
+            request = self.capabilities.approve(
+                authorization.request.request_id, source=self.command_source)
+            if request is None:
+                return None, "Plugin approval expired or did not match this session"
+        elif authorization.allowed:
+            request = authorization.request
+        else:
+            return None, self.capabilities.denial_message(authorization)
+        if (request.capability != "plugin_install"
+                or request.source != self.command_source):
+            return None, "Plugin approval does not match this operation"
+        metadata = request.metadata
+        if metadata.get("operation") != operation:
+            return None, "Plugin approval does not match this operation"
+        approved_target = (metadata.get("filename") if operation == "install"
+                           else metadata.get("talent"))
+        if approved_target != target:
+            return None, "Plugin approval does not match this target"
+        return request, ""
 
     # ── Catalog ────────────────────────────────────────────────────
 
@@ -336,7 +381,7 @@ class MarketplaceClient:
             "error": "",
         }
 
-    def commit_install(self, filename, source_code):
+    def commit_install(self, filename, source_code, authorization=None):
         """Write already-validated talent source to talents/user/.
 
         Call this only after fetch_and_validate() succeeded and the user has
@@ -356,24 +401,40 @@ class MarketplaceClient:
             return {"success": False, "filepath": "",
                     "error": validation["error"]}
 
+        approved_request, auth_error = self._consume_plugin_authorization(
+            authorization, operation="install", target=filename)
+        if auth_error:
+            return {"success": False, "filepath": "", "error": auth_error}
+
         dest_path = os.path.join(_user_talents_dir(), filename)
         try:
             with open(dest_path, 'w', encoding='utf-8') as f:
                 f.write(source_code)
             log.info(f"[Marketplace] Saved to {dest_path}")
+            if approved_request:
+                self.capabilities.record_outcome(
+                    approved_request, success=True)
             return {"success": True, "filepath": dest_path, "error": ""}
         except Exception as e:
+            if approved_request:
+                self.capabilities.record_outcome(
+                    approved_request, success=False, error=str(e))
             return {"success": False, "filepath": "",
                     "error": f"File write error: {e}"}
 
     # ── Uninstall ──────────────────────────────────────────────────
 
-    def uninstall_talent(self, talent_name):
+    def uninstall_talent(self, talent_name, authorization=None):
         """Remove a user-installed talent file from talents/user/.
 
         Returns:
             dict: {"success": bool, "error": str}
         """
+        approved_request, auth_error = self._consume_plugin_authorization(
+            authorization, operation="remove", target=talent_name)
+        if auth_error:
+            return {"success": False, "error": auth_error}
+
         user_dir = _user_talents_dir()
 
         # Find the file — scan for a .py file containing a class with this name
@@ -397,11 +458,18 @@ class MarketplaceClient:
                                     and item.value.value == talent_name):
                                 os.remove(fpath)
                                 log.info(f"[Marketplace] Removed {fpath}")
+                                if approved_request:
+                                    self.capabilities.record_outcome(
+                                        approved_request, success=True)
                                 return {"success": True, "error": ""}
             except Exception:
                 continue
 
-        return {"success": False, "error": f"Could not find talent file for '{talent_name}'"}
+        error = f"Could not find talent file for '{talent_name}'"
+        if approved_request:
+            self.capabilities.record_outcome(
+                approved_request, success=False, error=error)
+        return {"success": False, "error": error}
 
     # ── Validation ─────────────────────────────────────────────────
 
@@ -445,8 +513,15 @@ class MarketplaceClient:
                     for item in node.body:
                         if isinstance(item, ast.Assign):
                             for target in item.targets:
-                                if isinstance(target, ast.Name) and isinstance(item.value, ast.Constant):
+                                if not isinstance(target, ast.Name):
+                                    continue
+                                if isinstance(item.value, ast.Constant):
                                     info[target.id] = item.value.value
+                                elif target.id == "capability_manifest":
+                                    try:
+                                        info[target.id] = ast.literal_eval(item.value)
+                                    except (ValueError, TypeError):
+                                        info[target.id] = None
                     found.append(info)
 
         if not found:
@@ -459,6 +534,25 @@ class MarketplaceClient:
             return {"valid": False,
                     "error": "Talent class missing 'name' attribute",
                     "talent_info": talent_info, "warnings": warnings}
+
+        manifest = talent_info.get("capability_manifest")
+        if not isinstance(manifest, dict):
+            return {
+                "valid": False,
+                "error": "Talent class missing a literal capability_manifest",
+                "talent_info": talent_info,
+                "warnings": warnings,
+            }
+        declaration = validate_third_party_manifest(
+            manifest, str(talent_info.get("name", filename))
+        )
+        if declaration.status == "undeclared":
+            return {
+                "valid": False,
+                "error": declaration.detail,
+                "talent_info": talent_info,
+                "warnings": warnings,
+            }
 
         return {"valid": True, "error": "", "talent_info": talent_info,
                 "warnings": warnings}

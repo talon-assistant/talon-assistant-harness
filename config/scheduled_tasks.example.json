@@ -1,0 +1,14 @@
+[
+  {
+    "id": "cowork_bridge_poll",
+    "command": "cowork bridge check",
+    "task_type": "interval",
+    "interval_seconds": 30,
+    "output": "gui",
+    "label": "Cowork Bridge poll",
+    "enabled": false,
+    "created": null,
+    "last_run": null,
+    "next_run": null
+  }
+]

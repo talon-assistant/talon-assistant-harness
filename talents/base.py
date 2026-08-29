@@ -122,6 +122,13 @@ class BaseTalent(ABC):
     # Checked at load time; if missing, talent is disabled with a message.
     required_packages: list[str] = []
 
+    # Third-party talents must declare either
+    # ``{"access": "read_only"}`` or a brokered manifest such as
+    # ``{"access": "brokered", "capabilities": ("external_send",),
+    #   "enforcement": "host"}``. Built-ins are covered by Talon's central
+    # manifest registry. Undeclared talents are disabled and blocked at runtime.
+    capability_manifest: dict | None = None
+
     def __init__(self):
         self._enabled = True
         self._config = {}  # Per-talent config from talents.json

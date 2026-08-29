@@ -467,12 +467,26 @@ class SignalRemoteTalent(BaseTalent):
         prefix = cfg.get("command_prefix", "talon: ").lower()
         has_prefix = text.lower().startswith(prefix)
 
+        # Approval prompts are delivered in this same Note-to-Self thread.
+        # Permit a bare "confirm <id>" / "cancel <id>" reply while a Signal
+        # action is pending, even though ordinary remote commands still require
+        # the configured prefix.  The narrow broker grammar plus the existing
+        # Note-to-Self authorization boundary prevents this becoming a general
+        # prefix bypass.
+        broker = getattr(self._assistant, "capabilities", None)
+        is_pending_confirmation = bool(
+            not has_prefix
+            and broker
+            and broker.has_pending("signal")
+            and broker.is_confirmation_command(text)
+        )
+
         # Images in Note-to-Self are allowed without prefix
         has_images = any(
             (a.get("contentType") or "").startswith("image/")
             for a in incoming_attachments
         )
-        if not has_prefix and not has_images:
+        if not has_prefix and not has_images and not is_pending_confirmation:
             return
 
         command = text[len(prefix):].strip() if text.lower().startswith(prefix) else text.strip()

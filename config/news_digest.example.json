@@ -1,0 +1,27 @@
+{
+  "output_dir": "",
+  "max_stories_per_feed": 8,
+  "max_age_hours": 24,
+  "feeds": [
+    {"name": "Reuters Top News", "url": "https://feeds.reuters.com/reuters/topNews", "category": "General", "enabled": true},
+    {"name": "AP News", "url": "https://rsshub.app/apnews/topics/apf-topnews", "category": "General", "enabled": true},
+    {"name": "BBC World", "url": "https://feeds.bbci.co.uk/news/world/rss.xml", "category": "General", "enabled": true},
+    {"name": "NPR News", "url": "https://feeds.npr.org/1001/rss.xml", "category": "General", "enabled": true},
+    {"name": "The Guardian World", "url": "https://www.theguardian.com/world/rss", "category": "General", "enabled": true},
+    {"name": "Ars Technica", "url": "https://feeds.arstechnica.com/arstechnica/index", "category": "Technology", "enabled": true},
+    {"name": "The Verge", "url": "https://www.theverge.com/rss/index.xml", "category": "Technology", "enabled": true},
+    {"name": "Hacker News", "url": "https://news.ycombinator.com/rss", "category": "Technology", "enabled": true},
+    {"name": "TechCrunch", "url": "https://techcrunch.com/feed/", "category": "Technology", "enabled": true},
+    {"name": "Wired", "url": "https://www.wired.com/feed/rss", "category": "Technology", "enabled": true},
+    {"name": "Krebs on Security", "url": "https://krebsonsecurity.com/feed/", "category": "Infosec", "enabled": true},
+    {"name": "Schneier on Security", "url": "https://www.schneier.com/feed/atom/", "category": "Infosec", "enabled": true},
+    {"name": "The Hacker News", "url": "https://feeds.feedburner.com/TheHackersNews", "category": "Infosec", "enabled": true},
+    {"name": "BleepingComputer", "url": "https://www.bleepingcomputer.com/feed/", "category": "Infosec", "enabled": true},
+    {"name": "SANS Internet Storm", "url": "https://isc.sans.edu/rssfeed.xml", "category": "Infosec", "enabled": true},
+    {"name": "CISA Advisories", "url": "https://www.cisa.gov/uscert/ncas/current-activity.xml", "category": "Infosec", "enabled": true},
+    {"name": "Naked Security", "url": "https://nakedsecurity.sophos.com/feed/", "category": "Infosec", "enabled": true},
+    {"name": "SecurityWeek", "url": "https://feeds.feedburner.com/securityweek", "category": "Infosec", "enabled": true},
+    {"name": "Dark Reading", "url": "https://www.darkreading.com/rss/all.xml", "category": "Infosec", "enabled": true},
+    {"name": "Infosecurity Magazine", "url": "https://www.infosecurity-magazine.com/rss/news/", "category": "Infosec", "enabled": true}
+  ]
+}

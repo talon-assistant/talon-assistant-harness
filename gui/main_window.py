@@ -187,6 +187,14 @@ class MainWindow(QMainWindow):
         talent_mgr_action.triggered.connect(self._open_talent_manager)
         tools_menu.addAction(talent_mgr_action)
 
+        capability_center_action = QAction("Capability Center...", self)
+        capability_center_action.setShortcut("Ctrl+Alt+C")
+        capability_center_action.setToolTip(
+            "Edit source-aware side-effect policies and review the redacted audit log"
+        )
+        capability_center_action.triggered.connect(self._open_capability_center)
+        tools_menu.addAction(capability_center_action)
+
         job_inbox_action = QAction("Job Inbox...", self)
         job_inbox_action.setShortcut("Ctrl+Alt+I")
         job_inbox_action.setToolTip(
@@ -434,6 +442,44 @@ class MainWindow(QMainWindow):
         dialog.settings_saved.connect(self.bridge.update_settings)
         dialog.exec()
 
+    def _open_capability_center(self):
+        """Open the capability policy editor and redacted audit viewer."""
+        if not self.bridge.assistant:
+            QMessageBox.information(
+                self,
+                "Capability Center",
+                "Talon is still initializing. Try again in a moment.",
+            )
+            return
+
+        from core.config import deep_merge
+        from gui.dialogs.capability_center_dialog import CapabilityCenterDialog
+
+        config_path = os.path.join(self.config_dir, "settings.json")
+        example_path = os.path.join(self.config_dir, "settings.example.json")
+        defaults = {}
+        user = {}
+        try:
+            with open(example_path, "r", encoding="utf-8") as f:
+                defaults = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            pass
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                user = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            pass
+
+        dialog = CapabilityCenterDialog(
+            deep_merge(defaults, user),
+            config_path,
+            self.bridge.assistant.capabilities,
+            self,
+            inventory_provider=self.bridge.assistant.get_capability_inventory,
+        )
+        dialog.settings_saved.connect(self.bridge.update_settings)
+        dialog.exec()
+
     # ── LLM Server ────────────────────────────────────────────
 
     def _open_llm_setup(self):
@@ -572,11 +618,58 @@ class MainWindow(QMainWindow):
         if dialog.exec():
             source_path = dialog.selected_filepath
             if source_path:
+                assistant = self.bridge.assistant
+                broker = getattr(assistant, "capabilities", None)
+                authorization = None
+                approved_request = None
+                if broker:
+                    filename = os.path.basename(source_path)
+                    authorization = broker.request(
+                        "plugin_install",
+                        source="local",
+                        summary=f"Import and execute talent file {filename!r}",
+                        metadata={"operation": "manual_import",
+                                  "filename": filename},
+                    )
+                    if not (authorization.allowed
+                            or authorization.confirmation_required):
+                        self.chat_view.add_error_message(
+                            broker.denial_message(authorization))
+                        return
+                    if authorization.confirmation_required:
+                        reply = QMessageBox.question(
+                            self,
+                            "Confirm Talent Import",
+                            f"Import and execute '{filename}'?\n\n"
+                            "Talents are Python code and run with Talon's "
+                            "permissions.",
+                            QMessageBox.StandardButton.Yes
+                            | QMessageBox.StandardButton.No,
+                        )
+                        if reply != QMessageBox.StandardButton.Yes:
+                            broker.cancel(
+                                authorization.request.request_id,
+                                source="local")
+                            return
+                        approved_request = broker.approve(
+                            authorization.request.request_id,
+                            source="local")
+                        if approved_request is None:
+                            self.chat_view.add_error_message(
+                                "Talent import approval expired. Please try again.")
+                            return
+                    else:
+                        approved_request = authorization.request
                 try:
                     self.bridge.import_talent(source_path)
+                    if broker and approved_request:
+                        broker.record_outcome(approved_request, success=True)
                     self.chat_view.add_system_message(
                         f"Talent imported from {os.path.basename(source_path)}")
                 except Exception as e:
+                    if broker and approved_request:
+                        broker.record_outcome(
+                            approved_request, success=False, error=str(e))
                     self.chat_view.add_error_message(
                         f"Failed to import talent: {e}")
 
@@ -587,7 +680,9 @@ class MainWindow(QMainWindow):
         from core.marketplace import MarketplaceClient
         from gui.dialogs.marketplace_dialog import MarketplaceDialog
 
-        client = MarketplaceClient()
+        assistant = self.bridge.assistant
+        client = MarketplaceClient(
+            capabilities=getattr(assistant, "capabilities", None))
         installed = client.get_installed_talent_names()
 
         # Also include built-in talent names so they show as "installed"
@@ -742,6 +837,9 @@ class MainWindow(QMainWindow):
         """Show the email compose dialog for user review before sending."""
         from gui.dialogs.email_compose_dialog import EmailComposeDialog
 
+        self._pending_email_capability_id = draft.get(
+            "capability_request_id", "")
+
         # Restore window if minimized to tray
         if not self.isVisible():
             self.show()
@@ -755,11 +853,18 @@ class MainWindow(QMainWindow):
 
     def _on_compose_send(self, draft: dict):
         """User clicked Send in compose dialog — dispatch via bridge worker."""
+        self._pending_email_capability_id = ""
         self.bridge.send_pending_email(draft)
         self.chat_view.add_system_message("Sending email...")
 
     def _on_compose_cancelled(self):
         """User cancelled the compose dialog."""
+        request_id = getattr(self, "_pending_email_capability_id", "")
+        assistant = getattr(self.bridge, "assistant", None)
+        broker = getattr(assistant, "capabilities", None)
+        if request_id and broker:
+            broker.cancel(request_id, source="local")
+        self._pending_email_capability_id = ""
         self.chat_view.add_system_message("Email cancelled.")
 
     # ── Task Assist dialog ────────────────────────────────────

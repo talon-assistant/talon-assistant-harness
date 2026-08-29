@@ -1,8 +1,8 @@
-"""Resume DOCX renderer — clone the template and surgically replace bullets.
+"""Resume DOCX renderer — clone a configured template and replace bullets.
 
-The template at ~/OneDrive/Desktop/talon-assistant/docs/resume_template.docx
-provides all formatting (fonts, margins, list styles, headers, education,
-certifications). This renderer:
+The template path and section markers come from the ``resume`` settings block.
+The template provides formatting, headers, education, and certifications. This
+renderer:
 
   1. Loads the template
   2. Replaces CAREER HIGHLIGHTS bullets with library picks
@@ -28,30 +28,18 @@ from docx import Document
 from docx.oxml.ns import qn
 from lxml import etree
 
-from core.resume_builder import ResumeLibrary, Selection
+from core.config import get_setting
+from core.resume_builder import (
+    ResumeLibrary,
+    Selection,
+    get_resume_template_path,
+    get_role_markers,
+)
 
 log = logging.getLogger(__name__)
 
 
-DEFAULT_TEMPLATE_PATH = (
-    Path.home() / "OneDrive" / "Desktop" / "talon-assistant" / "docs"
-    / "resume_template.docx"
-)
-
-
-# library slug -> company-header marker (matched as startswith on paragraph text)
-ROLE_MARKERS: list[tuple[str, str]] = [
-    ("amherst", "Amherst Group"),
-    ("welldyne", "WellDyneRx"),
-    ("cognizant", "Cognizant Technology Solutions"),
-    ("abercrombie", "Abercrombie & Fitch"),     # first match = Manager role
-    ("oarnet", "OARnet"),
-]
-
-CAREER_HIGHLIGHTS_HEADER = "CAREER HIGHLIGHTS"
-CORE_COMPETENCIES_HEADER = "CORE COMPETENCIES"
-TALON_HEADER = "AI DEVELOPMENT PROJECT"
-EDUCATION_HEADER = "EDUCATION"
+DEFAULT_TEMPLATE_PATH = get_resume_template_path()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -340,7 +328,20 @@ def _replace_full_paragraph_text(p_elem, text: str) -> None:
 
 class TemplateRenderer:
     def __init__(self, template_path: Path | None = None) -> None:
-        self.template_path = Path(template_path) if template_path else DEFAULT_TEMPLATE_PATH
+        self.template_path = Path(template_path) if template_path else get_resume_template_path()
+        self.role_markers = get_role_markers()
+        self.career_highlights_header = str(get_setting(
+            "resume.career_highlights_header", "CAREER HIGHLIGHTS"
+        ))
+        self.core_competencies_header = str(get_setting(
+            "resume.core_competencies_header", "CORE COMPETENCIES"
+        ))
+        self.featured_project_header = str(get_setting(
+            "resume.featured_project_header", "AI DEVELOPMENT PROJECT"
+        ))
+        self.next_section_header = str(get_setting(
+            "resume.next_section_header", "EDUCATION"
+        ))
 
     def render(
         self,
@@ -386,7 +387,9 @@ class TemplateRenderer:
         section = library.get("career_highlights")
         if not section or not picks:
             return
-        header = _find_paragraph_by_text(doc, CAREER_HIGHLIGHTS_HEADER, exact_upper=True)
+        header = _find_paragraph_by_text(
+            doc, self.career_highlights_header, exact_upper=True
+        )
         if header is None:
             log.warning("[ResumeDocx] CAREER HIGHLIGHTS header not found")
             return
@@ -406,12 +409,16 @@ class TemplateRenderer:
         section = library.get("leadership_scope")
         if not section or not picks:
             return
-        header = _find_paragraph_by_text(doc, CORE_COMPETENCIES_HEADER, exact_upper=True)
+        header = _find_paragraph_by_text(
+            doc, self.core_competencies_header, exact_upper=True
+        )
         if header is None:
             log.warning("[ResumeDocx] CORE COMPETENCIES header not found")
             return
         # Steal a bullet template from CAREER HIGHLIGHTS to clone formatting
-        ch_header = _find_paragraph_by_text(doc, CAREER_HIGHLIGHTS_HEADER, exact_upper=True)
+        ch_header = _find_paragraph_by_text(
+            doc, self.career_highlights_header, exact_upper=True
+        )
         bullet_template = None
         if ch_header is not None:
             bullet_template, _ = _find_bullet_block_after(doc, ch_header)
@@ -433,7 +440,7 @@ class TemplateRenderer:
     def _replace_role_bullets(
         self, doc, library: ResumeLibrary, selection: Selection
     ) -> None:
-        for slug, marker in ROLE_MARKERS:
+        for slug, marker in self.role_markers:
             picks = sorted(selection.picks.get(slug, []))
             section = library.get(slug)
             if not section or not picks:
@@ -460,7 +467,9 @@ class TemplateRenderer:
         talon = library.get("talon")
         if not talon:
             return
-        header = _find_paragraph_by_text(doc, TALON_HEADER, exact_upper=True)
+        header = _find_paragraph_by_text(
+            doc, self.featured_project_header, exact_upper=True
+        )
         if header is None:
             log.warning("[ResumeDocx] AI DEVELOPMENT PROJECT header not found")
             return
@@ -479,7 +488,9 @@ class TemplateRenderer:
         # Title/blurb is the first non-bullet paragraph after the header
         title_para = None
         for j in range(start + 1, len(paragraphs)):
-            if paragraphs[j].text.strip().upper().startswith(EDUCATION_HEADER):
+            if paragraphs[j].text.strip().upper().startswith(
+                self.next_section_header.upper()
+            ):
                 break
             if not _is_bullet(paragraphs[j]) and paragraphs[j].text.strip():
                 title_para = paragraphs[j]
@@ -512,7 +523,7 @@ class TemplateRenderer:
         # Find Education header
         edu_idx = None
         for i, p in enumerate(paragraphs):
-            if p.text.strip().upper().startswith(EDUCATION_HEADER):
+            if p.text.strip().upper().startswith(self.next_section_header.upper()):
                 edu_idx = i
                 break
         if edu_idx is None:

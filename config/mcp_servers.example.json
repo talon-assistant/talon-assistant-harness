@@ -9,7 +9,7 @@
       "disabled": true,
       "readOnly": true,
       "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-filesystem", "C:\\Users\\you\\Documents"]
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "%USERPROFILE%\\Documents"]
     },
 
     "stdio_with_env": {
